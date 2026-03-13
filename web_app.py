@@ -514,7 +514,7 @@ with tab_resumen:
             JOIN clientes c ON c.cedula = p.cliente_cedula
             WHERE cu.fecha_vencimiento >= :inicio AND cu.fecha_vencimiento <= :fin
             ORDER BY cu.fecha_vencimiento
-        """), conn, params={"inicio": inicio.text(), "fin": fin.text()})
+        """), conn, params={"inicio": inicio, "fin": fin}
 
     total_periodo = cuotas_df["valor_cuota"].sum() if not cuotas_df.empty else 0
     pagado_periodo = cuotas_df[cuotas_df["estado"]=="Pagada"]["valor_cuota"].sum()

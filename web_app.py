@@ -511,7 +511,8 @@ with tab_resumen:
             FROM cuotas cu
             JOIN prestamos p ON p.id = cu.prestamo_id
             JOIN clientes c ON c.cedula = p.cliente_cedula
-            WHERE cu.fecha_vencimiento >= :inicio AND cu.fecha_vencimiento <= :fin
+            WHERE cu.fecha_vencimiento::date >= :inicio
+            AND cu.fecha_vencimiento::date <= :fin
             ORDER BY cu.fecha_vencimiento
         """), conn, params={"inicio": inicio, "fin": fin})
 

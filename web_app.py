@@ -448,7 +448,6 @@ except Exception as e:
     estado = pd.DataFrame()
 
 
-
 # ==========================
 # CONSULTA DE MORA
 # ==========================
@@ -461,7 +460,7 @@ with get_conn() as conn:
         FROM cuotas cu
         JOIN prestamos p ON p.id = cu.prestamo_id
         WHERE cu.estado = 'PENDIENTE'
-        AND cu.fecha_vencimiento < CURRENT_DATE
+        AND cu.fecha_vencimiento::date < CURRENT_DATE
     """)).fetchone()
 
 clientes_mora = mora[0]

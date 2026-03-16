@@ -627,6 +627,7 @@ with tab_detalle:
 # ==========================
 
 import threading
+import time
 
 if "pago_msg" not in st.session_state:
     st.session_state.pago_msg = None
@@ -854,9 +855,11 @@ CREDDT
                             attachment_name=f"recibo_{prestamo.id}.pdf"
                         )
 
-                    threading.Thread(target=enviar, daemon=True).start()
-
-                    correo_ok = True
+                    try:
+                        threading.Thread(target=enviar, daemon=True).start()
+                        correo_ok = True
+                    except:
+                        correo_ok = False
 
                 st.session_state.pago_msg = {
                     "credito": prestamo.id,
@@ -867,6 +870,8 @@ CREDDT
 
                 st.session_state.procesando_pago = False
                 st.session_state.confirmar_pago = False
+
+                time.sleep(0.3)
                 st.rerun()
 
             except Exception as e:
@@ -912,7 +917,6 @@ with col1:
 
 with col2:
     st.metric("Monto en mora", f"${monto_mora:,.0f}")
-
 
 # ==========================
 # 🧮 SIMULADOR

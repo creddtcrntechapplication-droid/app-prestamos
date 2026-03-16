@@ -622,10 +622,11 @@ with tab_detalle:
                 else:
                     st.warning(f"Cuota {i} — PENDIENTE")
 
-
 # ==========================
 # 💰 PAGOS
 # ==========================
+
+import threading
 
 if "pago_msg" not in st.session_state:
     st.session_state.pago_msg = None
@@ -804,7 +805,7 @@ with tab_pagos:
                     conn.commit()
 
                 # ==========================
-                # 📧 ENVÍO DE CORREO
+                # 📧 ENVÍO DE CORREO (THREAD)
                 # ==========================
 
                 cliente = ejecutar_sql(
@@ -831,10 +832,7 @@ with tab_pagos:
                     with open(recibo_pdf, "rb") as f:
                         pdf_bytes = f.read()
 
-                    correo_ok = enviar_correo_async(
-                        correo_cliente,
-                        f"Recibo de pago - Crédito {prestamo.id}",
-                        f"""Hola {nombre_cliente},
+                    mensaje = f"""Hola {nombre_cliente},
 
 Se ha registrado correctamente el pago de la cuota #{primera_cuota_afectada}
 del crédito {prestamo.id}.
@@ -845,10 +843,20 @@ del crédito {prestamo.id}.
 Adjuntamos su recibo en PDF.
 
 CREDDT
-""",
-                        attachment_bytes=pdf_bytes,
-                        attachment_name=f"recibo_{prestamo.id}.pdf"
-                    )
+"""
+
+                    def enviar():
+                        enviar_correo_async(
+                            correo_cliente,
+                            f"Recibo de pago - Crédito {prestamo.id}",
+                            mensaje,
+                            attachment_bytes=pdf_bytes,
+                            attachment_name=f"recibo_{prestamo.id}.pdf"
+                        )
+
+                    threading.Thread(target=enviar, daemon=True).start()
+
+                    correo_ok = True
 
                 st.session_state.pago_msg = {
                     "credito": prestamo.id,
@@ -858,6 +866,7 @@ CREDDT
                 }
 
                 st.session_state.procesando_pago = False
+                st.session_state.confirmar_pago = False
                 st.rerun()
 
             except Exception as e:

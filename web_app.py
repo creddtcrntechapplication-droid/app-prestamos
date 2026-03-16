@@ -1,22 +1,27 @@
 import streamlit as st
 import pandas as pd
 import os
-from reportlab.lib import pagesizes
-from reportlab.platypus import HRFlowable
 import smtplib
+
+from datetime import datetime, date
+from sqlalchemy import create_engine, text
 from email.message import EmailMessage
-from datetime import date, datetime
+
+from reportlab.lib import pagesizes, colors
 from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
-from reportlab.lib import colors
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Paragraph,
+    Spacer,
+    Table,
+    TableStyle,
+    Image,
+    HRFlowable,
+)
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.pdfbase import pdfmetrics
-from io import BytesIO
 from reportlab.lib.enums import TA_CENTER
-from sqlalchemy import create_engine, text
-col1, col2, col3, col4 = st.columns(4)
+from io import BytesIO
 
 # ==========================
 # CONEXIÓN A SUPABASE
@@ -404,6 +409,77 @@ def enviar_correo_async(
 
         return False
 
+# ==========================
+# CARGAR ESTADO GENERAL
+# ==========================
+
+import pandas as pd
+
+with get_conn() as conn:
+
+    estado = pd.read_sql(
+        """
+        SELECT
+            p.id,
+            p.estado,
+            p.monto_original,
+            p.monto_total_credito,
+            p.valor_cuota,
+            p.cuotas,
+            p.tipo,
+
+            COALESCE(SUM(pg.valor),0) AS total_pagado,
+
+            p.monto_total_credito
+            - COALESCE(SUM(pg.valor),0) AS saldo,
+
+            c.nombres || ' ' || c.apellidos AS cliente
+
+        FROM prestamos p
+
+        LEFT JOIN pagos pg
+        ON pg.prestamo_id = p.id
+
+        LEFT JOIN clientes c
+        ON c.cedula = p.cliente_cedula
+
+        GROUP BY
+            p.id,
+            p.estado,
+            p.monto_original,
+            p.monto_total_credito,
+            p.valor_cuota,
+            p.cuotas,
+            p.tipo,
+            c.nombres,
+            c.apellidos
+
+        ORDER BY p.id DESC
+        """,
+        conn
+    )
+
+
+# ==========================
+# CALCULAR ALERTAS
+# ==========================
+
+with get_conn() as conn:
+
+    mora_df = pd.read_sql(
+        """
+        SELECT
+            COUNT(DISTINCT prestamo_id) as clientes_mora,
+            COALESCE(SUM(valor_cuota),0) as monto_mora
+        FROM cuotas
+        WHERE estado <> 'Pagada'
+        AND fecha_vencimiento < CURRENT_DATE
+        """,
+        conn
+    )
+
+clientes_mora = int(mora_df["clientes_mora"][0])
+monto_mora = float(mora_df["monto_mora"][0])
 
 # ==========================
 # TABS

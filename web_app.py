@@ -739,7 +739,6 @@ with tab_pagos:
                         st.session_state.procesando_pago = False
                         st.stop()
 
-                    # 🔥 CONSULTA OPTIMIZADA (1 sola)
                     pagos_cuotas = conn.execute(
                         text("""
                             SELECT pc.id_cuota, COALESCE(SUM(p.valor),0) as pagado
@@ -755,7 +754,9 @@ with tab_pagos:
 
                     pago_restante = valor_pago
                     primera_cuota_afectada = None
+                    cuotas_afectadas = []
 
+                    # 🔍 Calcular cuotas a afectar
                     for id_cuota, valor_cuota, nro in cuotas:
 
                         if pago_restante <= 0:
@@ -772,20 +773,33 @@ with tab_pagos:
                         if primera_cuota_afectada is None:
                             primera_cuota_afectada = nro
 
-                        result_pago = conn.execute(
-                            text("""
-                                INSERT INTO pagos (prestamo_id, fecha_pago, valor, estado)
-                                VALUES (:id, :fecha, :valor, 'Pagado')
-                                RETURNING id_pago
-                            """),
-                            {
-                                "id": prestamo.id,
-                                "fecha": fecha_pago.isoformat(),
-                                "valor": abono
-                            }
-                        )
+                        cuotas_afectadas.append((id_cuota, saldo_cuota, abono))
 
-                        id_pago = result_pago.fetchone()[0]
+                        pago_restante -= abono
+
+                    if not cuotas_afectadas:
+                        st.warning("⚠️ No se pudo aplicar el pago a ninguna cuota.")
+                        st.session_state.procesando_pago = False
+                        st.stop()
+
+                    # 🔑 INSERTAR UN SOLO PAGO
+                    result_pago = conn.execute(
+                        text("""
+                            INSERT INTO pagos (prestamo_id, fecha_pago, valor, estado)
+                            VALUES (:id, :fecha, :valor, 'Pagado')
+                            RETURNING id_pago
+                        """),
+                        {
+                            "id": prestamo.id,
+                            "fecha": fecha_pago.isoformat(),
+                            "valor": valor_pago
+                        }
+                    )
+
+                    id_pago = result_pago.fetchone()[0]
+
+                    # 🔗 Aplicar pago a cuotas
+                    for id_cuota, saldo_cuota, abono in cuotas_afectadas:
 
                         conn.execute(
                             text("""
@@ -806,8 +820,6 @@ with tab_pagos:
                             {"estado": nuevo_estado, "id_cuota": id_cuota}
                         )
 
-                        pago_restante -= abono
-
                     restantes = conn.execute(
                         text("""
                         SELECT COUNT(*)
@@ -826,7 +838,6 @@ with tab_pagos:
 
                     conn.commit()
 
-                    # 🔗 TRAER CLIENTE CON MISMA CONEXIÓN
                     cliente = conn.execute(
                         text("""
                         SELECT nombres || ' ' || apellidos, correo
@@ -856,8 +867,7 @@ with tab_pagos:
 
                     mensaje = f"""Hola {nombre_cliente},
 
-Se ha registrado correctamente el pago de la cuota #{primera_cuota_afectada}
-del crédito {prestamo.id}.
+Se ha registrado correctamente un pago para el crédito {prestamo.id}.
 
 📅 Fecha: {fecha_pago}
 💰 Valor pagado: {pesos(valor_pago)}
@@ -938,6 +948,7 @@ with col1:
 
 with col2:
     st.metric("Monto en mora", f"${monto_mora:,.0f}")
+    
 
 # ==========================
 # 🧮 SIMULADOR

@@ -653,13 +653,14 @@ with tab_pagos:
     fecha_pago = st.date_input("📅 Fecha de pago", value=date.today())
 
     from decimal import Decimal
-    
+
     valor_pago = st.number_input(
         "💵 Valor pagado",
         min_value=0.0,
         step=1000.0,
         value=float(prestamo.valor_cuota)
     )
+
     valor_pago = Decimal(str(valor_pago))
 
     # ==========================
@@ -667,7 +668,9 @@ with tab_pagos:
     # ==========================
 
     if not st.session_state.confirmar_pago and not st.session_state.procesando_pago:
+
         if st.button("Registrar pago", type="primary"):
+
             if valor_pago <= 0:
                 st.error("❌ El valor del pago debe ser mayor a cero")
                 st.stop()
@@ -676,6 +679,7 @@ with tab_pagos:
             st.rerun()
 
     if st.session_state.confirmar_pago and not st.session_state.procesando_pago:
+
         st.warning(
             f"⚠️ ¿Estás seguro de aplicar el pago de {pesos(valor_pago)} "
             f"al crédito {prestamo.id}?"
@@ -685,23 +689,29 @@ with tab_pagos:
 
         with col1:
             if st.button("✅ Sí, aplicar pago"):
+
                 st.session_state.procesando_pago = True
                 st.session_state.confirmar_pago = False
                 st.rerun()
 
         with col2:
             if st.button("❌ Cancelar"):
+
                 st.session_state.confirmar_pago = False
                 st.rerun()
 
-   # ==========================
+    # ==========================
     # PROCESAMIENTO
     # ==========================
+
     if st.session_state.procesando_pago:
+
         with st.spinner("⏳ Aplicando pago, por favor espera..."):
+
             try:
+
                 with get_conn() as conn:
-                    # 1. Obtener datos del préstamo
+
                     prestamo_db = conn.execute(
                         text("SELECT cliente_cedula, monto_original FROM prestamos WHERE id = :id"),
                         {"id": prestamo.id}
@@ -714,7 +724,6 @@ with tab_pagos:
 
                     cliente_cedula, monto_original = prestamo_db
 
-                    # 2. Obtener cuotas pendientes
                     cuotas = conn.execute(
                         text("SELECT id_cuota, valor_cuota, nro_cuota FROM cuotas WHERE prestamo_id = :id AND estado <> 'Pagada' ORDER BY nro_cuota ASC"),
                         {"id": prestamo.id}
@@ -728,12 +737,11 @@ with tab_pagos:
                     pago_restante = valor_pago
                     primera_cuota_afectada = None
 
-                    # 3. Distribuir el pago entre las cuotas
                     for id_cuota, valor_cuota, nro in cuotas:
+
                         if pago_restante <= 0:
                             break
 
-                        # Calcular cuánto se ha pagado de esta cuota
                         pagado_actual = conn.execute(
                             text("""
                                 SELECT COALESCE(SUM(p.valor), 0)
@@ -753,7 +761,6 @@ with tab_pagos:
                         if primera_cuota_afectada is None:
                             primera_cuota_afectada = nro
 
-                        # Insertar el pago y capturar el ID generado
                         result_pago = conn.execute(
                             text("""
                                 INSERT INTO pagos (prestamo_id, fecha_pago, valor, estado)
@@ -766,16 +773,16 @@ with tab_pagos:
                                 "valor": abono
                             }
                         )
+
                         id_pago = result_pago.fetchone()[0]
 
-                        # Relacionar pago con cuota
                         conn.execute(
                             text("INSERT INTO pagos_cuotas (id_pago, id_cuota) VALUES (:id_pago, :id_cuota)"),
                             {"id_pago": id_pago, "id_cuota": id_cuota}
                         )
 
-                        # Actualizar estado de la cuota
                         nuevo_estado = "Pagada" if abono == saldo_cuota else "Parcial"
+
                         conn.execute(
                             text("UPDATE cuotas SET estado = :estado WHERE id_cuota = :id_cuota"),
                             {"estado": nuevo_estado, "id_cuota": id_cuota}
@@ -783,7 +790,6 @@ with tab_pagos:
 
                         pago_restante -= abono
 
-                    # 4. Verificar si el préstamo se cerró
                     restantes = conn.execute(
                         text("SELECT COUNT(*) FROM cuotas WHERE prestamo_id = :id AND estado <> 'Pagada'"),
                         {"id": prestamo.id}
@@ -794,12 +800,9 @@ with tab_pagos:
                             text("UPDATE prestamos SET estado = 'Cerrado' WHERE id = :id"),
                             {"id": prestamo.id}
                         )
-                    
-                    # En SQLAlchemy 2.0 con 'with engine.connect()', el autocommit suele estar activo, 
-                    # pero algunas configuraciones requieren commit explícito:
-                    conn.commit() 
 
-          
+                    conn.commit()
+
                 # ==========================
                 # 📧 ENVÍO DE CORREO
                 # ==========================
@@ -858,6 +861,7 @@ CREDDT
                 st.rerun()
 
             except Exception as e:
+
                 st.session_state.procesando_pago = False
                 st.error(f"❌ Error al registrar pago: {e}")
 
@@ -866,6 +870,7 @@ CREDDT
     # ==========================
 
     if st.session_state.pago_msg:
+
         m = st.session_state.pago_msg
 
         if m["tiene_correo"] and m["correo"]:
@@ -875,12 +880,15 @@ CREDDT
                 f"📌 Cuota: #{m['cuota']}\n"
                 f"📧 Correo enviado al cliente"
             )
+
         elif m["tiene_correo"]:
             st.warning("⚠️ Pago registrado pero el correo NO pudo enviarse")
+
         else:
             st.success("✅ Pago registrado (cliente sin correo)")
 
         st.session_state.pago_msg = None
+
 
 # ==========================
 # ALERTAS DE CARTERA

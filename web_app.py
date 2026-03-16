@@ -474,6 +474,9 @@ for col in [
 # CALCULAR ALERTAS
 # ==========================
 
+clientes_mora = 0
+monto_mora = 0
+
 with get_conn() as conn:
 
     mora_df = pd.read_sql(
@@ -487,6 +490,11 @@ with get_conn() as conn:
         """,
         conn
     )
+
+    if not mora_df.empty:
+        clientes_mora = int(mora_df["clientes_mora"][0])
+        monto_mora = float(mora_df["monto_mora"][0])
+
 
 # ==========================
 # TABS

@@ -483,13 +483,10 @@ with get_conn() as conn:
             COALESCE(SUM(valor_cuota),0) as monto_mora
         FROM cuotas
         WHERE estado <> 'Pagada'
-        AND fecha_vencimiento < CURRENT_DATE
+        AND fecha_vencimiento::date < CURRENT_DATE
         """,
         conn
     )
-
-clientes_mora = int(mora_df["clientes_mora"][0])
-monto_mora = float(mora_df["monto_mora"][0])
 
 # ==========================
 # TABS

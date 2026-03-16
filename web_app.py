@@ -153,7 +153,7 @@ st.divider()
 SMTP_USER = st.secrets["SMTP_USER"]
 SMTP_PASS = st.secrets["SMTP_PASS"]
 SMTP_SERVER = st.secrets["SMTP_SERVER"]
-SMTP_PORT = st.secrets["SMTP_PORT"]
+SMTP_PORT = int(st.secrets["SMTP_PORT"])
 
 # ==========================
 # UTILIDADES

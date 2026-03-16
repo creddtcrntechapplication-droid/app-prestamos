@@ -458,6 +458,17 @@ with get_conn() as conn:
         conn
     )
 
+# ✅ asegurar tipos numéricos
+for col in [
+    "monto_original",
+    "monto_total_credito",
+    "valor_cuota",
+    "total_pagado",
+    "saldo"
+]:
+    if col in estado.columns:
+        estado[col] = pd.to_numeric(estado[col])
+
 # ==========================
 # CALCULAR ALERTAS
 # ==========================

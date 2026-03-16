@@ -652,12 +652,15 @@ with tab_pagos:
 
     fecha_pago = st.date_input("📅 Fecha de pago", value=date.today())
 
+    from decimal import Decimal
+    
     valor_pago = st.number_input(
         "💵 Valor pagado",
         min_value=0.0,
         step=1000.0,
         value=float(prestamo.valor_cuota)
     )
+    valor_pago = Decimal(str(valor_pago))
 
     # ==========================
     # CONFIRMACIÓN

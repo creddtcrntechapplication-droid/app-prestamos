@@ -628,6 +628,7 @@ with tab_detalle:
 
 import threading
 import time
+from decimal import Decimal
 
 if "pago_msg" not in st.session_state:
     st.session_state.pago_msg = None
@@ -653,8 +654,6 @@ with tab_pagos:
     prestamo = opciones[seleccion]
 
     fecha_pago = st.date_input("📅 Fecha de pago", value=date.today())
-
-    from decimal import Decimal
 
     valor_pago = st.number_input(
         "💵 Valor pagado",
@@ -691,14 +690,12 @@ with tab_pagos:
 
         with col1:
             if st.button("✅ Sí, aplicar pago"):
-
                 st.session_state.procesando_pago = True
                 st.session_state.confirmar_pago = False
                 st.rerun()
 
         with col2:
             if st.button("❌ Cancelar"):
-
                 st.session_state.confirmar_pago = False
                 st.rerun()
 
@@ -727,7 +724,13 @@ with tab_pagos:
                     cliente_cedula, monto_original = prestamo_db
 
                     cuotas = conn.execute(
-                        text("SELECT id_cuota, valor_cuota, nro_cuota FROM cuotas WHERE prestamo_id = :id AND estado <> 'Pagada' ORDER BY nro_cuota ASC"),
+                        text("""
+                        SELECT id_cuota, valor_cuota, nro_cuota
+                        FROM cuotas
+                        WHERE prestamo_id = :id
+                        AND estado <> 'Pagada'
+                        ORDER BY nro_cuota ASC
+                        """),
                         {"id": prestamo.id}
                     ).fetchall()
 
@@ -735,6 +738,20 @@ with tab_pagos:
                         st.info("ℹ️ Todas las cuotas ya están pagadas.")
                         st.session_state.procesando_pago = False
                         st.stop()
+
+                    # 🔥 CONSULTA OPTIMIZADA (1 sola)
+                    pagos_cuotas = conn.execute(
+                        text("""
+                            SELECT pc.id_cuota, COALESCE(SUM(p.valor),0) as pagado
+                            FROM pagos p
+                            JOIN pagos_cuotas pc ON p.id_pago = pc.id_pago
+                            WHERE p.prestamo_id = :id
+                            GROUP BY pc.id_cuota
+                        """),
+                        {"id": prestamo.id}
+                    ).fetchall()
+
+                    pagos_dict = {r[0]: r[1] for r in pagos_cuotas}
 
                     pago_restante = valor_pago
                     primera_cuota_afectada = None
@@ -744,15 +761,7 @@ with tab_pagos:
                         if pago_restante <= 0:
                             break
 
-                        pagado_actual = conn.execute(
-                            text("""
-                                SELECT COALESCE(SUM(p.valor), 0)
-                                FROM pagos p
-                                JOIN pagos_cuotas pc ON p.id_pago = pc.id_pago
-                                WHERE pc.id_cuota = :id_cuota
-                            """),
-                            {"id_cuota": id_cuota}
-                        ).fetchone()[0]
+                        pagado_actual = pagos_dict.get(id_cuota, 0)
 
                         saldo_cuota = valor_cuota - pagado_actual
                         abono = min(saldo_cuota, pago_restante)
@@ -779,21 +788,33 @@ with tab_pagos:
                         id_pago = result_pago.fetchone()[0]
 
                         conn.execute(
-                            text("INSERT INTO pagos_cuotas (id_pago, id_cuota) VALUES (:id_pago, :id_cuota)"),
+                            text("""
+                                INSERT INTO pagos_cuotas (id_pago, id_cuota)
+                                VALUES (:id_pago, :id_cuota)
+                            """),
                             {"id_pago": id_pago, "id_cuota": id_cuota}
                         )
 
                         nuevo_estado = "Pagada" if abono == saldo_cuota else "Parcial"
 
                         conn.execute(
-                            text("UPDATE cuotas SET estado = :estado WHERE id_cuota = :id_cuota"),
+                            text("""
+                                UPDATE cuotas
+                                SET estado = :estado
+                                WHERE id_cuota = :id_cuota
+                            """),
                             {"estado": nuevo_estado, "id_cuota": id_cuota}
                         )
 
                         pago_restante -= abono
 
                     restantes = conn.execute(
-                        text("SELECT COUNT(*) FROM cuotas WHERE prestamo_id = :id AND estado <> 'Pagada'"),
+                        text("""
+                        SELECT COUNT(*)
+                        FROM cuotas
+                        WHERE prestamo_id = :id
+                        AND estado <> 'Pagada'
+                        """),
                         {"id": prestamo.id}
                     ).fetchone()[0]
 
@@ -805,18 +826,18 @@ with tab_pagos:
 
                     conn.commit()
 
-                # ==========================
-                # 📧 ENVÍO DE CORREO (THREAD)
-                # ==========================
+                    # 🔗 TRAER CLIENTE CON MISMA CONEXIÓN
+                    cliente = conn.execute(
+                        text("""
+                        SELECT nombres || ' ' || apellidos, correo
+                        FROM clientes
+                        WHERE cedula = :cedula
+                        """),
+                        {"cedula": cliente_cedula}
+                    ).fetchone()
 
-                cliente = ejecutar_sql(
-                    "SELECT nombres || ' ' || apellidos, correo FROM clientes WHERE cedula = :cedula",
-                    {"cedula": cliente_cedula},
-                    fetch=True
-                )
-
-                nombre_cliente = cliente[0][0] if cliente else "Cliente"
-                correo_cliente = cliente[0][1] if cliente else None
+                nombre_cliente = cliente[0] if cliente else "Cliente"
+                correo_cliente = cliente[1] if cliente else None
 
                 correo_ok = False
 

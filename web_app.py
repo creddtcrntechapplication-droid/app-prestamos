@@ -413,8 +413,6 @@ def enviar_correo_async(
 # CARGAR ESTADO GENERAL
 # ==========================
 
-import pandas as pd
-
 with get_conn() as conn:
 
     estado = pd.read_sql(
@@ -423,14 +421,16 @@ with get_conn() as conn:
             p.id,
             p.estado,
             p.monto_original,
-            p.monto_total_credito,
+
+            (p.valor_cuota * p.cuotas) AS monto_total_credito,
+
             p.valor_cuota,
             p.cuotas,
             p.tipo,
 
             COALESCE(SUM(pg.valor),0) AS total_pagado,
 
-            p.monto_total_credito
+            (p.valor_cuota * p.cuotas)
             - COALESCE(SUM(pg.valor),0) AS saldo,
 
             c.nombres || ' ' || c.apellidos AS cliente
@@ -447,7 +447,6 @@ with get_conn() as conn:
             p.id,
             p.estado,
             p.monto_original,
-            p.monto_total_credito,
             p.valor_cuota,
             p.cuotas,
             p.tipo,
@@ -458,7 +457,6 @@ with get_conn() as conn:
         """,
         conn
     )
-
 
 # ==========================
 # CALCULAR ALERTAS

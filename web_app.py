@@ -438,10 +438,10 @@ with get_conn() as conn:
         FROM prestamos p
 
         LEFT JOIN pagos pg
-        ON pg.prestamo_id = p.id
+            ON pg.prestamo_id = p.id
 
         LEFT JOIN clientes c
-        ON c.cedula = p.cliente_cedula
+            ON c.cedula = p.cliente_cedula
 
         GROUP BY
             p.id,
@@ -458,7 +458,8 @@ with get_conn() as conn:
         conn
     )
 
-# ✅ asegurar tipos numéricos
+
+# asegurar tipos numéricos
 for col in [
     "monto_original",
     "monto_total_credito",

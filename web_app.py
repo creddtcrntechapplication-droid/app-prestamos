@@ -497,6 +497,27 @@ with get_conn() as conn:
 
 
 # ==========================
+# FUNCIONES SIMULADOR
+# ==========================
+
+def calcular_cuota_normal(monto, cuotas):
+    if cuotas == 0:
+        return 0
+    return monto / cuotas
+
+
+def calcular_cuota_express(monto, cuotas, frecuencia):
+    if cuotas == 0:
+        return 0
+
+    interes = 0.20
+    total = monto + (monto * interes)
+
+    return total / cuotas
+
+
+
+# ==========================
 # TABS
 # ==========================
 tab_resumen, tab_detalle, tab_pagos, tab_sim = st.tabs([

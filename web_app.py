@@ -743,250 +743,195 @@ with tab_pagos:
                 st.rerun()
 
 
-   # ==========================
-# PROCESAMIENTO
-# ==========================
+    # ==========================
+    # PROCESAMIENTO (🔴 IMPORTANTE: AQUÍ ADENTRO)
+    # ==========================
 
-if st.session_state.procesando_pago:
+    if st.session_state.procesando_pago:
 
-    st.session_state.procesando_pago = False  # ✅ evita doble pago
+        st.session_state.procesando_pago = False
 
-    with st.spinner("⏳ Aplicando pago, por favor espera..."):
+        with st.spinner("⏳ Aplicando pago, por favor espera..."):
 
-        try:
+            try:
 
-            with get_conn() as conn:
+                with get_conn() as conn:
 
-                prestamo_db = conn.execute(
-                    text("SELECT cliente_cedula, monto_original FROM prestamos WHERE id = :id"),
-                    {"id": prestamo.id}
-                ).fetchone()
-
-                if not prestamo_db:
-                    st.error("❌ No se pudo obtener el préstamo")
-                    st.stop()
-
-                cliente_cedula, monto_original = prestamo_db
-
-                cuotas = conn.execute(
-                    text("""
-                    SELECT id_cuota, valor_cuota, nro_cuota
-                    FROM cuotas
-                    WHERE prestamo_id = :id
-                    AND estado <> 'Pagada'
-                    ORDER BY nro_cuota ASC
-                    """),
-                    {"id": prestamo.id}
-                ).fetchall()
-
-                if not cuotas:
-                    st.info("ℹ️ Todas las cuotas ya están pagadas.")
-                    st.stop()
-
-                pagos_cuotas = conn.execute(
-                    text("""
-                        SELECT pc.id_cuota, COALESCE(SUM(p.valor),0) as pagado
-                        FROM pagos p
-                        JOIN pagos_cuotas pc ON p.id_pago = pc.id_pago
-                        WHERE p.prestamo_id = :id
-                        GROUP BY pc.id_cuota
-                    """),
-                    {"id": prestamo.id}
-                ).fetchall()
-
-                pagos_dict = {r[0]: r[1] for r in pagos_cuotas}
-
-                pago_restante = valor_pago
-                primera_cuota_afectada = None
-                cuotas_afectadas = []
-
-                for id_cuota, valor_cuota, nro in cuotas:
-
-                    if pago_restante <= 0:
-                        break
-
-                    pagado_actual = pagos_dict.get(id_cuota, 0)
-
-                    saldo_cuota = valor_cuota - pagado_actual
-                    abono = min(saldo_cuota, pago_restante)
-
-                    if abono <= 0:
-                        continue
-
-                    if primera_cuota_afectada is None:
-                        primera_cuota_afectada = nro
-
-                    cuotas_afectadas.append((id_cuota, saldo_cuota, abono))
-
-                    pago_restante -= abono
-
-                if not cuotas_afectadas:
-                    st.warning("⚠️ No se pudo aplicar el pago a ninguna cuota.")
-                    st.stop()
-
-                result_pago = conn.execute(
-                    text("""
-                        INSERT INTO pagos (prestamo_id, fecha_pago, valor, estado)
-                        VALUES (:id, :fecha, :valor, 'Pagado')
-                        RETURNING id_pago
-                    """),
-                    {
-                        "id": prestamo.id,
-                        "fecha": fecha_pago.isoformat(),
-                        "valor": valor_pago
-                    }
-                )
-
-                id_pago = result_pago.fetchone()[0]
-
-                for id_cuota, saldo_cuota, abono in cuotas_afectadas:
-
-                    conn.execute(
-                        text("""
-                            INSERT INTO pagos_cuotas (id_pago, id_cuota)
-                            VALUES (:id_pago, :id_cuota)
-                        """),
-                        {"id_pago": id_pago, "id_cuota": id_cuota}
-                    )
-
-                    nuevo_estado = "Pagada" if abono == saldo_cuota else "Parcial"
-
-                    conn.execute(
-                        text("""
-                            UPDATE cuotas
-                            SET estado = :estado
-                            WHERE id_cuota = :id_cuota
-                        """),
-                        {"estado": nuevo_estado, "id_cuota": id_cuota}
-                    )
-
-                restantes = conn.execute(
-                    text("""
-                    SELECT COUNT(*)
-                    FROM cuotas
-                    WHERE prestamo_id = :id
-                    AND estado <> 'Pagada'
-                    """),
-                    {"id": prestamo.id}
-                ).fetchone()[0]
-
-                if restantes == 0:
-                    conn.execute(
-                        text("UPDATE prestamos SET estado = 'Cerrado' WHERE id = :id"),
+                    prestamo_db = conn.execute(
+                        text("SELECT cliente_cedula, monto_original FROM prestamos WHERE id = :id"),
                         {"id": prestamo.id}
+                    ).fetchone()
+
+                    if not prestamo_db:
+                        st.error("❌ No se pudo obtener el préstamo")
+                        st.stop()
+
+                    cliente_cedula, monto_original = prestamo_db
+
+                    cuotas = conn.execute(
+                        text("""
+                        SELECT id_cuota, valor_cuota, nro_cuota
+                        FROM cuotas
+                        WHERE prestamo_id = :id
+                        AND estado <> 'Pagada'
+                        ORDER BY nro_cuota ASC
+                        """),
+                        {"id": prestamo.id}
+                    ).fetchall()
+
+                    if not cuotas:
+                        st.info("ℹ️ Todas las cuotas ya están pagadas.")
+                        st.stop()
+
+                    pagos_cuotas = conn.execute(
+                        text("""
+                            SELECT pc.id_cuota, COALESCE(SUM(p.valor),0)
+                            FROM pagos p
+                            JOIN pagos_cuotas pc ON p.id_pago = pc.id_pago
+                            WHERE p.prestamo_id = :id
+                            GROUP BY pc.id_cuota
+                        """),
+                        {"id": prestamo.id}
+                    ).fetchall()
+
+                    pagos_dict = {r[0]: r[1] for r in pagos_cuotas}
+
+                    pago_restante = valor_pago
+                    primera_cuota_afectada = None
+                    cuotas_afectadas = []
+
+                    for id_cuota, valor_cuota, nro in cuotas:
+
+                        if pago_restante <= 0:
+                            break
+
+                        pagado_actual = pagos_dict.get(id_cuota, 0)
+                        saldo_cuota = valor_cuota - pagado_actual
+                        abono = min(saldo_cuota, pago_restante)
+
+                        if abono <= 0:
+                            continue
+
+                        if primera_cuota_afectada is None:
+                            primera_cuota_afectada = nro
+
+                        cuotas_afectadas.append((id_cuota, saldo_cuota, abono))
+                        pago_restante -= abono
+
+                    if not cuotas_afectadas:
+                        st.warning("⚠️ No se pudo aplicar el pago.")
+                        st.stop()
+
+                    result_pago = conn.execute(
+                        text("""
+                            INSERT INTO pagos (prestamo_id, fecha_pago, valor, estado)
+                            VALUES (:id, :fecha, :valor, 'Pagado')
+                            RETURNING id_pago
+                        """),
+                        {
+                            "id": prestamo.id,
+                            "fecha": fecha_pago.isoformat(),
+                            "valor": valor_pago
+                        }
                     )
 
-                conn.commit()
+                    id_pago = result_pago.fetchone()[0]
 
-                cliente = conn.execute(
-                    text("""
-                    SELECT nombres || ' ' || apellidos, correo
-                    FROM clientes
-                    WHERE cedula = :cedula
-                    """),
-                    {"cedula": cliente_cedula}
-                ).fetchone()
+                    for id_cuota, saldo_cuota, abono in cuotas_afectadas:
 
-            nombre_cliente = cliente[0] if cliente else "Cliente"
-            correo_cliente = cliente[1] if cliente else None
+                        conn.execute(
+                            text("""
+                                INSERT INTO pagos_cuotas (id_pago, id_cuota)
+                                VALUES (:id_pago, :id_cuota)
+                            """),
+                            {"id_pago": id_pago, "id_cuota": id_cuota}
+                        )
 
-            correo_ok = False
+                        estado_cuota = "Pagada" if abono == saldo_cuota else "Parcial"
 
-            if correo_cliente:
+                        conn.execute(
+                            text("""
+                                UPDATE cuotas
+                                SET estado = :estado
+                                WHERE id_cuota = :id_cuota
+                            """),
+                            {"estado": estado_cuota, "id_cuota": id_cuota}
+                        )
 
-                try:
-                    # ==========================
-                    # GENERAR PDF
-                    # ==========================
-                    recibo_pdf = generar_recibo_pdf(
-                        prestamo.id,
-                        nombre_cliente,
-                        monto_original,
-                        fecha_pago.isoformat(),
-                        valor_pago
-                    )
+                    conn.commit()
 
-                    with open(recibo_pdf, "rb") as f:
-                        pdf_bytes = f.read()
+                    cliente = conn.execute(
+                        text("""
+                        SELECT nombres || ' ' || apellidos, correo
+                        FROM clientes
+                        WHERE cedula = :cedula
+                        """),
+                        {"cedula": cliente_cedula}
+                    ).fetchone()
 
-                    mensaje = f"""Hola {nombre_cliente},
+                nombre_cliente = cliente[0] if cliente else "Cliente"
+                correo_cliente = cliente[1] if cliente else None
 
-Se ha registrado correctamente un pago para el crédito {prestamo.id}.
+                # ==========================
+                # ENVÍO CORREO
+                # ==========================
 
-Fecha: {fecha_pago}
-Valor pagado: {pesos(valor_pago)}
-
-Adjuntamos su recibo en PDF.
-
-CREDDT
-"""
-
-                    # ==========================
-                    # ENVÍO EN BACKGROUND
-                    # ==========================
+                if correo_cliente:
                     import threading
 
-                    def enviar_email_bg():
+                    def enviar_bg():
                         try:
-                            ok = enviar_correo_async(
-                                correo_cliente,
-                                f"Recibo de pago - Crédito {prestamo.id}",
-                                mensaje,
-                                attachment_bytes=pdf_bytes,
-                                attachment_name=f"recibo_{prestamo.id}.pdf"
+                            pdf = generar_recibo_pdf(
+                                prestamo.id,
+                                nombre_cliente,
+                                monto_original,
+                                fecha_pago.isoformat(),
+                                valor_pago
                             )
-                            print("Correo enviado:", ok)
+
+                            with open(pdf, "rb") as f:
+                                enviar_correo_async(
+                                    correo_cliente,
+                                    f"Recibo pago {prestamo.id}",
+                                    f"Hola {nombre_cliente}, pago recibido.",
+                                    attachment_bytes=f.read(),
+                                    attachment_name="recibo.pdf"
+                                )
                         except Exception as e:
-                            print("ERROR HILO CORREO:", e)
+                            print("ERROR CORREO:", e)
 
-                    threading.Thread(target=enviar_email_bg).start()
+                    threading.Thread(target=enviar_bg).start()
 
-                    correo_ok = True
+                st.session_state.pago_msg = {
+                    "credito": prestamo.id,
+                    "cuota": primera_cuota_afectada,
+                    "correo": bool(correo_cliente),
+                    "tiene_correo": bool(correo_cliente)
+                }
 
-                except Exception as e:
-                    st.error(f"❌ Error preparando correo: {e}")
-                    correo_ok = False
+                st.session_state.confirmar_pago = False
+                time.sleep(0.3)
+                st.rerun()
 
-            st.session_state.pago_msg = {
-                "credito": prestamo.id,
-                "cuota": primera_cuota_afectada,
-                "correo": correo_ok,
-                "tiene_correo": bool(correo_cliente)
-            }
+            except Exception as e:
+                st.error(f"❌ Error: {e}")
 
-            st.session_state.confirmar_pago = False
-
-            time.sleep(0.3)
-            st.rerun()
-
-        except Exception as e:
-
-            st.error(f"❌ Error al registrar pago: {e}")
 
     # ==========================
-    # MENSAJE FINAL
+    # MENSAJE FINAL (🔴 TAMBIÉN ADENTRO)
     # ==========================
 
     if st.session_state.pago_msg:
 
         m = st.session_state.pago_msg
 
-        if m["tiene_correo"] and m["correo"]:
-            st.success(
-                f"Pago registrado\n"
-                f"Crédito: {m['credito']}\n"
-                f"Cuota: #{m['cuota']}\n"
-                f"Correo enviado"
-            )
-
-        elif m["tiene_correo"]:
-            st.warning("Pago registrado pero el correo NO se envió")
+        if m["tiene_correo"]:
+            st.success(f"✅ Pago registrado - Crédito {m['credito']}")
 
         else:
-            st.success("Pago registrado (cliente sin correo)")
+            st.success("✅ Pago registrado (sin correo)")
 
         st.session_state.pago_msg = None
-
 
 # ==========================
 # ALERTAS DE CARTERA

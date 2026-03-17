@@ -282,7 +282,7 @@ def generar_recibo_pdf(prestamo_id, cliente, monto_credito, fecha_pago, valor_pa
         name='Valor',
         parent=estilos['Normal'],
         fontSize=12,
-        Color=colors.black,
+        textColor=colors.black,
         spaceAfter=12
     )
 

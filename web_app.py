@@ -1127,30 +1127,207 @@ tab_resumen, tab_detalle, tab_pagos, tab_sim = st.tabs([
 # 📊 RESUMEN
 # ==========================
 with tab_resumen:
-    st.subheader("📊 Resumen general")
+    st.markdown("""
+    <style>
+    .dashboard-card {
+        background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+        border: 1px solid #e5e7eb;
+        border-radius: 18px;
+        padding: 18px 18px 14px 18px;
+        box-shadow: 0 4px 14px rgba(15, 23, 42, 0.05);
+        margin-bottom: 12px;
+    }
+    .dashboard-card-title {
+        font-size: 13px;
+        color: #64748b;
+        margin-bottom: 8px;
+        font-weight: 600;
+    }
+    .dashboard-card-value {
+        font-size: 28px;
+        font-weight: 800;
+        color: #0f172a;
+        line-height: 1.1;
+    }
+    .dashboard-card-sub {
+        font-size: 12px;
+        color: #94a3b8;
+        margin-top: 6px;
+    }
+    .risk-card {
+        border-radius: 18px;
+        padding: 18px;
+        color: #0f172a;
+        border: 1px solid #fde68a;
+        background: linear-gradient(180deg, #fffdf7 0%, #fffbeb 100%);
+        box-shadow: 0 4px 14px rgba(245, 158, 11, 0.08);
+        min-height: 140px;
+        margin-bottom: 12px;
+    }
+    .risk-title {
+        font-size: 13px;
+        color: #92400e;
+        font-weight: 700;
+        margin-bottom: 8px;
+    }
+    .risk-value {
+        font-size: 30px;
+        font-weight: 800;
+        color: #7c2d12;
+        line-height: 1.1;
+    }
+    .risk-sub {
+        font-size: 12px;
+        color: #a16207;
+        margin-top: 8px;
+    }
+    .section-box {
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-radius: 18px;
+        padding: 18px;
+        box-shadow: 0 4px 14px rgba(15, 23, 42, 0.04);
+        margin-bottom: 16px;
+    }
+    .section-title {
+        font-size: 18px;
+        font-weight: 800;
+        color: #0f172a;
+        margin-bottom: 4px;
+    }
+    .section-subtitle {
+        font-size: 13px;
+        color: #64748b;
+        margin-bottom: 14px;
+    }
+    .mini-card {
+        background: #ffffff;
+        color: #111827;
+        border: 1px solid #e5e7eb;
+        border-radius: 16px;
+        padding: 16px;
+        box-shadow: 0 2px 8px rgba(0,0,0,.05);
+        margin-bottom: 12px;
+    }
+    .mini-card-title {
+        font-size: 13px;
+        color: #64748b;
+        font-weight: 600;
+        margin-bottom: 8px;
+    }
+    .mini-card-value {
+        font-size: 26px;
+        font-weight: 800;
+        color: #0f172a;
+    }
+    .mini-card-foot {
+        font-size: 12px;
+        color: #94a3b8;
+        margin-top: 6px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    total_colocado = estado["monto_original"].sum()
+    total_cobrado = estado["total_pagado"].sum()
+    saldo_pendiente = estado["saldo"].sum()
+    creditos_activos = estado[estado["estado"] != "Cancelado"].shape[0]
+    mora_ratio = 0 if saldo_pendiente <= 0 else (monto_mora / saldo_pendiente) * 100
+
+    st.markdown('<div class="section-box">', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">📊 Resumen general</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-subtitle">Vista ejecutiva del comportamiento actual de la cartera, el recaudo y el nivel de riesgo.</div>', unsafe_allow_html=True)
 
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("💰 Total colocado", pesos(estado["monto_original"].sum()))
-    k2.metric("✅ Total cobrado", pesos(estado["total_pagado"].sum()))
-    k3.metric("⏳ Saldo pendiente", pesos(estado["saldo"].sum()))
-    k4.metric("📄 Créditos activos", estado[estado["estado"] != "Cancelado"].shape[0])
 
-    st.divider()
+    with k1:
+        st.markdown(f'''
+        <div class="dashboard-card">
+            <div class="dashboard-card-title">💰 Total colocado</div>
+            <div class="dashboard-card-value">{pesos(total_colocado)}</div>
+            <div class="dashboard-card-sub">Capital total desembolsado</div>
+        </div>
+        ''', unsafe_allow_html=True)
+
+    with k2:
+        st.markdown(f'''
+        <div class="dashboard-card">
+            <div class="dashboard-card-title">✅ Total cobrado</div>
+            <div class="dashboard-card-value">{pesos(total_cobrado)}</div>
+            <div class="dashboard-card-sub">Recaudo acumulado registrado</div>
+        </div>
+        ''', unsafe_allow_html=True)
+
+    with k3:
+        st.markdown(f'''
+        <div class="dashboard-card">
+            <div class="dashboard-card-title">⏳ Saldo pendiente</div>
+            <div class="dashboard-card-value">{pesos(saldo_pendiente)}</div>
+            <div class="dashboard-card-sub">Saldo total aún por recuperar</div>
+        </div>
+        ''', unsafe_allow_html=True)
+
+    with k4:
+        st.markdown(f'''
+        <div class="dashboard-card">
+            <div class="dashboard-card-title">📄 Créditos activos</div>
+            <div class="dashboard-card-value">{creditos_activos}</div>
+            <div class="dashboard-card-sub">Créditos vigentes no cancelados</div>
+        </div>
+        ''', unsafe_allow_html=True)
+
+    r1, r2, r3 = st.columns(3)
+
+    with r1:
+        st.markdown(f'''
+        <div class="risk-card">
+            <div class="risk-title">⚠ Clientes en mora</div>
+            <div class="risk-value">{clientes_mora}</div>
+            <div class="risk-sub">Créditos con alerta prioritaria de seguimiento</div>
+        </div>
+        ''', unsafe_allow_html=True)
+
+    with r2:
+        st.markdown(f'''
+        <div class="risk-card">
+            <div class="risk-title">💸 Monto en mora</div>
+            <div class="risk-value">{pesos(monto_mora)}</div>
+            <div class="risk-sub">Valor acumulado vencido en cartera</div>
+        </div>
+        ''', unsafe_allow_html=True)
+
+    with r3:
+        st.markdown(f'''
+        <div class="risk-card">
+            <div class="risk-title">📌 Exposición en mora</div>
+            <div class="risk-value">{mora_ratio:.1f}%</div>
+            <div class="risk-sub">Participación del atraso sobre el saldo pendiente</div>
+        </div>
+        ''', unsafe_allow_html=True)
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="section-box">', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">📋 Detalle general de créditos</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-subtitle">Resumen consolidado por crédito con estado, cuota, saldo y tipo.</div>', unsafe_allow_html=True)
 
     df = estado.copy()
-    for c in ["monto_original","monto_total_credito","total_pagado","saldo","valor_cuota"]:
+    for c in ["monto_original", "monto_total_credito", "total_pagado", "saldo", "valor_cuota"]:
         df[c] = df[c].apply(pesos)
 
-    st.dataframe(df[
-        ["id","cliente","monto_original","monto_total_credito",
-         "total_pagado","saldo","valor_cuota","cuotas","tipo","estado"]
-    ], use_container_width=True)
+    st.dataframe(
+        df[[
+            "id", "cliente", "monto_original", "monto_total_credito",
+            "total_pagado", "saldo", "valor_cuota", "cuotas", "tipo", "estado"
+        ]],
+        use_container_width=True,
+        hide_index=True
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
 
-    # ==========================
-    # 🔎 CONSULTA MENSUAL
-    # ==========================
-    st.divider()
-    st.subheader("🔎 Consulta mensual (corte 02 → 02)")
+    st.markdown('<div class="section-box">', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">🔎 Consulta mensual</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-subtitle">Corte operativo del período para análisis de cuotas, recaudo y pendientes.</div>', unsafe_allow_html=True)
 
     mes_consulta = st.selectbox(
         "Selecciona el mes",
@@ -1160,18 +1337,15 @@ with tab_resumen:
     year, month = map(int, mes_consulta.split("-"))
 
     if year == 2025 and month == 12:
-        inicio = datetime(2025,12,15)
-        fin = datetime(2026,1,1)
+        inicio = datetime(2025, 12, 15)
+        fin = datetime(2026, 1, 1)
     elif year == 2026 and month == 1:
-        inicio = datetime(2026,1,1)
-        fin = datetime(2026,2,2)
+        inicio = datetime(2026, 1, 1)
+        fin = datetime(2026, 2, 2)
     else:
         inicio = datetime(year, month, 3)
-        fin = datetime(year + (month==12), 1 if month==12 else month+1, 2)
+        fin = datetime(year + (month == 12), 1 if month == 12 else month + 1, 2)
 
-    # 🔥 ÚNICO CAMBIO REAL: <=
-
-    # Corregido: Indentación alineada y uso de parámetros PostgreSQL
     with get_conn() as conn:
         cuotas_df = pd.read_sql(text("""
             SELECT cu.fecha_vencimiento, cu.valor_cuota, cu.estado, cu.nro_cuota,
@@ -1185,62 +1359,80 @@ with tab_resumen:
         """), conn, params={"inicio": inicio, "fin": fin})
 
     total_periodo = cuotas_df["valor_cuota"].sum() if not cuotas_df.empty else 0
-    pagado_periodo = cuotas_df[cuotas_df["estado"]=="Pagada"]["valor_cuota"].sum()
-    pendiente_periodo = cuotas_df[cuotas_df["estado"].isin(["Pendiente","Parcial"])]["valor_cuota"].sum()
+    pagado_periodo = cuotas_df[cuotas_df["estado"] == "Pagada"]["valor_cuota"].sum() if not cuotas_df.empty else 0
+    pendiente_periodo = cuotas_df[cuotas_df["estado"].isin(["Pendiente", "Parcial"])]["valor_cuota"].sum() if not cuotas_df.empty else 0
 
-    c1,c2,c3 = st.columns(3)
+    c1, c2, c3 = st.columns(3)
 
     with c1:
-        if st.button("📥 Cuotas del período"):
-            st.session_state.detalle="total"
-        st.metric("", pesos(total_periodo))
+        st.markdown(f'''
+        <div class="mini-card">
+            <div class="mini-card-title">📥 Cuotas del período</div>
+            <div class="mini-card-value">{pesos(total_periodo)}</div>
+            <div class="mini-card-foot">Total programado en el corte seleccionado</div>
+        </div>
+        ''', unsafe_allow_html=True)
+        if st.button("Ver cuotas del período", key="btn_total_periodo"):
+            st.session_state.detalle = "total"
 
     with c2:
-        if st.button("✅ Pagado en el período"):
-            st.session_state.detalle="pagado"
-        st.metric("", pesos(pagado_periodo))
+        st.markdown(f'''
+        <div class="mini-card">
+            <div class="mini-card-title">✅ Pagado en el período</div>
+            <div class="mini-card-value">{pesos(pagado_periodo)}</div>
+            <div class="mini-card-foot">Cuotas cubiertas dentro del corte</div>
+        </div>
+        ''', unsafe_allow_html=True)
+        if st.button("Ver pagadas", key="btn_pagado_periodo"):
+            st.session_state.detalle = "pagado"
 
     with c3:
-        if st.button("⏳ Pendiente del período"):
-            st.session_state.detalle="pendiente"
-        st.metric("", pesos(pendiente_periodo))
+        st.markdown(f'''
+        <div class="mini-card">
+            <div class="mini-card-title">⏳ Pendiente del período</div>
+            <div class="mini-card-value">{pesos(pendiente_periodo)}</div>
+            <div class="mini-card-foot">Cuotas aún pendientes o parciales</div>
+        </div>
+        ''', unsafe_allow_html=True)
+        if st.button("Ver pendientes", key="btn_pendiente_periodo"):
+            st.session_state.detalle = "pendiente"
 
-    # ==========================
-    # 🟦 CARDS
-    # ==========================
     if "detalle" in st.session_state and not cuotas_df.empty:
-        st.divider()
+        st.markdown("---")
 
-        if st.session_state.detalle=="total":
-            df_detalle=cuotas_df
-            titulo="📋 Todas las cuotas"
-        elif st.session_state.detalle=="pagado":
-            df_detalle=cuotas_df[cuotas_df["estado"]=="Pagada"]
-            titulo="✅ Pagadas"
+        if st.session_state.detalle == "total":
+            df_detalle = cuotas_df
+            titulo = "📋 Todas las cuotas del período"
+        elif st.session_state.detalle == "pagado":
+            df_detalle = cuotas_df[cuotas_df["estado"] == "Pagada"]
+            titulo = "✅ Cuotas pagadas del período"
         else:
-            df_detalle=cuotas_df[cuotas_df["estado"].isin(["Pendiente","Parcial"])]
-            titulo="⏳ Pendientes"
+            df_detalle = cuotas_df[cuotas_df["estado"].isin(["Pendiente", "Parcial"])]
+            titulo = "⏳ Cuotas pendientes del período"
 
-        st.markdown(f"### {titulo}")
+        st.markdown(f'<div class="section-title">{titulo}</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-subtitle">Detalle visual de las cuotas asociadas al corte seleccionado.</div>', unsafe_allow_html=True)
+
         cols = st.columns(3)
+        for i, r in enumerate(df_detalle.itertuples()):
+            with cols[i % 3]:
+                if r.estado == "Pagada":
+                    estado_color = "🟢 Pagada"
+                elif r.estado == "Parcial":
+                    estado_color = "🟡 Parcial"
+                else:
+                    estado_color = "🔴 Pendiente"
 
-        for i,r in enumerate(df_detalle.itertuples()):
-            with cols[i%3]:
-                estado_color = "🟢 Pagada" if r.estado=="Pagada" else "🟡 Parcial" if r.estado=="Parcial" else "🔴 Pendiente"
                 st.markdown(f"""
-                <div style="background:#ffffff;color:#111;border-radius:14px;padding:14px;
-                            box-shadow:0 2px 6px rgba(0,0,0,.08);margin-bottom:14px;">
-                    <div style="font-weight:600;font-size:15px;color:#000">{r.cliente}</div>
-                    <div style="font-size:13px;color:#555;margin-top:4px;">
-                        Cuota #{r.nro_cuota} · {r.fecha_vencimiento}
-                    </div>
-                    <div style="font-size:16px;font-weight:700;margin-top:6px;">
-                        {pesos(r.valor_cuota)}
-                    </div>
-                    <div style="font-size:13px;margin-top:4px;">{estado_color}</div>
+                <div class=\"mini-card\">
+                    <div class=\"mini-card-title\">{r.cliente}</div>
+                    <div style=\"font-size:13px;color:#64748b;\">Cuota #{r.nro_cuota} · {r.fecha_vencimiento}</div>
+                    <div class=\"mini-card-value\" style=\"font-size:22px;margin-top:8px;\">{pesos(r.valor_cuota)}</div>
+                    <div class=\"mini-card-foot\">{estado_color}</div>
                 </div>
-                """, unsafe_allow_html=True) 
+                """, unsafe_allow_html=True)
 
+    st.markdown('</div>', unsafe_allow_html=True)
 # ==========================
 # 📄 DETALLE
 # ==========================
@@ -1381,21 +1573,6 @@ with tab_pagos:
                 st.success(f"✅ Abono a capital registrado - Crédito {m['credito']}")
 
         st.session_state.pago_msg = None
-
-# ==========================
-# ALERTAS DE CARTERA
-# ==========================
-
-st.subheader("⚠ Alertas de cartera")
-
-col1, col2 = st.columns(2)
-
-with col1:
-    st.metric("Clientes en mora", clientes_mora)
-
-with col2:
-    st.metric("Monto en mora", f"${monto_mora:,.0f}")
-    
 
 # ==========================
 # 🧮 SIMULADOR

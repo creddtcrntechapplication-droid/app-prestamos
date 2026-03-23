@@ -372,6 +372,29 @@ def enviar_correo_mailersend(
         if not destino:
             return False, "Cliente sin correo registrado"
 
+        cuerpo = (cuerpo or "").strip()
+        cuerpo_html = cuerpo.replace("\n", "<br>")
+
+        html_template = f"""
+        <div style="font-family: Arial, Helvetica, sans-serif; background-color: #f4f6f8; padding: 30px;">
+            <div style="max-width: 650px; margin: 0 auto; background: #ffffff; border-radius: 10px; overflow: hidden; border: 1px solid #e5e7eb;">
+                <div style="background: #0f172a; padding: 24px 30px;">
+                    <h2 style="margin: 0; color: #ffffff; font-size: 22px;">CREDDT CRNTECH</h2>
+                    <p style="margin: 8px 0 0 0; color: #cbd5e1; font-size: 14px;">Confirmación de pago</p>
+                </div>
+
+                <div style="padding: 30px; color: #1f2937; font-size: 15px; line-height: 1.7; white-space: normal;">
+                    {cuerpo_html}
+                </div>
+
+                <div style="padding: 20px 30px; background: #f8fafc; border-top: 1px solid #e5e7eb; color: #64748b; font-size: 12px; line-height: 1.6;">
+                    Este mensaje fue generado automáticamente por CREDDT CRNTECH.<br>
+                    Si requiere soporte o validación adicional, puede responder a este correo.
+                </div>
+            </div>
+        </div>
+        """
+
         payload = {
             "from": {
                 "email": MAILERSEND_FROM_EMAIL,
@@ -385,7 +408,7 @@ def enviar_correo_mailersend(
             ],
             "subject": asunto,
             "text": cuerpo,
-            "html": f"<p>{cuerpo}</p>"
+            "html": html_template
         }
 
         if attachment_bytes:
@@ -919,11 +942,32 @@ with tab_pagos:
                             valor_pago
                         )
 
+                        cuerpo_correo = f"""Estimado(a) {nombre_cliente},
+
+Reciba un cordial saludo.
+
+Le confirmamos que su pago ha sido registrado exitosamente en nuestro sistema.
+
+Adjunto a este correo encontrará el comprobante correspondiente para su revisión y soporte.
+
+Información del pago:
+- Crédito: {prestamo.id}
+- Fecha de pago: {fecha_pago.isoformat()}
+- Valor pagado: $ {valor_pago:,.0f}
+
+Agradecemos su gestión y confianza en CREDDT CRNTECH.
+
+Cordialmente,
+
+CREDDT CRNTECH
+Área Administrativa y Financiera
+"""
+
                         with open(pdf, "rb") as f:
                             correo_ok, correo_error = enviar_correo_async(
                                 correo_cliente,
                                 f"Recibo pago {prestamo.id}",
-                                f"Hola {nombre_cliente}, pago recibido.",
+                                cuerpo_correo,
                                 attachment_bytes=f.read(),
                                 attachment_name=f"recibo_{prestamo.id}.pdf"
                             )

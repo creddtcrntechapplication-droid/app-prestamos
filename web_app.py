@@ -148,7 +148,7 @@ col1, col2, col3 = st.columns([1,4,1])
 with col2:
     st.image("logo_creddt.png", width=90)
     st.markdown("""
-    <h1 style='text-align:center;margin-bottom:0;'>CREDT | CRNTECH</h1>
+    <h1 style='text-align:center;margin-bottom:0;'>CREDDT | CRNTECH</h1>
     <p style='text-align:center;color:#666;'>Plataforma inteligente de gestión de créditos</p>
     """, unsafe_allow_html=True)
 

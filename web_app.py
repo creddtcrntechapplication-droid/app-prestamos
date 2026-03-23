@@ -4,6 +4,9 @@ import os
 import tempfile
 import base64
 import requests
+import math
+import time
+from decimal import Decimal
 
 from datetime import datetime, date
 from sqlalchemy import create_engine, text
@@ -67,6 +70,18 @@ def ejecutar_sql(query, params=None, fetch=False):
         if fetch:
             return result.fetchall()
         return result
+
+# ==========================
+# PRUEBA DE CONEXIÓN
+# ==========================
+try:
+    with get_conn() as conn:
+        prueba = conn.execute(text("SELECT 1")).fetchone()
+        st.success(f"✅ Conexión exitosa a Supabase! Resultado prueba: {prueba[0]}")
+except Exception as e:
+    st.error(f"❌ No se pudo conectar a la base de datos: {e}")
+
+
 
 # ==========================
 # 🔐 USUARIO ADMIN
@@ -149,11 +164,42 @@ MAILERSEND_API_KEY = st.secrets["MAILERSEND_API_KEY"]
 MAILERSEND_FROM_EMAIL = st.secrets["MAILERSEND_FROM_EMAIL"]
 MAILERSEND_FROM_NAME = st.secrets.get("MAILERSEND_FROM_NAME", "CREDDT CRNTECH")
 
+def asegurar_estructura_financiera():
+    with get_conn() as conn:
+        sentencias = [
+            "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS saldo_capital NUMERIC(18,2)",
+            "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS tasa_mensual NUMERIC(12,6)",
+            "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS tipo_movimiento TEXT",
+            "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS detalle TEXT",
+            "ALTER TABLE pagos_cuotas ADD COLUMN IF NOT EXISTS valor_aplicado NUMERIC(18,2)"
+        ]
+        for sentencia in sentencias:
+            conn.execute(text(sentencia))
+
+        conn.execute(text("""
+            UPDATE prestamos
+            SET saldo_capital = COALESCE(saldo_capital, monto_original),
+                tasa_mensual = COALESCE(tasa_mensual, 0)
+            WHERE saldo_capital IS NULL OR tasa_mensual IS NULL
+        """))
+        conn.commit()
+
+
+asegurar_estructura_financiera()
+
 # ==========================
 # UTILIDADES
 # ==========================
 def pesos(valor):
-    return f"${int(valor):,}".replace(",", ".")
+    try:
+        return f"${float(valor):,.0f}".replace(",", ".")
+    except Exception:
+        return "$0"
+
+
+def normalizar_decimal(valor):
+    return Decimal(str(valor or 0)).quantize(Decimal("0.01"))
+
 
 def enviar_correo(destino, asunto, cuerpo):
     ok, error = enviar_correo_mailersend(
@@ -164,13 +210,138 @@ def enviar_correo(destino, asunto, cuerpo):
     if not ok:
         st.warning(f"⚠️ El correo no pudo enviarse: {error}")
 
+
+def calcular_cuota_amortizada(capital, tasa_mensual, cuotas_restantes):
+    capital = float(capital or 0)
+    tasa_mensual = float(tasa_mensual or 0)
+    cuotas_restantes = int(cuotas_restantes or 0)
+
+    if capital <= 0 or cuotas_restantes <= 0:
+        return 0.0
+
+    if tasa_mensual <= 0:
+        return round(capital / cuotas_restantes, 2)
+
+    factor = (1 + tasa_mensual) ** cuotas_restantes
+    cuota = capital * ((tasa_mensual * factor) / (factor - 1))
+    return round(cuota, 2)
+
+
+def obtener_proxima_cuota(conn, prestamo_id):
+    return conn.execute(text("""
+        SELECT id_cuota, nro_cuota, valor_cuota, fecha_vencimiento, estado
+        FROM cuotas
+        WHERE prestamo_id = :id
+          AND estado <> 'Pagada'
+        ORDER BY nro_cuota ASC
+        LIMIT 1
+    """), {"id": prestamo_id}).fetchone()
+
+
+def construir_cuerpo_correo(tipo, nombre_cliente, **kwargs):
+    if tipo == "RECIBO_CUOTA":
+        return f"""Estimado(a) {nombre_cliente},
+
+Reciba un cordial saludo.
+
+Le confirmamos que el pago de su cuota fue registrado exitosamente en nuestro sistema.
+
+Información del movimiento:
+- Crédito: {kwargs.get('prestamo_id')}
+- Cuota aplicada: {kwargs.get('cuota_nro')}
+- Fecha de pago: {kwargs.get('fecha_pago')}
+- Valor pagado: {pesos(kwargs.get('valor'))}
+
+Adjunto encontrará el comprobante correspondiente para su soporte.
+
+Cordialmente,
+
+CREDDT CRNTECH
+Área Administrativa y Financiera
+"""
+
+    if tipo == "RECIBO_ABONO":
+        return f"""Estimado(a) {nombre_cliente},
+
+Reciba un cordial saludo.
+
+Le confirmamos que su abono a capital fue registrado exitosamente.
+
+Información del movimiento:
+- Crédito: {kwargs.get('prestamo_id')}
+- Fecha de abono: {kwargs.get('fecha_pago')}
+- Abono a capital: {pesos(kwargs.get('valor'))}
+- Nuevo saldo capital: {pesos(kwargs.get('saldo_capital'))}
+- Nueva cuota estimada: {pesos(kwargs.get('nueva_cuota'))}
+
+Adjunto encontrará el comprobante correspondiente para su soporte.
+
+Cordialmente,
+
+CREDDT CRNTECH
+Área Administrativa y Financiera
+"""
+
+    if tipo == "CONTRATO":
+        return f"""Estimado(a) {nombre_cliente},
+
+Reciba un cordial saludo.
+
+Adjunto encontrará el contrato correspondiente a su crédito para consulta y soporte.
+
+Información base del crédito:
+- Crédito: {kwargs.get('prestamo_id')}
+- Monto aprobado: {pesos(kwargs.get('monto'))}
+- Número de cuotas: {kwargs.get('cuotas')}
+- Valor cuota actual: {pesos(kwargs.get('valor_cuota'))}
+
+Cordialmente,
+
+CREDDT CRNTECH
+Área Administrativa y Financiera
+"""
+
+    if tipo == "RECORDATORIO":
+        return f"""Estimado(a) {nombre_cliente},
+
+Reciba un cordial saludo.
+
+Le recordamos que tiene una cuota pendiente asociada a su crédito.
+
+Información del recordatorio:
+- Crédito: {kwargs.get('prestamo_id')}
+- Cuota pendiente: {kwargs.get('cuota_nro')}
+- Fecha de vencimiento: {kwargs.get('fecha_vencimiento')}
+- Valor a pagar: {pesos(kwargs.get('valor'))}
+
+Agradecemos realizar el pago oportunamente para mantener su crédito al día.
+
+Cordialmente,
+
+CREDDT CRNTECH
+Área Administrativa y Financiera
+"""
+
+    return f"""Estimado(a) {nombre_cliente},
+
+Reciba un cordial saludo de CREDDT CRNTECH.
+
+Adjunto encontrará la información correspondiente a su crédito.
+
+Cordialmente,
+
+CREDDT CRNTECH
+Área Administrativa y Financiera
+"""
+
+
 def calcular_cuotas_pagadas(total_pagado, valor_cuota):
     if valor_cuota <= 0:
         return 0
     return int(total_pagado // valor_cuota)
 
 
-def generar_recibo_pdf(prestamo_id, cliente, monto_credito, fecha_pago, valor_pagado):
+def generar_recibo_pdf(prestamo_id, cliente, monto_credito, fecha_pago, valor_pagado, titulo="RECIBO DE PAGO", subtitulo="VALOR PAGADO"):
 
     from reportlab.platypus import (
         SimpleDocTemplate, Paragraph, Spacer, HRFlowable
@@ -249,7 +420,7 @@ def generar_recibo_pdf(prestamo_id, cliente, monto_credito, fecha_pago, valor_pa
         spaceAfter=25
     )
 
-    elementos.append(Paragraph("RECIBO DE PAGO", estilo_titulo))
+    elementos.append(Paragraph(titulo, estilo_titulo))
 
     # ==========================
     # DATOS
@@ -307,7 +478,7 @@ def generar_recibo_pdf(prestamo_id, cliente, monto_credito, fecha_pago, valor_pa
         textColor=gris
     )
 
-    elementos.append(Paragraph("VALOR PAGADO", estilo_pago_label))
+    elementos.append(Paragraph(subtitulo, estilo_pago_label))
     elementos.append(Spacer(1, 5))
     elementos.append(Paragraph(f"<b>$ {valor_pagado:,.0f}</b>", estilo_pago))
 
@@ -344,6 +515,386 @@ def generar_recibo_pdf(prestamo_id, cliente, monto_credito, fecha_pago, valor_pa
 
     return ruta_pdf
 
+
+
+
+def generar_contrato_pdf(prestamo_id, cliente, monto_credito, cuotas, valor_cuota, tipo_credito, fecha_emision=None):
+    ruta_pdf = os.path.join(tempfile.gettempdir(), f"contrato_{prestamo_id}.pdf")
+    fecha_emision = fecha_emision or date.today().isoformat()
+
+    doc = SimpleDocTemplate(
+        ruta_pdf,
+        pagesize=pagesizes.A4,
+        rightMargin=55,
+        leftMargin=55,
+        topMargin=55,
+        bottomMargin=45
+    )
+
+    estilos = getSampleStyleSheet()
+    elementos = []
+    azul = colors.HexColor("#1E3A8A")
+    gris = colors.HexColor("#64748B")
+
+    estilo_titulo = ParagraphStyle(
+        name='TituloContrato',
+        parent=estilos['Heading1'],
+        alignment=TA_CENTER,
+        fontSize=18,
+        textColor=azul,
+        spaceAfter=20
+    )
+    estilo_normal = ParagraphStyle(
+        name='ContratoNormal',
+        parent=estilos['Normal'],
+        fontSize=10.5,
+        leading=15,
+        textColor=colors.black,
+        spaceAfter=10
+    )
+    estilo_footer = ParagraphStyle(
+        name='ContratoFooter',
+        parent=estilos['Normal'],
+        fontSize=9,
+        alignment=TA_CENTER,
+        textColor=gris
+    )
+
+    if os.path.exists("logo_creddt.png"):
+        logo = Image("logo_creddt.png", width=2.2*inch, height=1.0*inch)
+        logo.hAlign = 'CENTER'
+        elementos.append(logo)
+        elementos.append(Spacer(1, 12))
+
+    elementos.append(Paragraph("CONTRATO DE CRÉDITO", estilo_titulo))
+    elementos.append(Paragraph(f"Fecha de emisión: <b>{fecha_emision}</b>", estilo_normal))
+    elementos.append(Paragraph(
+        f"Cliente: <b>{cliente}</b><br/>"
+        f"Crédito: <b>{prestamo_id}</b><br/>"
+        f"Tipo de crédito: <b>{tipo_credito}</b><br/>"
+        f"Monto aprobado: <b>{pesos(monto_credito)}</b><br/>"
+        f"Número de cuotas: <b>{cuotas}</b><br/>"
+        f"Valor cuota actual: <b>{pesos(valor_cuota)}</b>",
+        estilo_normal
+    ))
+    elementos.append(Paragraph(
+        "El presente documento deja constancia de las condiciones generales del crédito aprobado por CREDDT CRNTECH. "
+        "El cliente se compromete a realizar los pagos de sus cuotas en las fechas establecidas y a mantener actualizada "
+        "su información de contacto para notificaciones, recibos y recordatorios.",
+        estilo_normal
+    ))
+    elementos.append(Paragraph(
+        "Los abonos extraordinarios a capital, cuando sean aceptados y registrados, reducirán el saldo del crédito y "
+        "permitirán recalcular el valor de las cuotas pendientes, manteniendo la cantidad de cuotas restantes.",
+        estilo_normal
+    ))
+    elementos.append(Spacer(1, 25))
+    elementos.append(HRFlowable(width="100%", thickness=1, color=colors.lightgrey))
+    elementos.append(Spacer(1, 18))
+    elementos.append(Paragraph("CREDDT CRNTECH • Documento generado automáticamente para soporte del crédito.", estilo_footer))
+
+    doc.build(elementos)
+    return ruta_pdf
+
+
+def obtener_datos_cliente(conn, cedula):
+    return conn.execute(text("""
+        SELECT nombres || ' ' || apellidos AS nombre, correo
+        FROM clientes
+        WHERE cedula = :cedula
+    """), {"cedula": cedula}).fetchone()
+
+
+def enviar_pdf_por_correo(destino, asunto, cuerpo, ruta_pdf, nombre_adj):
+    with open(ruta_pdf, "rb") as f:
+        return enviar_correo_async(
+            destino=destino,
+            asunto=asunto,
+            cuerpo=cuerpo,
+            attachment_bytes=f.read(),
+            attachment_name=nombre_adj
+        )
+
+
+def enviar_contrato_credito(prestamo_row):
+    if not prestamo_row.get("correo"):
+        return False, "Cliente sin correo registrado"
+
+    ruta_pdf = None
+    try:
+        ruta_pdf = generar_contrato_pdf(
+            prestamo_row["id"],
+            prestamo_row["cliente"],
+            prestamo_row["monto_original"],
+            prestamo_row["cuotas"],
+            prestamo_row["valor_cuota"],
+            prestamo_row["tipo"]
+        )
+        cuerpo = construir_cuerpo_correo(
+            "CONTRATO",
+            prestamo_row["cliente"],
+            prestamo_id=prestamo_row["id"],
+            monto=prestamo_row["monto_original"],
+            cuotas=prestamo_row["cuotas"],
+            valor_cuota=prestamo_row["valor_cuota"]
+        )
+        return enviar_pdf_por_correo(
+            prestamo_row["correo"],
+            f"Contrato crédito {prestamo_row['id']}",
+            cuerpo,
+            ruta_pdf,
+            f"contrato_{prestamo_row['id']}.pdf"
+        )
+    finally:
+        if ruta_pdf and os.path.exists(ruta_pdf):
+            try:
+                os.remove(ruta_pdf)
+            except Exception:
+                pass
+
+
+def enviar_recordatorio_credito(prestamo_row):
+    if not prestamo_row.get("correo"):
+        return False, "Cliente sin correo registrado"
+
+    with get_conn() as conn:
+        proxima = obtener_proxima_cuota(conn, prestamo_row["id"])
+
+    if not proxima:
+        return False, "El crédito no tiene cuotas pendientes"
+
+    cuerpo = construir_cuerpo_correo(
+        "RECORDATORIO",
+        prestamo_row["cliente"],
+        prestamo_id=prestamo_row["id"],
+        cuota_nro=proxima[1],
+        fecha_vencimiento=proxima[3],
+        valor=proxima[2]
+    )
+
+    return enviar_correo_async(
+        prestamo_row["correo"],
+        f"Recordatorio de pago crédito {prestamo_row['id']}",
+        cuerpo
+    )
+
+
+def actualizar_estado_prestamo(conn, prestamo_id):
+    pendientes = conn.execute(text("""
+        SELECT COUNT(*)
+        FROM cuotas
+        WHERE prestamo_id = :id AND estado <> 'Pagada'
+    """), {"id": prestamo_id}).scalar()
+
+    nuevo_estado = 'Cancelado' if int(pendientes or 0) == 0 else 'Activo'
+    conn.execute(text("UPDATE prestamos SET estado = :estado WHERE id = :id"), {"estado": nuevo_estado, "id": prestamo_id})
+
+
+def registrar_pago_cuota(prestamo_id, fecha_pago):
+    with get_conn() as conn:
+        prestamo_db = conn.execute(text("""
+            SELECT id, cliente_cedula, monto_original, COALESCE(saldo_capital, monto_original) AS saldo_capital,
+                   COALESCE(tasa_mensual, 0) AS tasa_mensual, valor_cuota
+            FROM prestamos
+            WHERE id = :id
+        """), {"id": prestamo_id}).mappings().first()
+
+        if not prestamo_db:
+            return {"ok": False, "error": "No se pudo obtener el préstamo"}
+
+        proxima = obtener_proxima_cuota(conn, prestamo_id)
+        if not proxima:
+            return {"ok": False, "error": "Todas las cuotas ya están pagadas"}
+
+        id_cuota, nro_cuota, valor_cuota, fecha_vencimiento, _ = proxima
+        valor_pago = normalizar_decimal(valor_cuota)
+        saldo_capital_actual = normalizar_decimal(prestamo_db["saldo_capital"])
+        tasa_mensual = Decimal(str(prestamo_db["tasa_mensual"] or 0))
+
+        interes_periodo = (saldo_capital_actual * tasa_mensual).quantize(Decimal("0.01")) if tasa_mensual > 0 else Decimal("0.00")
+        capital_pagado = valor_pago - interes_periodo
+        if capital_pagado < 0:
+            capital_pagado = Decimal("0.00")
+
+        nuevo_saldo_capital = saldo_capital_actual - capital_pagado
+        if nuevo_saldo_capital < 0:
+            nuevo_saldo_capital = Decimal("0.00")
+
+        result_pago = conn.execute(text("""
+            INSERT INTO pagos (prestamo_id, fecha_pago, valor, estado, tipo_movimiento, detalle)
+            VALUES (:id, :fecha, :valor, 'Pagado', 'CUOTA', :detalle)
+            RETURNING id_pago
+        """), {
+            "id": prestamo_id,
+            "fecha": fecha_pago.isoformat(),
+            "valor": valor_pago,
+            "detalle": f"Pago cuota #{nro_cuota}"
+        })
+        id_pago = result_pago.fetchone()[0]
+
+        conn.execute(text("""
+            INSERT INTO pagos_cuotas (id_pago, id_cuota, valor_aplicado)
+            VALUES (:id_pago, :id_cuota, :valor_aplicado)
+        """), {"id_pago": id_pago, "id_cuota": id_cuota, "valor_aplicado": valor_pago})
+
+        conn.execute(text("UPDATE cuotas SET estado = 'Pagada' WHERE id_cuota = :id_cuota"), {"id_cuota": id_cuota})
+        conn.execute(text("UPDATE prestamos SET saldo_capital = :saldo_capital WHERE id = :id"), {"saldo_capital": nuevo_saldo_capital, "id": prestamo_id})
+        actualizar_estado_prestamo(conn, prestamo_id)
+        conn.commit()
+
+        cliente = obtener_datos_cliente(conn, prestamo_db["cliente_cedula"])
+
+    nombre_cliente = cliente[0] if cliente else "Cliente"
+    correo_cliente = (cliente[1] or "").strip() if cliente else ""
+
+    pdf = None
+    correo_ok = False
+    correo_error = None
+    try:
+        pdf = generar_recibo_pdf(prestamo_id, nombre_cliente, prestamo_db["monto_original"], fecha_pago.isoformat(), valor_pago)
+        cuerpo = construir_cuerpo_correo(
+            "RECIBO_CUOTA",
+            nombre_cliente,
+            prestamo_id=prestamo_id,
+            cuota_nro=nro_cuota,
+            fecha_pago=fecha_pago.isoformat(),
+            valor=valor_pago
+        )
+        if correo_cliente:
+            correo_ok, correo_error = enviar_pdf_por_correo(
+                correo_cliente,
+                f"Recibo pago {prestamo_id}",
+                cuerpo,
+                pdf,
+                f"recibo_{prestamo_id}.pdf"
+            )
+        else:
+            correo_error = "Cliente sin correo registrado"
+    finally:
+        if pdf and os.path.exists(pdf):
+            try:
+                os.remove(pdf)
+            except Exception:
+                pass
+
+    return {
+        "ok": True,
+        "credito": prestamo_id,
+        "cuota": nro_cuota,
+        "valor": valor_pago,
+        "correo": correo_ok,
+        "tiene_correo": bool(correo_cliente),
+        "correo_error": correo_error
+    }
+
+
+def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
+    valor_abono = normalizar_decimal(valor_abono)
+    if valor_abono <= 0:
+        return {"ok": False, "error": "El abono a capital debe ser mayor a cero"}
+
+    with get_conn() as conn:
+        prestamo_db = conn.execute(text("""
+            SELECT id, cliente_cedula, monto_original, COALESCE(saldo_capital, monto_original) AS saldo_capital,
+                   COALESCE(tasa_mensual, 0) AS tasa_mensual, valor_cuota
+            FROM prestamos
+            WHERE id = :id
+        """), {"id": prestamo_id}).mappings().first()
+
+        if not prestamo_db:
+            return {"ok": False, "error": "No se pudo obtener el préstamo"}
+
+        cuotas_pendientes = conn.execute(text("""
+            SELECT id_cuota, nro_cuota
+            FROM cuotas
+            WHERE prestamo_id = :id
+              AND estado <> 'Pagada'
+            ORDER BY nro_cuota ASC
+        """), {"id": prestamo_id}).fetchall()
+
+        if not cuotas_pendientes:
+            return {"ok": False, "error": "No hay cuotas pendientes para recalcular"}
+
+        saldo_capital_actual = normalizar_decimal(prestamo_db["saldo_capital"])
+        if valor_abono >= saldo_capital_actual:
+            return {"ok": False, "error": "El abono a capital no puede ser igual o mayor al saldo capital actual"}
+
+        nuevo_saldo_capital = saldo_capital_actual - valor_abono
+        cuotas_restantes = len(cuotas_pendientes)
+        nueva_cuota = Decimal(str(calcular_cuota_amortizada(nuevo_saldo_capital, prestamo_db["tasa_mensual"], cuotas_restantes))).quantize(Decimal("0.01"))
+
+        result_pago = conn.execute(text("""
+            INSERT INTO pagos (prestamo_id, fecha_pago, valor, estado, tipo_movimiento, detalle)
+            VALUES (:id, :fecha, :valor, 'Pagado', 'ABONO_CAPITAL', :detalle)
+            RETURNING id_pago
+        """), {
+            "id": prestamo_id,
+            "fecha": fecha_pago.isoformat(),
+            "valor": valor_abono,
+            "detalle": f"Abono a capital por {valor_abono}"
+        })
+        id_pago = result_pago.fetchone()[0]
+
+        conn.execute(text("UPDATE prestamos SET saldo_capital = :saldo_capital, valor_cuota = :valor_cuota WHERE id = :id"), {
+            "saldo_capital": nuevo_saldo_capital,
+            "valor_cuota": nueva_cuota,
+            "id": prestamo_id
+        })
+
+        for id_cuota, _ in cuotas_pendientes:
+            conn.execute(text("UPDATE cuotas SET valor_cuota = :valor_cuota WHERE id_cuota = :id_cuota AND estado <> 'Pagada'"), {
+                "valor_cuota": nueva_cuota,
+                "id_cuota": id_cuota
+            })
+
+        actualizar_estado_prestamo(conn, prestamo_id)
+        conn.commit()
+
+        cliente = obtener_datos_cliente(conn, prestamo_db["cliente_cedula"])
+
+    nombre_cliente = cliente[0] if cliente else "Cliente"
+    correo_cliente = (cliente[1] or "").strip() if cliente else ""
+
+    pdf = None
+    correo_ok = False
+    correo_error = None
+    try:
+        pdf = generar_recibo_pdf(prestamo_id, nombre_cliente, prestamo_db["monto_original"], fecha_pago.isoformat(), valor_abono, titulo="RECIBO DE ABONO A CAPITAL", subtitulo="ABONO A CAPITAL")
+        cuerpo = construir_cuerpo_correo(
+            "RECIBO_ABONO",
+            nombre_cliente,
+            prestamo_id=prestamo_id,
+            fecha_pago=fecha_pago.isoformat(),
+            valor=valor_abono,
+            saldo_capital=nuevo_saldo_capital,
+            nueva_cuota=nueva_cuota
+        )
+        if correo_cliente:
+            correo_ok, correo_error = enviar_pdf_por_correo(
+                correo_cliente,
+                f"Abono a capital crédito {prestamo_id}",
+                cuerpo,
+                pdf,
+                f"abono_capital_{prestamo_id}.pdf"
+            )
+        else:
+            correo_error = "Cliente sin correo registrado"
+    finally:
+        if pdf and os.path.exists(pdf):
+            try:
+                os.remove(pdf)
+            except Exception:
+                pass
+
+    return {
+        "ok": True,
+        "credito": prestamo_id,
+        "valor": valor_abono,
+        "nueva_cuota": nueva_cuota,
+        "correo": correo_ok,
+        "tiene_correo": bool(correo_cliente),
+        "correo_error": correo_error
+    }
 
 # =========================
 # ENVÍO DE CORREO
@@ -462,45 +1013,42 @@ def enviar_correo_async(
 with get_conn() as conn:
 
     estado = pd.read_sql(
-        """
+        text("""
         SELECT
             p.id,
             p.estado,
             p.monto_original,
-
-            (p.valor_cuota * p.cuotas) AS monto_total_credito,
-
             p.valor_cuota,
             p.cuotas,
             p.tipo,
-
+            p.cliente_cedula,
+            COALESCE(p.saldo_capital, p.monto_original) AS saldo_capital,
+            COALESCE(p.tasa_mensual, 0) AS tasa_mensual,
             COALESCE(SUM(pg.valor),0) AS total_pagado,
-
-            (p.valor_cuota * p.cuotas)
-            - COALESCE(SUM(pg.valor),0) AS saldo,
-
-            c.nombres || ' ' || c.apellidos AS cliente
-
+            COALESCE((
+                SELECT SUM(cu.valor_cuota)
+                FROM cuotas cu
+                WHERE cu.prestamo_id = p.id
+                  AND cu.estado <> 'Pagada'
+            ),0) AS saldo,
+            COALESCE(SUM(pg.valor),0) + COALESCE((
+                SELECT SUM(cu.valor_cuota)
+                FROM cuotas cu
+                WHERE cu.prestamo_id = p.id
+                  AND cu.estado <> 'Pagada'
+            ),0) AS monto_total_credito,
+            c.nombres || ' ' || c.apellidos AS cliente,
+            c.correo
         FROM prestamos p
-
         LEFT JOIN pagos pg
             ON pg.prestamo_id = p.id
-
         LEFT JOIN clientes c
             ON c.cedula = p.cliente_cedula
-
         GROUP BY
-            p.id,
-            p.estado,
-            p.monto_original,
-            p.valor_cuota,
-            p.cuotas,
-            p.tipo,
-            c.nombres,
-            c.apellidos
-
+            p.id, p.estado, p.monto_original, p.valor_cuota, p.cuotas, p.tipo,
+            p.cliente_cedula, p.saldo_capital, p.tasa_mensual, c.nombres, c.apellidos, c.correo
         ORDER BY p.id DESC
-        """,
+        """),
         conn
     )
 
@@ -511,7 +1059,9 @@ for col in [
     "monto_total_credito",
     "valor_cuota",
     "total_pagado",
-    "saldo"
+    "saldo",
+    "saldo_capital",
+    "tasa_mensual"
 ]:
     if col in estado.columns:
         estado[col] = pd.to_numeric(estado[col])
@@ -698,311 +1248,137 @@ with tab_detalle:
     st.subheader("📄 Detalle por crédito")
 
     for _, row in estado.iterrows():
-        cuotas_pagadas = calcular_cuotas_pagadas(
-            row["total_pagado"],
-            row["valor_cuota"]
-        )
-
         with st.expander(f"💳 Préstamo {row['id']} — {row['cliente']}"):
-            c1, c2, c3 = st.columns(3)
-            c1.metric("💰 Total crédito", pesos(row["monto_total_credito"]))
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("💰 Total crédito actual", pesos(row["monto_total_credito"]))
             c2.metric("✅ Pagado", pesos(row["total_pagado"]))
-            c3.metric("⏳ Saldo", pesos(row["saldo"]))
+            c3.metric("🏦 Saldo capital", pesos(row["saldo_capital"]))
+            c4.metric("⏳ Saldo cuotas", pesos(row["saldo"]))
 
-            st.markdown("### 🧾 Estado de cuotas")
-            for i in range(1, row["cuotas"] + 1):
-                if i <= cuotas_pagadas:
-                    st.success(f"Cuota {i} — PAGADA")
+            st.caption(f"Tasa mensual actual: {float(row['tasa_mensual'] or 0):.4f} | Cuota actual: {pesos(row['valor_cuota'])}")
+
+            with get_conn() as conn:
+                cuotas_credito = pd.read_sql(text("""
+                    SELECT nro_cuota, fecha_vencimiento, valor_cuota, estado
+                    FROM cuotas
+                    WHERE prestamo_id = :id
+                    ORDER BY nro_cuota ASC
+                """), conn, params={"id": row["id"]})
+
+            if cuotas_credito.empty:
+                st.info("Sin cuotas registradas para este crédito.")
+            else:
+                cuotas_credito["valor_cuota"] = cuotas_credito["valor_cuota"].apply(pesos)
+                st.dataframe(cuotas_credito, use_container_width=True, hide_index=True)
+
+            b1, b2 = st.columns(2)
+            if b1.button("📄 Enviar contrato", key=f"contrato_{row['id']}"):
+                ok, error = enviar_contrato_credito(row.to_dict())
+                if ok:
+                    st.success("✅ Contrato enviado correctamente")
                 else:
-                    st.warning(f"Cuota {i} — PENDIENTE")
+                    st.error(f"❌ No se pudo enviar el contrato: {error}")
+
+            if b2.button("⏰ Enviar recordatorio", key=f"recordatorio_{row['id']}"):
+                ok, error = enviar_recordatorio_credito(row.to_dict())
+                if ok:
+                    st.success("✅ Recordatorio enviado correctamente")
+                else:
+                    st.error(f"❌ No se pudo enviar el recordatorio: {error}")
 
 # ==========================
 # 💰 PAGOS
 # ==========================
 
-import time
-from decimal import Decimal
-
 if "pago_msg" not in st.session_state:
     st.session_state.pago_msg = None
 
-if "procesando_pago" not in st.session_state:
-    st.session_state.procesando_pago = False
-
-if "confirmar_pago" not in st.session_state:
-    st.session_state.confirmar_pago = False
-
-
 with tab_pagos:
-    st.subheader("💰 Registrar pago")
+    st.subheader("💰 Pagos del crédito")
 
     activos = estado[estado["estado"] != "Cancelado"]
 
     if activos.empty:
         st.info("ℹ️ No hay préstamos activos.")
-        st.stop()
+    else:
+        opciones = {f"{r.id} — {r.cliente}": r for r in activos.itertuples()}
+        seleccion = st.selectbox("📌 Préstamo", list(opciones.keys()))
+        prestamo = opciones[seleccion]
 
-    opciones = {f"{r.id} — {r.cliente}": r for r in activos.itertuples()}
-    seleccion = st.selectbox("📌 Préstamo", list(opciones.keys()))
-    prestamo = opciones[seleccion]
+        with get_conn() as conn:
+            proxima_cuota = obtener_proxima_cuota(conn, prestamo.id)
 
-    fecha_pago = st.date_input("📅 Fecha de pago", value=date.today())
+        fecha_pago = st.date_input("📅 Fecha de movimiento", value=date.today())
 
-    valor_pago = st.number_input(
-        "💵 Valor pagado",
-        min_value=0.0,
-        step=1000.0,
-        value=float(prestamo.valor_cuota)
-    )
+        info1, info2, info3, info4 = st.columns(4)
+        info1.metric("💳 Cuota actual", pesos(prestamo.valor_cuota))
+        info2.metric("🏦 Saldo capital", pesos(prestamo.saldo_capital))
+        info3.metric("⏳ Saldo cuotas", pesos(prestamo.saldo))
+        info4.metric("📊 Tasa mensual", f"{float(prestamo.tasa_mensual or 0):.4f}")
 
-    valor_pago = Decimal(str(valor_pago))
+        st.divider()
+        st.markdown("### ✅ Pago de cuota")
 
-    # ==========================
-    # CONFIRMAR
-    # ==========================
-    if not st.session_state.confirmar_pago and not st.session_state.procesando_pago:
-        if st.button("Registrar pago", type="primary"):
-            if valor_pago <= 0:
-                st.error("❌ El valor debe ser mayor a cero")
-                st.stop()
+        if not proxima_cuota:
+            st.info("ℹ️ Este crédito no tiene cuotas pendientes.")
+        else:
+            st.info(
+                f"Próxima cuota a pagar: #{proxima_cuota[1]} | Vence: {proxima_cuota[3]} | Valor exacto: {pesos(proxima_cuota[2])}"
+            )
 
-            st.session_state.confirmar_pago = True
-            st.rerun()
+            if st.button("Registrar pago de cuota", type="primary", key="btn_pago_cuota"):
+                with st.spinner("⏳ Aplicando pago, por favor espera..."):
+                    resultado = registrar_pago_cuota(prestamo.id, fecha_pago)
+                    if resultado.get("ok"):
+                        st.session_state.pago_msg = {"tipo": "CUOTA", **resultado}
+                        time.sleep(0.2)
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {resultado.get('error')}")
 
-    if st.session_state.confirmar_pago and not st.session_state.procesando_pago:
-        st.warning(
-            f"⚠️ ¿Aplicar pago de {pesos(valor_pago)} al crédito {prestamo.id}?"
+        st.divider()
+        st.markdown("### 🏦 Abono a capital")
+        st.caption("El abono a capital reduce el saldo del préstamo y recalcula el valor de las cuotas pendientes, manteniendo el número de cuotas restantes.")
+
+        abono_capital = st.number_input(
+            "Valor abono a capital",
+            min_value=0.0,
+            step=1000.0,
+            value=0.0,
+            key="abono_capital"
         )
 
-        c1, c2 = st.columns(2)
-
-        with c1:
-            if st.button("✅ Sí, aplicar"):
-                st.session_state.procesando_pago = True
-                st.session_state.confirmar_pago = False
-                st.rerun()
-
-        with c2:
-            if st.button("❌ Cancelar"):
-                st.session_state.confirmar_pago = False
-                st.rerun()
-
-    # ==========================
-    # PROCESAMIENTO
-    # ==========================
-    if st.session_state.procesando_pago:
-        st.session_state.procesando_pago = False
-
-        with st.spinner("⏳ Aplicando pago, por favor espera..."):
-            try:
-                with get_conn() as conn:
-
-                    prestamo_db = conn.execute(
-                        text("SELECT cliente_cedula, monto_original FROM prestamos WHERE id = :id"),
-                        {"id": prestamo.id}
-                    ).fetchone()
-
-                    if not prestamo_db:
-                        st.error("❌ No se pudo obtener el préstamo")
-                        st.stop()
-
-                    cliente_cedula, monto_original = prestamo_db
-
-                    cuotas = conn.execute(
-                        text("""
-                            SELECT id_cuota, valor_cuota, nro_cuota
-                            FROM cuotas
-                            WHERE prestamo_id = :id
-                            AND estado <> 'Pagada'
-                            ORDER BY nro_cuota ASC
-                        """),
-                        {"id": prestamo.id}
-                    ).fetchall()
-
-                    if not cuotas:
-                        st.info("ℹ️ Todas las cuotas ya están pagadas.")
-                        st.stop()
-
-                    pagos_cuotas = conn.execute(
-                        text("""
-                            SELECT pc.id_cuota, COALESCE(SUM(p.valor),0)
-                            FROM pagos p
-                            JOIN pagos_cuotas pc ON p.id_pago = pc.id_pago
-                            WHERE p.prestamo_id = :id
-                            GROUP BY pc.id_cuota
-                        """),
-                        {"id": prestamo.id}
-                    ).fetchall()
-
-                    pagos_dict = {r[0]: r[1] for r in pagos_cuotas}
-
-                    pago_restante = valor_pago
-                    primera_cuota_afectada = None
-                    cuotas_afectadas = []
-
-                    for id_cuota, valor_cuota, nro in cuotas:
-                        if pago_restante <= 0:
-                            break
-
-                        pagado_actual = pagos_dict.get(id_cuota, 0)
-                        saldo_cuota = valor_cuota - pagado_actual
-                        abono = min(saldo_cuota, pago_restante)
-
-                        if abono <= 0:
-                            continue
-
-                        if primera_cuota_afectada is None:
-                            primera_cuota_afectada = nro
-
-                        cuotas_afectadas.append((id_cuota, saldo_cuota, abono))
-                        pago_restante -= abono
-
-                    if not cuotas_afectadas:
-                        st.warning("⚠️ No se pudo aplicar el pago.")
-                        st.stop()
-
-                    result_pago = conn.execute(
-                        text("""
-                            INSERT INTO pagos (prestamo_id, fecha_pago, valor, estado)
-                            VALUES (:id, :fecha, :valor, 'Pagado')
-                            RETURNING id_pago
-                        """),
-                        {
-                            "id": prestamo.id,
-                            "fecha": fecha_pago.isoformat(),
-                            "valor": valor_pago
-                        }
-                    )
-
-                    id_pago = result_pago.fetchone()[0]
-
-                    for id_cuota, saldo_cuota, abono in cuotas_afectadas:
-                        conn.execute(
-                            text("""
-                                INSERT INTO pagos_cuotas (id_pago, id_cuota)
-                                VALUES (:id_pago, :id_cuota)
-                            """),
-                            {"id_pago": id_pago, "id_cuota": id_cuota}
-                        )
-
-                        estado_cuota = "Pagada" if abono == saldo_cuota else "Parcial"
-
-                        conn.execute(
-                            text("""
-                                UPDATE cuotas
-                                SET estado = :estado
-                                WHERE id_cuota = :id_cuota
-                            """),
-                            {"estado": estado_cuota, "id_cuota": id_cuota}
-                        )
-
-                    conn.commit()
-
-                    cliente = conn.execute(
-                        text("""
-                            SELECT nombres || ' ' || apellidos, correo
-                            FROM clientes
-                            WHERE cedula = :cedula
-                        """),
-                        {"cedula": cliente_cedula}
-                    ).fetchone()
-
-                # ==========================
-                # DATOS CLIENTE
-                # ==========================
-                nombre_cliente = cliente[0] if cliente else "Cliente"
-                correo_cliente = (cliente[1] or "").strip() if cliente else ""
-
-                # ==========================
-                # ENVÍO CORREO
-                # ==========================
-                correo_ok = False
-                correo_error = None
-
-                if correo_cliente:
-                    pdf = None
-                    try:
-                        pdf = generar_recibo_pdf(
-                            prestamo.id,
-                            nombre_cliente,
-                            monto_original,
-                            fecha_pago.isoformat(),
-                            valor_pago
-                        )
-
-                        cuerpo_correo = f"""Estimado(a) {nombre_cliente},
-
-Reciba un cordial saludo.
-
-Le confirmamos que su pago ha sido registrado exitosamente en nuestro sistema.
-
-Adjunto a este correo encontrará el comprobante correspondiente para su revisión y soporte.
-
-Información del pago:
-- Crédito: {prestamo.id}
-- Fecha de pago: {fecha_pago.isoformat()}
-- Valor pagado: $ {valor_pago:,.0f}
-
-Agradecemos su gestión y confianza en CREDDT CRNTECH.
-
-Cordialmente,
-
-CREDDT CRNTECH
-Área Administrativa y Financiera
-"""
-
-                        with open(pdf, "rb") as f:
-                            correo_ok, correo_error = enviar_correo_async(
-                                correo_cliente,
-                                f"Recibo pago {prestamo.id}",
-                                cuerpo_correo,
-                                attachment_bytes=f.read(),
-                                attachment_name=f"recibo_{prestamo.id}.pdf"
-                            )
-                    except Exception as e:
-                        correo_ok = False
-                        correo_error = f"Fallo preparando el PDF o adjunto: {e}"
-                    finally:
-                        if pdf and os.path.exists(pdf):
-                            try:
-                                os.remove(pdf)
-                            except Exception:
-                                pass
+        if st.button("Aplicar abono a capital", key="btn_abono_capital"):
+            with st.spinner("⏳ Aplicando abono a capital..."):
+                resultado = registrar_abono_capital(prestamo.id, fecha_pago, abono_capital)
+                if resultado.get("ok"):
+                    st.session_state.pago_msg = {"tipo": "ABONO_CAPITAL", **resultado}
+                    time.sleep(0.2)
+                    st.rerun()
                 else:
-                    correo_error = "Cliente sin correo registrado"
+                    st.error(f"❌ {resultado.get('error')}")
 
-                # ==========================
-                # MENSAJE FINAL
-                # ==========================
-                st.session_state.pago_msg = {
-                    "credito": prestamo.id,
-                    "cuota": primera_cuota_afectada,
-                    "correo": correo_ok,
-                    "tiene_correo": bool(correo_cliente),
-                    "correo_error": correo_error
-                }
-
-                st.session_state.confirmar_pago = False
-                time.sleep(0.3)
-                st.rerun()
-
-            except Exception as e:
-                st.error(f"❌ Error: {e}")
-
-    # ==========================
-    # MENSAJE FINAL
-    # ==========================
     if st.session_state.pago_msg:
         m = st.session_state.pago_msg
+        if m["tipo"] == "CUOTA":
+            if m.get("tiene_correo") and m.get("correo"):
+                st.success(f"✅ Pago de cuota registrado y correo enviado - Crédito {m['credito']} | Cuota #{m['cuota']}")
+            elif m.get("tiene_correo") and not m.get("correo"):
+                st.warning(f"⚠️ Pago de cuota registrado, pero el correo no se pudo enviar - Crédito {m['credito']}")
+                if m.get("correo_error"):
+                    st.error(f"Detalle correo: {m['correo_error']}")
+            else:
+                st.success(f"✅ Pago de cuota registrado - Crédito {m['credito']}")
 
-        if m["tiene_correo"] and m["correo"]:
-            st.success(f"✅ Pago registrado y correo enviado - Crédito {m['credito']}")
-        elif m["tiene_correo"] and not m["correo"]:
-            st.warning(f"⚠️ Pago registrado, pero el correo no se pudo enviar - Crédito {m['credito']}")
-            if m.get("correo_error"):
-                st.error(f"Detalle correo: {m['correo_error']}")
-        else:
-            st.success("✅ Pago registrado (sin correo)")
+        if m["tipo"] == "ABONO_CAPITAL":
+            if m.get("tiene_correo") and m.get("correo"):
+                st.success(f"✅ Abono a capital registrado y correo enviado - Crédito {m['credito']} | Nueva cuota: {pesos(m['nueva_cuota'])}")
+            elif m.get("tiene_correo") and not m.get("correo"):
+                st.warning(f"⚠️ Abono a capital registrado, pero el correo no se pudo enviar - Crédito {m['credito']}")
+                if m.get("correo_error"):
+                    st.error(f"Detalle correo: {m['correo_error']}")
+            else:
+                st.success(f"✅ Abono a capital registrado - Crédito {m['credito']}")
 
         st.session_state.pago_msg = None
 

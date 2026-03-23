@@ -1147,10 +1147,23 @@ with tab_resumen:
     for c in ["monto_original","monto_total_credito","total_pagado","saldo","valor_cuota"]:
         df[c] = df[c].apply(pesos)
 
-    st.dataframe(df[
+    tabla_resumen = df[
         ["id","cliente","monto_original","monto_total_credito",
          "total_pagado","saldo","valor_cuota","cuotas","tipo","estado"]
-    ], use_container_width=True, hide_index=True)
+    ].rename(columns={
+        "id": "Crédito",
+        "cliente": "Cliente",
+        "monto_original": "Capital",
+        "monto_total_credito": "Total del crédito",
+        "total_pagado": "Pagado",
+        "saldo": "Saldo pendiente",
+        "valor_cuota": "Cuota",
+        "cuotas": "N.° cuotas",
+        "tipo": "Tipo de crédito",
+        "estado": "Estado"
+    })
+
+    st.dataframe(tabla_resumen, use_container_width=True, hide_index=True)
 
     st.divider()
     st.subheader("⚠️ Alertas de cartera")
@@ -1206,10 +1219,17 @@ with tab_resumen:
             detalle_mora_show = detalle_mora_df.copy()
             detalle_mora_show["monto_en_mora"] = detalle_mora_show["monto_en_mora"].apply(pesos)
             detalle_mora_show["exposicion_en_mora"] = detalle_mora_show["exposicion_en_mora"].apply(pesos)
+            detalle_mora_show = detalle_mora_show[["id", "cliente", "cuotas_en_mora", "monto_en_mora", "exposicion_en_mora"]].rename(columns={
+                "id": "Crédito",
+                "cliente": "Cliente",
+                "cuotas_en_mora": "Cuotas en mora",
+                "monto_en_mora": "Monto en mora",
+                "exposicion_en_mora": "Exposición en mora"
+            })
 
             st.markdown(f"### {titulo_mora}")
             st.dataframe(
-                detalle_mora_show[["id", "cliente", "cuotas_en_mora", "monto_en_mora", "exposicion_en_mora"]],
+                detalle_mora_show,
                 use_container_width=True,
                 hide_index=True
             )
@@ -1330,6 +1350,12 @@ with tab_detalle:
                 st.info("Sin cuotas registradas para este crédito.")
             else:
                 cuotas_credito["valor_cuota"] = cuotas_credito["valor_cuota"].apply(pesos)
+                cuotas_credito = cuotas_credito.rename(columns={
+                    "nro_cuota": "Cuota",
+                    "fecha_vencimiento": "Fecha de vencimiento",
+                    "valor_cuota": "Valor cuota",
+                    "estado": "Estado"
+                })
                 st.dataframe(cuotas_credito, use_container_width=True, hide_index=True)
 
             b1, b2 = st.columns(2)
@@ -1442,21 +1468,6 @@ with tab_pagos:
                 st.success(f"✅ Abono a capital registrado - Crédito {m['credito']}")
 
         st.session_state.pago_msg = None
-
-# ==========================
-# ALERTAS DE CARTERA
-# ==========================
-
-st.subheader("⚠ Alertas de cartera")
-
-col1, col2 = st.columns(2)
-
-with col1:
-    st.metric("Clientes en mora", clientes_mora)
-
-with col2:
-    st.metric("Monto en mora", f"${monto_mora:,.0f}")
-    
 
 # ==========================
 # 🧮 SIMULADOR

@@ -69,18 +69,6 @@ def ejecutar_sql(query, params=None, fetch=False):
         return result
 
 # ==========================
-# PRUEBA DE CONEXIÓN
-# ==========================
-try:
-    with get_conn() as conn:
-        prueba = conn.execute(text("SELECT 1")).fetchone()
-        st.success(f"✅ Conexión exitosa a Supabase! Resultado prueba: {prueba[0]}")
-except Exception as e:
-    st.error(f"❌ No se pudo conectar a la base de datos: {e}")
-
-
-
-# ==========================
 # 🔐 USUARIO ADMIN
 # ==========================
 def init_usuario_admin():

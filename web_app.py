@@ -1584,7 +1584,13 @@ with tab_clientes:
             correo_new = st.text_input("Correo")
             direccion_new = st.text_input("Dirección")
             empresa_new = st.text_input("Empresa")
-            fecha_nacimiento_new = st.date_input("Fecha de nacimiento", value=None, format="YYYY-MM-DD")
+            fecha_nacimiento_new = st.date_input(
+                "Fecha de nacimiento",
+                value=None,
+                min_value=date(1900, 1, 1),
+                max_value=date.today(),
+                format="YYYY-MM-DD"
+            )
             cargo_new = st.text_input("Cargo")
             guardar_cliente = st.form_submit_button("Guardar cliente", type="primary")
             if guardar_cliente:
@@ -1644,6 +1650,8 @@ with tab_clientes:
                             fecha_nacimiento_edit = st.date_input(
                                 "Fecha de nacimiento",
                                 value=_parse_fecha_cliente(fila["fecha_nacimiento"]),
+                                min_value=date(1900, 1, 1),
+                                max_value=date.today(),
                                 format="YYYY-MM-DD",
                                 key="fecha_nacimiento_edit"
                             )
@@ -2106,3 +2114,4 @@ with tab_sim:
                 f"💰 Total a pagar estimado: **{pesos(cuota * cuotas_express)}**\n\n"
                 f"📈 Tasa aplicada: **{calcular_tasa_express(frecuencia)*100:.2f}%**"
             )
+

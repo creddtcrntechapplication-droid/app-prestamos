@@ -171,6 +171,9 @@ def asegurar_estructura_base():
                 contrato_token TEXT,
                 fecha_aceptacion TEXT,
                 fecha_desembolso TEXT,
+                contrato_enviado INTEGER DEFAULT 0,
+                fecha_envio_contrato TEXT,
+                desembolso_notificado INTEGER DEFAULT 0,
                 fecha_inicio TEXT,
                 FOREIGN KEY(cliente_cedula) REFERENCES clientes(cedula)
             )
@@ -221,6 +224,9 @@ def asegurar_estructura_base():
             "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS contrato_token TEXT",
             "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS fecha_aceptacion TEXT",
             "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS fecha_desembolso TEXT",
+            "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS contrato_enviado INTEGER DEFAULT 0",
+            "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS fecha_envio_contrato TEXT",
+            "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS desembolso_notificado INTEGER DEFAULT 0",
             "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS fecha_inicio TEXT",
             "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS tipo_movimiento TEXT",
             "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS detalle TEXT",
@@ -233,11 +239,15 @@ def asegurar_estructura_base():
             SET saldo_capital = COALESCE(saldo_capital, monto_original),
                 tasa_mensual = COALESCE(tasa_mensual, 0),
                 contrato_aceptado = COALESCE(contrato_aceptado, 0),
+                contrato_enviado = COALESCE(contrato_enviado, 0),
+                desembolso_notificado = COALESCE(desembolso_notificado, 0),
                 fecha_inicio = COALESCE(fecha_inicio, CURRENT_DATE::text),
                 frecuencia = COALESCE(frecuencia, 'Mensual')
             WHERE saldo_capital IS NULL
                OR tasa_mensual IS NULL
                OR contrato_aceptado IS NULL
+               OR contrato_enviado IS NULL
+               OR desembolso_notificado IS NULL
                OR fecha_inicio IS NULL
                OR frecuencia IS NULL
         """))
@@ -686,7 +696,7 @@ def enviar_contrato_credito(prestamo_row):
             </div>
             """
         with open(ruta_pdf, "rb") as f:
-            return enviar_correo_async(
+            ok_mail, err_mail = enviar_correo_async(
                 prestamo_row["correo"],
                 f"Contrato crédito {prestamo_row['id']}",
                 cuerpo,
@@ -694,6 +704,16 @@ def enviar_contrato_credito(prestamo_row):
                 attachment_name=f"contrato_{prestamo_row['id']}.pdf",
                 html_override=html_boton
             )
+        if ok_mail:
+            with get_conn() as conn:
+                conn.execute(text("""
+                    UPDATE prestamos
+                    SET contrato_enviado = 1,
+                        fecha_envio_contrato = :fecha
+                    WHERE id = :id
+                """), {"fecha": datetime.now().isoformat(timespec='seconds'), "id": prestamo_row["id"]})
+                conn.commit()
+        return ok_mail, err_mail
     finally:
         if ruta_pdf and os.path.exists(ruta_pdf):
             try:
@@ -713,7 +733,17 @@ def enviar_correo_desembolso_credito(prestamo_row):
         cuotas=prestamo_row["cuotas"],
         valor_cuota=prestamo_row["valor_cuota"]
     )
-    return enviar_correo_async(prestamo_row["correo"], f"Crédito {prestamo_row['id']} aprobado para desembolso", cuerpo)
+    ok_mail, err_mail = enviar_correo_async(prestamo_row["correo"], f"Crédito {prestamo_row['id']} aprobado para desembolso", cuerpo)
+    if ok_mail:
+        with get_conn() as conn:
+            conn.execute(text("""
+                UPDATE prestamos
+                SET desembolso_notificado = 1,
+                    fecha_desembolso = COALESCE(fecha_desembolso, :fecha)
+                WHERE id = :id
+            """), {"fecha": datetime.now().isoformat(timespec='seconds'), "id": prestamo_row["id"]})
+            conn.commit()
+    return ok_mail, err_mail
 def guardar_cliente_db(data):
     with get_conn() as conn:
         conn.execute(text("""
@@ -1223,6 +1253,11 @@ with get_conn() as conn:
             p.tipo,
             p.cliente_cedula,
             COALESCE(p.contrato_aceptado, 0) AS contrato_aceptado,
+            COALESCE(p.contrato_enviado, 0) AS contrato_enviado,
+            COALESCE(p.desembolso_notificado, 0) AS desembolso_notificado,
+            p.fecha_envio_contrato,
+            p.fecha_aceptacion,
+            p.fecha_desembolso,
             COALESCE(p.saldo_capital, p.monto_original) AS saldo_capital,
             COALESCE(p.tasa_mensual, 0) AS tasa_mensual,
             COALESCE(SUM(pg.valor),0) AS total_pagado,
@@ -1247,7 +1282,9 @@ with get_conn() as conn:
             ON c.cedula = p.cliente_cedula
         GROUP BY
             p.id, p.estado, p.monto_original, p.valor_cuota, p.cuotas, p.frecuencia, p.tipo,
-            p.cliente_cedula, p.contrato_aceptado, p.saldo_capital, p.tasa_mensual, c.nombres, c.apellidos, c.correo
+            p.cliente_cedula, p.contrato_aceptado, p.contrato_enviado, p.desembolso_notificado,
+            p.fecha_envio_contrato, p.fecha_aceptacion, p.fecha_desembolso,
+            p.saldo_capital, p.tasa_mensual, c.nombres, c.apellidos, c.correo
         ORDER BY p.id DESC
         """),
         conn
@@ -1775,17 +1812,43 @@ with tab_creditos:
                     r3.metric("Cuotas", int(fila_p["cuotas"]))
                     r4.metric("Frecuencia", fila_p.get("frecuencia", "Mensual"))
 
+                    contrato_enviado = int(fila_p.get("contrato_enviado", 0) or 0) == 1
+                    contrato_aceptado = int(fila_p.get("contrato_aceptado", 0) or 0) == 1
+                    desembolso_notificado = int(fila_p.get("desembolso_notificado", 0) or 0) == 1
+                    fecha_envio = fila_p.get("fecha_envio_contrato") or "-"
+                    fecha_aceptacion = fila_p.get("fecha_aceptacion") or "-"
+                    fecha_desembolso = fila_p.get("fecha_desembolso") or "-"
+
+                    st.markdown("### Estado del flujo")
+                    f1, f2, f3, f4 = st.columns(4)
+                    f1.metric("Contrato enviado", "Sí" if contrato_enviado else "No", fecha_envio if contrato_enviado else None)
+                    f2.metric("Esperando aceptación", "Sí" if contrato_enviado and not contrato_aceptado else "No")
+                    f3.metric("Contrato aceptado", "Sí" if contrato_aceptado else "No", fecha_aceptacion if contrato_aceptado else None)
+                    f4.metric("Desembolso notificado", "Sí" if desembolso_notificado else "No", fecha_desembolso if desembolso_notificado else None)
+
+                    if not contrato_enviado:
+                        st.warning("⚠️ Este crédito está pendiente porque aún no se ha enviado el contrato al cliente.")
+                    elif contrato_enviado and not contrato_aceptado:
+                        st.info("⏳ El contrato ya fue enviado y el sistema está esperando la aceptación del cliente.")
+                    elif contrato_aceptado and not desembolso_notificado:
+                        st.warning("⚠️ El contrato ya fue aceptado, pero aún no hay confirmación de notificación de desembolso.")
+                    else:
+                        st.success("✅ El flujo del contrato y desembolso ya quedó completado para este crédito.")
+
                     if st.button("📨 Enviar contrato manual", type="primary", key="btn_enviar_contrato_manual"):
                         ok_send, err_send = enviar_contrato_credito(fila_p)
                         if ok_send:
-                            set_flash("contrato_msg", "success", f"✅ Contrato enviado correctamente para el crédito {fila_p['id']}")
+                            set_flash("contrato_msg", "success", f"✅ Contrato enviado correctamente para el crédito {fila_p['id']}. Ahora queda esperando aceptación.")
                         else:
                             set_flash("contrato_msg", "warning", f"⚠️ No se pudo enviar el contrato del crédito {fila_p['id']}: {err_send}")
                         st.rerun()
 
-                pendientes_show = pendientes_df[["id", "cliente", "monto_original", "valor_cuota", "cuotas", "frecuencia", "tipo", "estado"]].copy()
+                pendientes_show = pendientes_df[["id", "cliente", "monto_original", "valor_cuota", "cuotas", "frecuencia", "tipo", "estado", "contrato_enviado", "contrato_aceptado", "desembolso_notificado"]].copy()
                 pendientes_show["monto_original"] = pendientes_show["monto_original"].apply(pesos)
                 pendientes_show["valor_cuota"] = pendientes_show["valor_cuota"].apply(pesos)
+                pendientes_show["contrato_enviado"] = pendientes_show["contrato_enviado"].apply(lambda x: "Sí" if int(x or 0) == 1 else "No")
+                pendientes_show["contrato_aceptado"] = pendientes_show["contrato_aceptado"].apply(lambda x: "Sí" if int(x or 0) == 1 else "No")
+                pendientes_show["desembolso_notificado"] = pendientes_show["desembolso_notificado"].apply(lambda x: "Sí" if int(x or 0) == 1 else "No")
                 pendientes_show = pendientes_show.rename(columns={
                     "id": "Crédito",
                     "cliente": "Cliente",
@@ -1794,7 +1857,10 @@ with tab_creditos:
                     "cuotas": "N.° cuotas",
                     "frecuencia": "Frecuencia",
                     "tipo": "Tipo",
-                    "estado": "Estado"
+                    "estado": "Estado",
+                    "contrato_enviado": "Contrato enviado",
+                    "contrato_aceptado": "Aceptado",
+                    "desembolso_notificado": "Desembolso notificado"
                 })
                 st.dataframe(pendientes_show, use_container_width=True, hide_index=True)
 # ==========================

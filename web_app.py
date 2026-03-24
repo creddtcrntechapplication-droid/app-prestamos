@@ -1702,103 +1702,83 @@ with tab_creditos:
 # ==========================
 with tab_detalle:
     st.subheader("📄 Detalle por crédito")
-    st.caption("Consulta aquí la ficha general del crédito, sus indicadores principales y el detalle de cuotas.")
+    st.caption("Consulta la ficha del crédito, su plan de cuotas y sus movimientos. Los créditos cerrados se conservan en historial para consulta.")
     show_flash("detalle_msg")
-    st.markdown("""
-    <style>
-    .credit-card {
-        border: 1px solid #e5e7eb;
-        border-radius: 18px;
-        padding: 16px 18px;
-        background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-        box-shadow: 0 4px 14px rgba(15, 23, 42, .05);
-        margin-bottom: 12px;
-    }
-    .credit-title {
-        font-size: 18px;
-        font-weight: 800;
-        color: #0f172a;
-        margin-bottom: 6px;
-    }
-    .credit-sub {
-        font-size: 13px;
-        color: #64748b;
-        margin-bottom: 14px;
-    }
-    .credit-pill {
-        display:inline-block;
-        padding:4px 10px;
-        border-radius:999px;
-        background:#eef2ff;
-        color:#3730a3;
-        font-size:12px;
-        font-weight:700;
-        margin-right:8px;
-        margin-bottom:8px;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-    for _, row in estado.iterrows():
-        estado_contrato = "Aceptado" if int(row.get("contrato_aceptado", 0) or 0) == 1 else "Pendiente"
-        with st.expander(f"💳 {row['id']} — {row['cliente']}"):
-            st.markdown(f"""
-            <div class="credit-card">
-                <div class="credit-title">Crédito {row['id']}</div>
-                <div class="credit-sub">{row['cliente']} • {row['tipo']} • {row['estado']}</div>
-                <span class="credit-pill">Frecuencia: {row.get('frecuencia', 'Mensual')}</span>
-                <span class="credit-pill">Contrato: {estado_contrato}</span>
-                <span class="credit-pill">Tasa mensual: {float(row['tasa_mensual'] or 0):.4f}</span>
-            </div>
-            """, unsafe_allow_html=True)
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("💰 Total del crédito", pesos(row["monto_total_credito"]))
-            c2.metric("✅ Total pagado", pesos(row["total_pagado"]))
-            c3.metric("🏦 Saldo capital", pesos(row["saldo_capital"]))
-            c4.metric("⏳ Saldo pendiente", pesos(row["saldo"]))
-            c5, c6, c7 = st.columns(3)
-            c5.metric("📌 Cuota actual", pesos(row["valor_cuota"]))
-            c6.metric("📆 N.° cuotas", int(row["cuotas"]))
-            c7.metric("📝 Estado contrato", estado_contrato)
 
-            with get_conn() as conn:
-                cuotas_credito = pd.read_sql(text("""
-                    SELECT nro_cuota, fecha_vencimiento, valor_cuota, estado
-                    FROM cuotas
-                    WHERE prestamo_id = :id
-                    ORDER BY nro_cuota ASC
-                """), conn, params={"id": row["id"]})
-                pagos_credito = pd.read_sql(text("""
-                    SELECT fecha_pago, valor, tipo_movimiento, detalle
-                    FROM pagos
-                    WHERE prestamo_id = :id
-                    ORDER BY id_pago DESC
-                """), conn, params={"id": row["id"]})
+    detalle_activos = estado[(estado["estado"] != "Cancelado") & (pd.to_numeric(estado["saldo"], errors="coerce").fillna(0) > 0)].copy()
+    detalle_cerrados = estado[(estado["estado"] == "Cancelado") | (pd.to_numeric(estado["saldo"], errors="coerce").fillna(0) <= 0)].copy()
 
-            t1, t2 = st.tabs(["📅 Cuotas del crédito", "💸 Movimientos registrados"])
-            with t1:
-                if cuotas_credito.empty:
-                    st.info("Sin cuotas registradas para este crédito.")
-                else:
-                    cuotas_credito["valor_cuota"] = cuotas_credito["valor_cuota"].apply(pesos)
-                    cuotas_credito = cuotas_credito.rename(columns={
-                        "nro_cuota": "Cuota",
-                        "fecha_vencimiento": "Fecha de vencimiento",
-                        "valor_cuota": "Valor cuota",
-                        "estado": "Estado"
-                    })
-                    st.dataframe(cuotas_credito, use_container_width=True, hide_index=True)
-            with t2:
-                if pagos_credito.empty:
-                    st.info("Sin pagos ni abonos registrados para este crédito.")
-                else:
-                    pagos_credito["valor"] = pagos_credito["valor"].apply(pesos)
-                    pagos_credito = pagos_credito.rename(columns={
-                        "fecha_pago": "Fecha movimiento",
-                        "valor": "Valor",
-                        "tipo_movimiento": "Tipo",
-                        "detalle": "Detalle"
-                    })
-                    st.dataframe(pagos_credito, use_container_width=True, hide_index=True)
+    det_tab_activos, det_tab_hist = st.tabs(["🟢 Créditos activos", "📚 Historial / cerrados"])
+
+    def render_detalle_creditos(df_detalle: pd.DataFrame, empty_msg: str):
+        if df_detalle.empty:
+            st.info(empty_msg)
+            return
+
+        for _, row in df_detalle.iterrows():
+            with st.expander(f"💳 Préstamo {row['id']} — {row['cliente']}"):
+                estado_contrato = "Aceptado" if int(row.get("contrato_aceptado", 0) or 0) == 1 else "Pendiente"
+                st.markdown(f"""
+                <div style="border:1px solid #e5e7eb;border-radius:16px;padding:14px 16px;background:#ffffff;margin-bottom:10px;">
+                    <div style="font-size:18px;font-weight:800;color:#0f172a;">Crédito {row['id']}</div>
+                    <div style="font-size:13px;color:#64748b;margin-top:4px;">{row['cliente']} · {row['tipo']} · {row['estado']} · Frecuencia: {row.get('frecuencia', 'Mensual')} · Contrato: {estado_contrato}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("💰 Total crédito", pesos(row["monto_total_credito"]))
+                c2.metric("✅ Pagado", pesos(row["total_pagado"]))
+                c3.metric("🏦 Saldo capital", pesos(row["saldo_capital"]))
+                c4.metric("⏳ Saldo pendiente", pesos(row["saldo"]))
+                c5, c6, c7 = st.columns(3)
+                c5.metric("💳 Cuota actual", pesos(row["valor_cuota"]))
+                c6.metric("📆 N.° cuotas", int(row["cuotas"]))
+                c7.metric("📊 Tasa mensual", f"{float(row['tasa_mensual'] or 0):.4f}")
+
+                with get_conn() as conn:
+                    cuotas_credito = pd.read_sql(text("""
+                        SELECT nro_cuota, fecha_vencimiento, valor_cuota, estado
+                        FROM cuotas
+                        WHERE prestamo_id = :id
+                        ORDER BY nro_cuota ASC
+                    """), conn, params={"id": row["id"]})
+                    pagos_credito = pd.read_sql(text("""
+                        SELECT fecha_pago, valor, tipo_movimiento, detalle
+                        FROM pagos
+                        WHERE prestamo_id = :id
+                        ORDER BY id_pago DESC
+                    """), conn, params={"id": row["id"]})
+
+                t1, t2 = st.tabs(["📅 Cuotas del crédito", "💸 Movimientos registrados"])
+                with t1:
+                    if cuotas_credito.empty:
+                        st.info("Sin cuotas registradas para este crédito.")
+                    else:
+                        cuotas_credito["valor_cuota"] = cuotas_credito["valor_cuota"].apply(pesos)
+                        cuotas_credito = cuotas_credito.rename(columns={
+                            "nro_cuota": "Cuota",
+                            "fecha_vencimiento": "Fecha de vencimiento",
+                            "valor_cuota": "Valor cuota",
+                            "estado": "Estado"
+                        })
+                        st.dataframe(cuotas_credito, use_container_width=True, hide_index=True)
+                with t2:
+                    if pagos_credito.empty:
+                        st.info("Sin movimientos registrados para este crédito.")
+                    else:
+                        pagos_credito["valor"] = pagos_credito["valor"].apply(pesos)
+                        pagos_credito = pagos_credito.rename(columns={
+                            "fecha_pago": "Fecha movimiento",
+                            "valor": "Valor",
+                            "tipo_movimiento": "Tipo",
+                            "detalle": "Detalle"
+                        })
+                        st.dataframe(pagos_credito, use_container_width=True, hide_index=True)
+
+    with det_tab_activos:
+        render_detalle_creditos(detalle_activos, "ℹ️ No hay créditos activos con saldo pendiente.")
+    with det_tab_hist:
+        render_detalle_creditos(detalle_cerrados, "ℹ️ No hay créditos cerrados o históricos para mostrar.")
 # ==========================
 # 💰 PAGOS
 # ==========================
@@ -1806,10 +1786,10 @@ if "pago_msg" not in st.session_state:
     st.session_state.pago_msg = None
 with tab_pagos:
     st.subheader("💰 Pagos del crédito")
-    st.caption("Separa el pago normal de la cuota y el abono a capital para evitar errores y mantener una operación más clara.")
-    activos = estado[estado["estado"] != "Cancelado"]
+    st.caption("Aquí solo se muestran créditos activos con saldo pendiente. Los créditos cerrados siguen visibles en Resumen e Historial, pero no interfieren en la operación diaria.")
+    activos = estado[(estado["estado"] != "Cancelado") & (pd.to_numeric(estado["saldo"], errors="coerce").fillna(0) > 0)].copy()
     if activos.empty:
-        st.info("ℹ️ No hay préstamos activos.")
+        st.info("ℹ️ No hay préstamos activos con saldo pendiente.")
     else:
         opciones = {f"{r.id} — {r.cliente}": r for r in activos.itertuples()}
         seleccion = st.selectbox("📌 Préstamo", list(opciones.keys()))
@@ -1836,10 +1816,7 @@ with tab_pagos:
                     <div style='font-size:13px;color:#475569;margin-top:4px;'>Fecha de vencimiento: {proxima_cuota[3]}</div>
                 </div>
                 """, unsafe_allow_html=True)
-                with st.form("form_pago_cuota"):
-                    st.info("El pago normal registra únicamente la siguiente cuota pendiente del crédito.")
-                    confirmar_pago = st.form_submit_button("Registrar pago de cuota", type="primary")
-                if confirmar_pago:
+                if st.button("Registrar pago de cuota", type="primary", key="btn_pago_cuota"):
                     with st.spinner("⏳ Aplicando pago, por favor espera..."):
                         resultado = registrar_pago_cuota(prestamo.id, fecha_pago)
                         if resultado.get("ok"):
@@ -1851,16 +1828,14 @@ with tab_pagos:
 
         with tab_abono_capital:
             st.caption("El abono a capital reduce el saldo del préstamo y recalcula el valor de las cuotas pendientes, manteniendo el número de cuotas restantes.")
-            with st.form("form_abono_capital"):
-                abono_capital = st.number_input(
-                    "Valor abono a capital",
-                    min_value=0.0,
-                    step=1000.0,
-                    value=0.0,
-                    key="abono_capital"
-                )
-                confirmar_abono = st.form_submit_button("Aplicar abono a capital")
-            if confirmar_abono:
+            abono_capital = st.number_input(
+                "Valor abono a capital",
+                min_value=0.0,
+                step=1000.0,
+                value=0.0,
+                key="abono_capital"
+            )
+            if st.button("Aplicar abono a capital", key="btn_abono_capital"):
                 with st.spinner("⏳ Aplicando abono a capital..."):
                     resultado = registrar_abono_capital(prestamo.id, fecha_pago, abono_capital)
                     if resultado.get("ok"):

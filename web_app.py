@@ -822,7 +822,6 @@ def crear_credito_db(cliente_cedula, monto, cuotas, frecuencia, tipo, fecha_inic
         }
     ok_mail, err_mail = enviar_contrato_credito(prestamo_row)
     return True, None if ok_mail else err_mail, prestamo_row
-
 def aceptar_contrato_por_token(token):
     with get_conn() as conn:
         prestamo = conn.execute(text("""
@@ -842,16 +841,9 @@ def aceptar_contrato_por_token(token):
             WHERE id = :id
         """), {"fecha": datetime.now().isoformat(timespec='seconds'), "id": prestamo["id"]})
         conn.commit()
-
     prestamo_row = dict(prestamo)
-    ok_mail, error_mail = enviar_correo_desembolso_credito(prestamo_row)
-    prestamo_row["desembolso_email_ok"] = ok_mail
-    prestamo_row["desembolso_email_error"] = error_mail
-
-    if ok_mail:
-        return True, "✅ Contrato aceptado correctamente. Crédito activado y notificación de desembolso enviada.", prestamo_row
-    return True, f"⚠️ Contrato aceptado y crédito activado, pero el correo de desembolso no se pudo enviar: {error_mail}", prestamo_row
-
+    enviar_correo_desembolso_credito(prestamo_row)
+    return True, "Contrato aceptado correctamente", prestamo_row
 def procesar_recordatorios_automaticos():
     enviados = 0
     with get_conn() as conn:
@@ -1521,48 +1513,32 @@ with tab_resumen:
                     <div style="font-size:13px;margin-top:4px;">{estado_color}</div>
                 </div>
                 """, unsafe_allow_html=True)
-
 # ==========================
 # 👥 CLIENTES
 # ==========================
 with tab_clientes:
     st.subheader("👥 Gestión de clientes")
+
     show_flash("clientes_msg")
 
     with get_conn() as conn:
-        clientes_df = pd.read_sql(
-            text("""
-                SELECT cedula, nombres, apellidos, ciudad, telefono, correo, direccion, empresa, fecha_nacimiento, cargo
-                FROM clientes
-                ORDER BY nombres, apellidos
-            """),
-            conn
-        ).fillna("")
+        clientes_df = pd.read_sql(text("SELECT cedula, nombres, apellidos, ciudad, telefono, correo, direccion, empresa, fecha_nacimiento, cargo FROM clientes ORDER BY nombres, apellidos"), conn)
 
-    cli_tab1, cli_tab2, cli_tab3, cli_tab4 = st.tabs([
-        "➕ Registrar",
-        "✏️ Editar",
-        "🗑️ Borrar",
-        "📋 Base de clientes"
-    ])
+    c1, c2 = st.columns([1.05, 0.95])
 
-    with cli_tab1:
+    with c1:
         st.markdown("### Registrar cliente")
         with st.form("form_nuevo_cliente", clear_on_submit=True):
-            c1, c2 = st.columns(2)
-            with c1:
-                cedula_new = st.text_input("Cédula *")
-                nombres_new = st.text_input("Nombres *")
-                ciudad_new = st.text_input("Ciudad")
-                correo_new = st.text_input("Correo")
-                empresa_new = st.text_input("Empresa")
-            with c2:
-                apellidos_new = st.text_input("Apellidos *")
-                telefono_new = st.text_input("Teléfono")
-                direccion_new = st.text_input("Dirección")
-                fecha_nacimiento_new = st.date_input("Fecha de nacimiento", value=None, format="YYYY-MM-DD", key="fecha_nacimiento_new")
-                cargo_new = st.text_input("Cargo")
-
+            cedula_new = st.text_input("Cédula *")
+            nombres_new = st.text_input("Nombres *")
+            apellidos_new = st.text_input("Apellidos *")
+            ciudad_new = st.text_input("Ciudad")
+            telefono_new = st.text_input("Teléfono")
+            correo_new = st.text_input("Correo")
+            direccion_new = st.text_input("Dirección")
+            empresa_new = st.text_input("Empresa")
+            fecha_nacimiento_new = st.date_input("Fecha de nacimiento", value=None, format="YYYY-MM-DD")
+            cargo_new = st.text_input("Cargo")
             guardar_cliente = st.form_submit_button("Guardar cliente", type="primary")
             if guardar_cliente:
                 if not cedula_new.strip() or not nombres_new.strip() or not apellidos_new.strip():
@@ -1586,144 +1562,110 @@ with tab_clientes:
                     except Exception as e:
                         st.error(f"❌ No se pudo registrar el cliente: {e}")
 
-    with cli_tab2:
-        st.markdown("### Editar cliente")
+    with c2:
+        st.markdown("### Gestión de cliente")
         if clientes_df.empty:
             st.info("No hay clientes registrados.")
         else:
+            clientes_df = clientes_df.fillna("")
             cliente_sel = st.selectbox(
-                "Selecciona el cliente a editar",
+                "Selecciona un cliente",
                 clientes_df["cedula"].tolist(),
-                key="sel_cliente_editar",
-                format_func=lambda x: f"{x} — {clientes_df.loc[clientes_df['cedula']==x, 'nombres'].iloc[0]} {clientes_df.loc[clientes_df['cedula']==x, 'apellidos'].iloc[0]}"
+                format_func=lambda x: f"{x} — {clientes_df.loc[clientes_df['cedula']==x, 'nombres'].iloc[0]} {clientes_df.loc[clientes_df['cedula']==x, 'apellidos'].iloc[0]}",
+                key="sel_cliente_gestion"
             )
             fila = clientes_df[clientes_df["cedula"] == cliente_sel].iloc[0]
 
-            with st.form("form_editar_cliente"):
-                st.text_input("Cédula", value=fila["cedula"], disabled=True)
-                c1, c2 = st.columns(2)
-                with c1:
+            with st.expander("✏️ Editar cliente", expanded=False):
+                with st.form("form_editar_cliente"):
+                    st.text_input("Cédula", value=fila["cedula"], disabled=True)
                     nombres_edit = st.text_input("Nombres", value=fila["nombres"])
-                    ciudad_edit = st.text_input("Ciudad", value=fila["ciudad"])
-                    correo_edit = st.text_input("Correo", value=fila["correo"])
-                    empresa_edit = st.text_input("Empresa", value=fila["empresa"])
-                    cargo_edit = st.text_input("Cargo", value=fila["cargo"])
-                with c2:
                     apellidos_edit = st.text_input("Apellidos", value=fila["apellidos"])
+                    ciudad_edit = st.text_input("Ciudad", value=fila["ciudad"])
                     telefono_edit = st.text_input("Teléfono", value=fila["telefono"])
+                    correo_edit = st.text_input("Correo", value=fila["correo"])
                     direccion_edit = st.text_input("Dirección", value=fila["direccion"])
+                    empresa_edit = st.text_input("Empresa", value=fila["empresa"])
                     fecha_nacimiento_edit = st.date_input(
                         "Fecha de nacimiento",
                         value=_parse_fecha_cliente(fila["fecha_nacimiento"]),
                         format="YYYY-MM-DD",
                         key="fecha_nacimiento_edit"
                     )
-                actualizar = st.form_submit_button("Guardar cambios", type="primary")
-                if actualizar:
-                    try:
-                        actualizar_cliente_db(cliente_sel, {
-                            "nombres": nombres_edit.strip(),
-                            "apellidos": apellidos_edit.strip(),
-                            "ciudad": ciudad_edit.strip(),
-                            "telefono": telefono_edit.strip(),
-                            "correo": correo_edit.strip(),
-                            "direccion": direccion_edit.strip(),
-                            "empresa": empresa_edit.strip(),
-                            "fecha_nacimiento": _fecha_cliente_db(fecha_nacimiento_edit),
-                            "cargo": cargo_edit.strip()
-                        })
-                        set_flash("clientes_msg", "success", "✅ Cliente actualizado correctamente")
+                    cargo_edit = st.text_input("Cargo", value=fila["cargo"])
+                    actualizar = st.form_submit_button("Guardar cambios", type="primary")
+                    if actualizar:
+                        try:
+                            actualizar_cliente_db(cliente_sel, {
+                                "nombres": nombres_edit.strip(),
+                                "apellidos": apellidos_edit.strip(),
+                                "ciudad": ciudad_edit.strip(),
+                                "telefono": telefono_edit.strip(),
+                                "correo": correo_edit.strip(),
+                                "direccion": direccion_edit.strip(),
+                                "empresa": empresa_edit.strip(),
+                                "fecha_nacimiento": _fecha_cliente_db(fecha_nacimiento_edit),
+                                "cargo": cargo_edit.strip()
+                            })
+                            set_flash("clientes_msg", "success", "✅ Cliente actualizado correctamente")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ No se pudo actualizar el cliente: {e}")
+
+            with st.expander("🗑️ Borrar cliente", expanded=False):
+                st.warning("Esta acción eliminará el cliente solo si no tiene créditos asociados.")
+                if st.button("Borrar cliente seleccionado", key="btn_borrar_cliente", type="secondary"):
+                    ok_del, err_del = eliminar_cliente_db(cliente_sel)
+                    if ok_del:
+                        set_flash("clientes_msg", "success", "✅ Cliente eliminado correctamente")
                         st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ No se pudo actualizar el cliente: {e}")
+                    else:
+                        st.error(f"❌ {err_del}")
 
-    with cli_tab3:
-        st.markdown("### Borrar cliente")
-        if clientes_df.empty:
-            st.info("No hay clientes registrados.")
+    st.divider()
+    with st.expander("📋 Ver base de clientes", expanded=False):
+        if not clientes_df.empty:
+            st.dataframe(clientes_df.rename(columns={
+                "cedula": "Cédula",
+                "nombres": "Nombres",
+                "apellidos": "Apellidos",
+                "ciudad": "Ciudad",
+                "telefono": "Teléfono",
+                "correo": "Correo",
+                "direccion": "Dirección",
+                "empresa": "Empresa",
+                "fecha_nacimiento": "Fecha de nacimiento",
+                "cargo": "Cargo"
+            }), use_container_width=True, hide_index=True)
         else:
-            cliente_del = st.selectbox(
-                "Selecciona el cliente a borrar",
-                clientes_df["cedula"].tolist(),
-                key="sel_cliente_borrar",
-                format_func=lambda x: f"{x} — {clientes_df.loc[clientes_df['cedula']==x, 'nombres'].iloc[0]} {clientes_df.loc[clientes_df['cedula']==x, 'apellidos'].iloc[0]}"
-            )
-            fila_del = clientes_df[clientes_df["cedula"] == cliente_del].iloc[0]
-            st.warning("Esta acción eliminará el cliente solo si no tiene créditos asociados.")
-            st.caption(f"Cliente seleccionado: {fila_del['nombres']} {fila_del['apellidos']} | Cédula: {fila_del['cedula']}")
-            if st.button("Borrar cliente seleccionado", key="btn_borrar_cliente", type="secondary"):
-                ok_del, err_del = eliminar_cliente_db(cliente_del)
-                if ok_del:
-                    set_flash("clientes_msg", "success", "✅ Cliente eliminado correctamente")
-                    st.rerun()
-                else:
-                    st.error(f"❌ {err_del}")
-
-    with cli_tab4:
-        st.markdown("### Base de clientes")
-        if clientes_df.empty:
             st.info("No hay clientes registrados.")
-        else:
-            st.dataframe(
-                clientes_df.rename(columns={
-                    "cedula": "Cédula",
-                    "nombres": "Nombres",
-                    "apellidos": "Apellidos",
-                    "ciudad": "Ciudad",
-                    "telefono": "Teléfono",
-                    "correo": "Correo",
-                    "direccion": "Dirección",
-                    "empresa": "Empresa",
-                    "fecha_nacimiento": "Fecha de nacimiento",
-                    "cargo": "Cargo"
-                }),
-                use_container_width=True,
-                hide_index=True
-            )
-
-
 # ==========================
 # 🆕 NUEVO CRÉDITO
 # ==========================
 with tab_creditos:
     st.subheader("🆕 Registrar nuevo crédito")
     show_flash("credito_msg")
-
     with get_conn() as conn:
-        clientes_credito_df = pd.read_sql(
-            text("SELECT cedula, nombres, apellidos, correo FROM clientes ORDER BY nombres, apellidos"),
-            conn
-        )
-
+        clientes_credito_df = pd.read_sql(text("SELECT cedula, nombres, apellidos, correo FROM clientes ORDER BY nombres, apellidos"), conn)
     if clientes_credito_df.empty:
         st.info("ℹ️ Primero registra un cliente para crear créditos.")
     else:
         tcred1, tcred2 = st.tabs(["💳 Crédito normal", "⚡ Crédito express"])
-
         with tcred1:
-            st.markdown("### Crédito normal")
-            with st.form("form_credito_normal"):
-                cliente_normal = st.selectbox(
-                    "Cliente",
-                    clientes_credito_df["cedula"].tolist(),
-                    key="cliente_normal_credito",
-                    format_func=lambda x: f"{x} — {clientes_credito_df.loc[clientes_credito_df['cedula']==x, 'nombres'].iloc[0]} {clientes_credito_df.loc[clientes_credito_df['cedula']==x, 'apellidos'].iloc[0]}"
-                )
-                c1, c2 = st.columns(2)
-                with c1:
-                    monto_normal_new = st.number_input("Monto a prestar", min_value=0.0, step=100000.0, value=1000000.0, key="nuevo_monto_normal")
-                    cuotas_normal_new = st.selectbox("Número de cuotas", [12, 15], key="nuevo_cuotas_normal")
-                with c2:
-                    frecuencia_normal_new = st.selectbox("Frecuencia", ["Mensual", "Quincenal"], key="nuevo_frec_normal")
-                    fecha_inicio_normal = st.date_input("Fecha de inicio", value=date.today(), key="fecha_inicio_normal")
-                cuota_preview = calcular_cuota_normal(monto_normal_new, cuotas_normal_new, frecuencia_normal_new)
-                st.info(f"Cuota estimada: {pesos(cuota_preview)} | Tasa normal: {calcular_tasa_normal(cuotas_normal_new)*100:.2f}%")
-                crear_normal = st.form_submit_button("Registrar crédito normal", type="primary")
-
-            if crear_normal:
-                ok_c, err_c, prestamo_creado = crear_credito_db(
-                    cliente_normal, monto_normal_new, cuotas_normal_new, frecuencia_normal_new, "Normal", fecha_inicio_normal
-                )
+            cliente_normal = st.selectbox(
+                "Cliente",
+                clientes_credito_df["cedula"].tolist(),
+                key="cliente_normal_credito",
+                format_func=lambda x: f"{x} — {clientes_credito_df.loc[clientes_credito_df['cedula']==x, 'nombres'].iloc[0]} {clientes_credito_df.loc[clientes_credito_df['cedula']==x, 'apellidos'].iloc[0]}"
+            )
+            monto_normal_new = st.number_input("Monto a prestar", min_value=0.0, step=100000.0, value=1000000.0, key="nuevo_monto_normal")
+            cuotas_normal_new = st.selectbox("Número de cuotas", [12, 15], key="nuevo_cuotas_normal")
+            frecuencia_normal_new = st.selectbox("Frecuencia", ["Mensual", "Quincenal"], key="nuevo_frec_normal")
+            fecha_inicio_normal = st.date_input("Fecha de inicio", value=date.today(), key="fecha_inicio_normal")
+            cuota_preview = calcular_cuota_normal(monto_normal_new, cuotas_normal_new, frecuencia_normal_new)
+            st.info(f"Cuota estimada: {pesos(cuota_preview)} | Tasa normal: {calcular_tasa_normal(cuotas_normal_new)*100:.2f}%")
+            if st.button("Registrar crédito normal", type="primary", key="btn_crear_normal"):
+                ok_c, err_c, prestamo_creado = crear_credito_db(cliente_normal, monto_normal_new, cuotas_normal_new, frecuencia_normal_new, "Normal", fecha_inicio_normal)
                 if ok_c:
                     if not err_c:
                         set_flash("credito_msg", "success", f"✅ Crédito {prestamo_creado['id']} creado y contrato enviado correctamente")
@@ -1732,32 +1674,21 @@ with tab_creditos:
                     st.rerun()
                 else:
                     st.error(f"❌ {err_c}")
-
         with tcred2:
-            st.markdown("### Crédito express")
-            with st.form("form_credito_express"):
-                cliente_express = st.selectbox(
-                    "Cliente",
-                    clientes_credito_df["cedula"].tolist(),
-                    key="cliente_express_credito",
-                    format_func=lambda x: f"{x} — {clientes_credito_df.loc[clientes_credito_df['cedula']==x, 'nombres'].iloc[0]} {clientes_credito_df.loc[clientes_credito_df['cedula']==x, 'apellidos'].iloc[0]}"
-                )
-                c1, c2 = st.columns(2)
-                with c1:
-                    monto_express_new = st.number_input("Monto a prestar", min_value=0.0, step=50000.0, value=300000.0, key="nuevo_monto_express")
-                    frecuencia_express_new = st.selectbox("Frecuencia", ["Mensual", "Quincenal"], key="nuevo_frec_express")
-                with c2:
-                    cuotas_express_new = 5 if frecuencia_express_new == "Mensual" else 6
-                    fecha_inicio_express = st.date_input("Fecha de inicio", value=date.today(), key="fecha_inicio_express")
-                    st.metric("Cuotas generadas", cuotas_express_new)
-                cuota_preview_express = calcular_cuota_express(monto_express_new, cuotas_express_new, frecuencia_express_new)
-                st.info(f"Cuota estimada: {pesos(cuota_preview_express)} | Tasa express: {calcular_tasa_express(frecuencia_express_new)*100:.2f}% | Cuotas: {cuotas_express_new}")
-                crear_express = st.form_submit_button("Registrar crédito express", type="primary")
-
-            if crear_express:
-                ok_c, err_c, prestamo_creado = crear_credito_db(
-                    cliente_express, monto_express_new, cuotas_express_new, frecuencia_express_new, "Express", fecha_inicio_express
-                )
+            cliente_express = st.selectbox(
+                "Cliente",
+                clientes_credito_df["cedula"].tolist(),
+                key="cliente_express_credito",
+                format_func=lambda x: f"{x} — {clientes_credito_df.loc[clientes_credito_df['cedula']==x, 'nombres'].iloc[0]} {clientes_credito_df.loc[clientes_credito_df['cedula']==x, 'apellidos'].iloc[0]}"
+            )
+            monto_express_new = st.number_input("Monto a prestar", min_value=0.0, step=50000.0, value=300000.0, key="nuevo_monto_express")
+            frecuencia_express_new = st.selectbox("Frecuencia", ["Mensual", "Quincenal"], key="nuevo_frec_express")
+            cuotas_express_new = 5 if frecuencia_express_new == "Mensual" else 6
+            fecha_inicio_express = st.date_input("Fecha de inicio", value=date.today(), key="fecha_inicio_express")
+            cuota_preview_express = calcular_cuota_express(monto_express_new, cuotas_express_new, frecuencia_express_new)
+            st.info(f"Cuota estimada: {pesos(cuota_preview_express)} | Tasa express: {calcular_tasa_express(frecuencia_express_new)*100:.2f}% | Cuotas: {cuotas_express_new}")
+            if st.button("Registrar crédito express", type="primary", key="btn_crear_express"):
+                ok_c, err_c, prestamo_creado = crear_credito_db(cliente_express, monto_express_new, cuotas_express_new, frecuencia_express_new, "Express", fecha_inicio_express)
                 if ok_c:
                     if not err_c:
                         set_flash("credito_msg", "success", f"✅ Crédito {prestamo_creado['id']} creado y contrato enviado correctamente")
@@ -1766,22 +1697,69 @@ with tab_creditos:
                     st.rerun()
                 else:
                     st.error(f"❌ {err_c}")
-
 # ==========================
 # 📄 DETALLE
 # ==========================
 with tab_detalle:
     st.subheader("📄 Detalle por crédito")
+    st.caption("Consulta aquí la ficha general del crédito, sus indicadores principales y el detalle de cuotas.")
     show_flash("detalle_msg")
+    st.markdown("""
+    <style>
+    .credit-card {
+        border: 1px solid #e5e7eb;
+        border-radius: 18px;
+        padding: 16px 18px;
+        background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+        box-shadow: 0 4px 14px rgba(15, 23, 42, .05);
+        margin-bottom: 12px;
+    }
+    .credit-title {
+        font-size: 18px;
+        font-weight: 800;
+        color: #0f172a;
+        margin-bottom: 6px;
+    }
+    .credit-sub {
+        font-size: 13px;
+        color: #64748b;
+        margin-bottom: 14px;
+    }
+    .credit-pill {
+        display:inline-block;
+        padding:4px 10px;
+        border-radius:999px;
+        background:#eef2ff;
+        color:#3730a3;
+        font-size:12px;
+        font-weight:700;
+        margin-right:8px;
+        margin-bottom:8px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
     for _, row in estado.iterrows():
-        with st.expander(f"💳 Préstamo {row['id']} — {row['cliente']}"):
+        estado_contrato = "Aceptado" if int(row.get("contrato_aceptado", 0) or 0) == 1 else "Pendiente"
+        with st.expander(f"💳 {row['id']} — {row['cliente']}"):
+            st.markdown(f"""
+            <div class="credit-card">
+                <div class="credit-title">Crédito {row['id']}</div>
+                <div class="credit-sub">{row['cliente']} • {row['tipo']} • {row['estado']}</div>
+                <span class="credit-pill">Frecuencia: {row.get('frecuencia', 'Mensual')}</span>
+                <span class="credit-pill">Contrato: {estado_contrato}</span>
+                <span class="credit-pill">Tasa mensual: {float(row['tasa_mensual'] or 0):.4f}</span>
+            </div>
+            """, unsafe_allow_html=True)
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("💰 Total crédito actual", pesos(row["monto_total_credito"]))
-            c2.metric("✅ Pagado", pesos(row["total_pagado"]))
+            c1.metric("💰 Total del crédito", pesos(row["monto_total_credito"]))
+            c2.metric("✅ Total pagado", pesos(row["total_pagado"]))
             c3.metric("🏦 Saldo capital", pesos(row["saldo_capital"]))
-            c4.metric("⏳ Saldo cuotas", pesos(row["saldo"]))
-            estado_contrato = "Aceptado" if int(row.get("contrato_aceptado", 0) or 0) == 1 else "Pendiente"
-            st.caption(f"Tasa mensual actual: {float(row['tasa_mensual'] or 0):.4f} | Cuota actual: {pesos(row['valor_cuota'])} | Frecuencia: {row.get('frecuencia', 'Mensual')} | Contrato: {estado_contrato}")
+            c4.metric("⏳ Saldo pendiente", pesos(row["saldo"]))
+            c5, c6, c7 = st.columns(3)
+            c5.metric("📌 Cuota actual", pesos(row["valor_cuota"]))
+            c6.metric("📆 N.° cuotas", int(row["cuotas"]))
+            c7.metric("📝 Estado contrato", estado_contrato)
+
             with get_conn() as conn:
                 cuotas_credito = pd.read_sql(text("""
                     SELECT nro_cuota, fecha_vencimiento, valor_cuota, estado
@@ -1789,32 +1767,38 @@ with tab_detalle:
                     WHERE prestamo_id = :id
                     ORDER BY nro_cuota ASC
                 """), conn, params={"id": row["id"]})
-            if cuotas_credito.empty:
-                st.info("Sin cuotas registradas para este crédito.")
-            else:
-                cuotas_credito["valor_cuota"] = cuotas_credito["valor_cuota"].apply(pesos)
-                cuotas_credito = cuotas_credito.rename(columns={
-                    "nro_cuota": "Cuota",
-                    "fecha_vencimiento": "Fecha de vencimiento",
-                    "valor_cuota": "Valor cuota",
-                    "estado": "Estado"
-                })
-                st.dataframe(cuotas_credito, use_container_width=True, hide_index=True)
-            b1, b2 = st.columns(2)
-            if b1.button("📄 Enviar contrato", key=f"contrato_{row['id']}"):
-                ok, error = enviar_contrato_credito(row.to_dict())
-                if ok:
-                    set_flash("detalle_msg", "success", f"✅ Contrato enviado correctamente para el crédito {row['id']}")
+                pagos_credito = pd.read_sql(text("""
+                    SELECT fecha_pago, valor, tipo_movimiento, detalle
+                    FROM pagos
+                    WHERE prestamo_id = :id
+                    ORDER BY id_pago DESC
+                """), conn, params={"id": row["id"]})
+
+            t1, t2 = st.tabs(["📅 Cuotas del crédito", "💸 Movimientos registrados"])
+            with t1:
+                if cuotas_credito.empty:
+                    st.info("Sin cuotas registradas para este crédito.")
                 else:
-                    set_flash("detalle_msg", "error", f"❌ No se pudo enviar el contrato del crédito {row['id']}: {error}")
-                st.rerun()
-            if b2.button("⏰ Enviar recordatorio", key=f"recordatorio_{row['id']}"):
-                ok, error = enviar_recordatorio_credito(row.to_dict())
-                if ok:
-                    set_flash("detalle_msg", "success", f"✅ Recordatorio enviado correctamente para el crédito {row['id']}")
+                    cuotas_credito["valor_cuota"] = cuotas_credito["valor_cuota"].apply(pesos)
+                    cuotas_credito = cuotas_credito.rename(columns={
+                        "nro_cuota": "Cuota",
+                        "fecha_vencimiento": "Fecha de vencimiento",
+                        "valor_cuota": "Valor cuota",
+                        "estado": "Estado"
+                    })
+                    st.dataframe(cuotas_credito, use_container_width=True, hide_index=True)
+            with t2:
+                if pagos_credito.empty:
+                    st.info("Sin pagos ni abonos registrados para este crédito.")
                 else:
-                    set_flash("detalle_msg", "error", f"❌ No se pudo enviar el recordatorio del crédito {row['id']}: {error}")
-                st.rerun()
+                    pagos_credito["valor"] = pagos_credito["valor"].apply(pesos)
+                    pagos_credito = pagos_credito.rename(columns={
+                        "fecha_pago": "Fecha movimiento",
+                        "valor": "Valor",
+                        "tipo_movimiento": "Tipo",
+                        "detalle": "Detalle"
+                    })
+                    st.dataframe(pagos_credito, use_container_width=True, hide_index=True)
 # ==========================
 # 💰 PAGOS
 # ==========================
@@ -1822,6 +1806,7 @@ if "pago_msg" not in st.session_state:
     st.session_state.pago_msg = None
 with tab_pagos:
     st.subheader("💰 Pagos del crédito")
+    st.caption("Separa el pago normal de la cuota y el abono a capital para evitar errores y mantener una operación más clara.")
     activos = estado[estado["estado"] != "Cancelado"]
     if activos.empty:
         st.info("ℹ️ No hay préstamos activos.")
@@ -1838,41 +1823,52 @@ with tab_pagos:
         info3.metric("⏳ Saldo cuotas", pesos(prestamo.saldo))
         info4.metric("📊 Tasa mensual", f"{float(prestamo.tasa_mensual or 0):.4f}")
         st.divider()
-        st.markdown("### ✅ Pago de cuota")
-        if not proxima_cuota:
-            st.info("ℹ️ Este crédito no tiene cuotas pendientes.")
-        else:
-            st.info(
-                f"Próxima cuota a pagar: #{proxima_cuota[1]} | Vence: {proxima_cuota[3]} | Valor exacto: {pesos(proxima_cuota[2])}"
-            )
-            if st.button("Registrar pago de cuota", type="primary", key="btn_pago_cuota"):
-                with st.spinner("⏳ Aplicando pago, por favor espera..."):
-                    resultado = registrar_pago_cuota(prestamo.id, fecha_pago)
+        tab_pago_cuota, tab_abono_capital = st.tabs(["✅ Pago de cuota", "🏦 Abono a capital"])
+
+        with tab_pago_cuota:
+            if not proxima_cuota:
+                st.info("ℹ️ Este crédito no tiene cuotas pendientes.")
+            else:
+                st.markdown(f"""
+                <div style='padding:14px 16px;border:1px solid #e5e7eb;border-radius:16px;background:#f8fafc;margin-bottom:12px;'>
+                    <div style='font-size:13px;color:#64748b;margin-bottom:6px;'>Próxima cuota pendiente</div>
+                    <div style='font-size:18px;font-weight:800;color:#0f172a;'>Cuota #{proxima_cuota[1]} — {pesos(proxima_cuota[2])}</div>
+                    <div style='font-size:13px;color:#475569;margin-top:4px;'>Fecha de vencimiento: {proxima_cuota[3]}</div>
+                </div>
+                """, unsafe_allow_html=True)
+                with st.form("form_pago_cuota"):
+                    st.info("El pago normal registra únicamente la siguiente cuota pendiente del crédito.")
+                    confirmar_pago = st.form_submit_button("Registrar pago de cuota", type="primary")
+                if confirmar_pago:
+                    with st.spinner("⏳ Aplicando pago, por favor espera..."):
+                        resultado = registrar_pago_cuota(prestamo.id, fecha_pago)
+                        if resultado.get("ok"):
+                            st.session_state.pago_msg = {"tipo": "CUOTA", **resultado}
+                            time.sleep(0.2)
+                            st.rerun()
+                        else:
+                            st.error(f"❌ {resultado.get('error')}")
+
+        with tab_abono_capital:
+            st.caption("El abono a capital reduce el saldo del préstamo y recalcula el valor de las cuotas pendientes, manteniendo el número de cuotas restantes.")
+            with st.form("form_abono_capital"):
+                abono_capital = st.number_input(
+                    "Valor abono a capital",
+                    min_value=0.0,
+                    step=1000.0,
+                    value=0.0,
+                    key="abono_capital"
+                )
+                confirmar_abono = st.form_submit_button("Aplicar abono a capital")
+            if confirmar_abono:
+                with st.spinner("⏳ Aplicando abono a capital..."):
+                    resultado = registrar_abono_capital(prestamo.id, fecha_pago, abono_capital)
                     if resultado.get("ok"):
-                        st.session_state.pago_msg = {"tipo": "CUOTA", **resultado}
+                        st.session_state.pago_msg = {"tipo": "ABONO_CAPITAL", **resultado}
                         time.sleep(0.2)
                         st.rerun()
                     else:
                         st.error(f"❌ {resultado.get('error')}")
-        st.divider()
-        st.markdown("### 🏦 Abono a capital")
-        st.caption("El abono a capital reduce el saldo del préstamo y recalcula el valor de las cuotas pendientes, manteniendo el número de cuotas restantes.")
-        abono_capital = st.number_input(
-            "Valor abono a capital",
-            min_value=0.0,
-            step=1000.0,
-            value=0.0,
-            key="abono_capital"
-        )
-        if st.button("Aplicar abono a capital", key="btn_abono_capital"):
-            with st.spinner("⏳ Aplicando abono a capital..."):
-                resultado = registrar_abono_capital(prestamo.id, fecha_pago, abono_capital)
-                if resultado.get("ok"):
-                    st.session_state.pago_msg = {"tipo": "ABONO_CAPITAL", **resultado}
-                    time.sleep(0.2)
-                    st.rerun()
-                else:
-                    st.error(f"❌ {resultado.get('error')}")
     if st.session_state.pago_msg:
         m = st.session_state.pago_msg
         if m["tipo"] == "CUOTA":
@@ -1954,6 +1950,7 @@ with tab_sim:
             st.success(
                 f"📌 Cuota {frecuencia.lower()}: **{pesos(cuota)}**\n\n"
                 f"📆 Total cuotas: **{cuotas_express}**\n\n"
+                f"💰 Total a pagar estimado: **{pesos(cuota * cuotas_express)}**\n\n"
                 f"💰 Total a pagar estimado: **{pesos(cuota * cuotas_express)}**\n\n"
                 f"📈 Tasa aplicada: **{calcular_tasa_express(frecuencia)*100:.2f}%**"
             )

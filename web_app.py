@@ -2005,6 +2005,8 @@ with tab_detalle:
 # ==========================
 if "pago_msg" not in st.session_state:
     st.session_state.pago_msg = None
+if "reset_select_prestamo_pago" not in st.session_state:
+    st.session_state.reset_select_prestamo_pago = False
 with tab_pagos:
     st.subheader("💰 Pagos del crédito")
     st.caption("Aquí solo se muestran créditos activos con saldo pendiente. Los créditos cerrados siguen visibles en Resumen e Historial, pero no interfieren en la operación diaria.")
@@ -2014,6 +2016,10 @@ with tab_pagos:
     else:
         opciones = {f"{r.id} — {r.cliente}": r for r in activos.itertuples()}
         opciones_lista = [None] + list(opciones.keys())
+        if st.session_state.get("reset_select_prestamo_pago", False):
+            if "select_prestamo_pago" in st.session_state:
+                del st.session_state["select_prestamo_pago"]
+            st.session_state.reset_select_prestamo_pago = False
         seleccion = st.selectbox(
             "📌 Préstamo",
             opciones_lista,
@@ -2057,7 +2063,7 @@ with tab_pagos:
                                 resultado = registrar_pago_cuota(prestamo.id, fecha_pago)
                                 if resultado.get("ok"):
                                     st.session_state.pago_msg = {"tipo": "CUOTA", **resultado}
-                                    st.session_state["select_prestamo_pago"] = None
+                                    st.session_state.reset_select_prestamo_pago = True
                                     time.sleep(0.2)
                                     st.rerun()
                                 else:
@@ -2084,7 +2090,7 @@ with tab_pagos:
                             resultado = registrar_abono_capital(prestamo.id, fecha_pago, abono_capital)
                             if resultado.get("ok"):
                                 st.session_state.pago_msg = {"tipo": "ABONO_CAPITAL", **resultado}
-                                st.session_state["select_prestamo_pago"] = None
+                                st.session_state.reset_select_prestamo_pago = True
                                 time.sleep(0.2)
                                 st.rerun()
                             else:

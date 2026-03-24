@@ -1523,16 +1523,21 @@ with tab_resumen:
 # ==========================
 with tab_clientes:
     st.subheader("👥 Gestión de clientes")
-
     show_flash("clientes_msg")
 
     with get_conn() as conn:
-        clientes_df = pd.read_sql(text("SELECT cedula, nombres, apellidos, ciudad, telefono, correo, direccion, empresa, fecha_nacimiento, cargo FROM clientes ORDER BY nombres, apellidos"), conn)
+        clientes_df = pd.read_sql(
+            text("""
+                SELECT cedula, nombres, apellidos, ciudad, telefono, correo, direccion, empresa, fecha_nacimiento, cargo
+                FROM clientes
+                ORDER BY nombres, apellidos
+            """),
+            conn
+        )
 
-    c1, c2 = st.columns([1.05, 0.95])
+    cli_tab1, cli_tab2, cli_tab3 = st.tabs(["📝 Registrar cliente", "🛠️ Gestión de clientes", "📋 BD clientes"])
 
-    with c1:
-        st.markdown("### Registrar cliente")
+    with cli_tab1:
         with st.form("form_nuevo_cliente", clear_on_submit=True):
             cedula_new = st.text_input("Cédula *")
             nombres_new = st.text_input("Nombres *")
@@ -1567,8 +1572,7 @@ with tab_clientes:
                     except Exception as e:
                         st.error(f"❌ No se pudo registrar el cliente: {e}")
 
-    with c2:
-        st.markdown("### Gestión de cliente")
+    with cli_tab2:
         if clientes_df.empty:
             st.info("No hay clientes registrados.")
         else:
@@ -1587,54 +1591,57 @@ with tab_clientes:
             else:
                 fila = clientes_df[clientes_df["cedula"] == cliente_sel].iloc[0]
 
-                with st.expander("✏️ Editar cliente", expanded=False):
-                    with st.form("form_editar_cliente"):
-                        st.text_input("Cédula", value=fila["cedula"], disabled=True)
-                        nombres_edit = st.text_input("Nombres", value=fila["nombres"])
-                        apellidos_edit = st.text_input("Apellidos", value=fila["apellidos"])
-                        ciudad_edit = st.text_input("Ciudad", value=fila["ciudad"])
-                        telefono_edit = st.text_input("Teléfono", value=fila["telefono"])
-                        correo_edit = st.text_input("Correo", value=fila["correo"])
-                        direccion_edit = st.text_input("Dirección", value=fila["direccion"])
-                        empresa_edit = st.text_input("Empresa", value=fila["empresa"])
-                        fecha_nacimiento_edit = st.date_input(
-                            "Fecha de nacimiento",
-                            value=_parse_fecha_cliente(fila["fecha_nacimiento"]),
-                            format="YYYY-MM-DD",
-                            key="fecha_nacimiento_edit"
-                        )
-                        cargo_edit = st.text_input("Cargo", value=fila["cargo"])
-                        actualizar = st.form_submit_button("Guardar cambios", type="primary")
-                        if actualizar:
-                            try:
-                                actualizar_cliente_db(cliente_sel, {
-                                    "nombres": nombres_edit.strip(),
-                                    "apellidos": apellidos_edit.strip(),
-                                    "ciudad": ciudad_edit.strip(),
-                                    "telefono": telefono_edit.strip(),
-                                    "correo": correo_edit.strip(),
-                                    "direccion": direccion_edit.strip(),
-                                    "empresa": empresa_edit.strip(),
-                                    "fecha_nacimiento": _fecha_cliente_db(fecha_nacimiento_edit),
-                                    "cargo": cargo_edit.strip()
-                                })
-                                set_flash("clientes_msg", "success", "✅ Cliente actualizado correctamente")
+                col_g1, col_g2 = st.columns(2)
+
+                with col_g1:
+                    with st.expander("✏️ Editar cliente", expanded=True):
+                        with st.form("form_editar_cliente"):
+                            st.text_input("Cédula", value=fila["cedula"], disabled=True)
+                            nombres_edit = st.text_input("Nombres", value=fila["nombres"])
+                            apellidos_edit = st.text_input("Apellidos", value=fila["apellidos"])
+                            ciudad_edit = st.text_input("Ciudad", value=fila["ciudad"])
+                            telefono_edit = st.text_input("Teléfono", value=fila["telefono"])
+                            correo_edit = st.text_input("Correo", value=fila["correo"])
+                            direccion_edit = st.text_input("Dirección", value=fila["direccion"])
+                            empresa_edit = st.text_input("Empresa", value=fila["empresa"])
+                            fecha_nacimiento_edit = st.date_input(
+                                "Fecha de nacimiento",
+                                value=_parse_fecha_cliente(fila["fecha_nacimiento"]),
+                                format="YYYY-MM-DD",
+                                key="fecha_nacimiento_edit"
+                            )
+                            cargo_edit = st.text_input("Cargo", value=fila["cargo"])
+                            actualizar = st.form_submit_button("Guardar cambios", type="primary")
+                            if actualizar:
+                                try:
+                                    actualizar_cliente_db(cliente_sel, {
+                                        "nombres": nombres_edit.strip(),
+                                        "apellidos": apellidos_edit.strip(),
+                                        "ciudad": ciudad_edit.strip(),
+                                        "telefono": telefono_edit.strip(),
+                                        "correo": correo_edit.strip(),
+                                        "direccion": direccion_edit.strip(),
+                                        "empresa": empresa_edit.strip(),
+                                        "fecha_nacimiento": _fecha_cliente_db(fecha_nacimiento_edit),
+                                        "cargo": cargo_edit.strip()
+                                    })
+                                    set_flash("clientes_msg", "success", "✅ Cliente actualizado correctamente")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"❌ No se pudo actualizar el cliente: {e}")
+
+                with col_g2:
+                    with st.expander("🗑️ Borrar cliente", expanded=False):
+                        st.warning("Esta acción eliminará el cliente solo si no tiene créditos asociados.")
+                        if st.button("Borrar cliente seleccionado", key="btn_borrar_cliente", type="secondary"):
+                            ok_del, err_del = eliminar_cliente_db(cliente_sel)
+                            if ok_del:
+                                set_flash("clientes_msg", "success", "✅ Cliente eliminado correctamente")
                                 st.rerun()
-                            except Exception as e:
-                                st.error(f"❌ No se pudo actualizar el cliente: {e}")
+                            else:
+                                st.error(f"❌ {err_del}")
 
-                with st.expander("🗑️ Borrar cliente", expanded=False):
-                    st.warning("Esta acción eliminará el cliente solo si no tiene créditos asociados.")
-                    if st.button("Borrar cliente seleccionado", key="btn_borrar_cliente", type="secondary"):
-                        ok_del, err_del = eliminar_cliente_db(cliente_sel)
-                        if ok_del:
-                            set_flash("clientes_msg", "success", "✅ Cliente eliminado correctamente")
-                            st.rerun()
-                        else:
-                            st.error(f"❌ {err_del}")
-
-    st.divider()
-    with st.expander("📋 Ver base de clientes", expanded=False):
+    with cli_tab3:
         if not clientes_df.empty:
             st.dataframe(clientes_df.rename(columns={
                 "cedula": "Cédula",
@@ -1656,16 +1663,27 @@ with tab_clientes:
 with tab_creditos:
     st.subheader("🆕 Registrar nuevo crédito")
     show_flash("credito_msg")
+    show_flash("contrato_msg")
+
     with get_conn() as conn:
-        clientes_credito_df = pd.read_sql(text("SELECT cedula, nombres, apellidos, correo FROM clientes ORDER BY nombres, apellidos"), conn)
+        clientes_credito_df = pd.read_sql(
+            text("SELECT cedula, nombres, apellidos, correo FROM clientes ORDER BY nombres, apellidos"),
+            conn
+        )
+
+    cred_tab1, cred_tab2, cred_tab3 = st.tabs([
+        "💳 Crédito normal",
+        "⚡ Crédito express",
+        "📨 Contratos pendientes"
+    ])
+
     if clientes_credito_df.empty:
         st.info("ℹ️ Primero registra un cliente para crear créditos.")
     else:
-        tcred1, tcred2 = st.tabs(["💳 Crédito normal", "⚡ Crédito express"])
         cliente_options = [None] + clientes_credito_df["cedula"].tolist()
         nombre_cliente = lambda x: "Selecciona un cliente" if x is None else f"{x} — {clientes_credito_df.loc[clientes_credito_df['cedula']==x, 'nombres'].iloc[0]} {clientes_credito_df.loc[clientes_credito_df['cedula']==x, 'apellidos'].iloc[0]}"
 
-        with tcred1:
+        with cred_tab1:
             cliente_normal = st.selectbox(
                 "Cliente",
                 cliente_options,
@@ -1692,7 +1710,8 @@ with tab_creditos:
                         st.rerun()
                     else:
                         st.error(f"❌ {err_c}")
-        with tcred2:
+
+        with cred_tab2:
             cliente_express = st.selectbox(
                 "Cliente",
                 cliente_options,
@@ -1719,6 +1738,65 @@ with tab_creditos:
                         st.rerun()
                     else:
                         st.error(f"❌ {err_c}")
+
+        with cred_tab3:
+            pendientes_df = estado[estado["estado"] == "Pendiente"].copy()
+
+            if pendientes_df.empty:
+                st.success("✅ No hay créditos pendientes de envío de contrato.")
+            else:
+                st.caption("Aquí puedes reenviar manualmente el contrato a créditos que ya fueron registrados en el sistema y quedaron pendientes.")
+                pendientes_df = pendientes_df.sort_values(["cliente", "id"])
+                pendientes_options = [None] + pendientes_df["id"].tolist()
+
+                prestamo_pend_sel = st.selectbox(
+                    "Selecciona un crédito pendiente",
+                    pendientes_options,
+                    index=0,
+                    key="sel_credito_pendiente_contrato",
+                    format_func=lambda x: "Selecciona un crédito" if x is None else f"{x} — {pendientes_df.loc[pendientes_df['id']==x, 'cliente'].iloc[0]}"
+                )
+
+                if prestamo_pend_sel is None:
+                    st.info("ℹ️ Selecciona un crédito pendiente para enviar el contrato.")
+                else:
+                    fila_p = pendientes_df[pendientes_df["id"] == prestamo_pend_sel].iloc[0].to_dict()
+
+                    st.markdown(f"""
+                    <div style="border:1px solid #e5e7eb;border-radius:16px;padding:14px 16px;background:#ffffff;margin-bottom:10px;">
+                        <div style="font-size:18px;font-weight:800;color:#0f172a;">Crédito {fila_p['id']}</div>
+                        <div style="font-size:13px;color:#64748b;margin-top:4px;">{fila_p['cliente']} · {fila_p['tipo']} · Estado: {fila_p['estado']}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    r1, r2, r3, r4 = st.columns(4)
+                    r1.metric("Capital", pesos(fila_p["monto_original"]))
+                    r2.metric("Cuota", pesos(fila_p["valor_cuota"]))
+                    r3.metric("Cuotas", int(fila_p["cuotas"]))
+                    r4.metric("Frecuencia", fila_p.get("frecuencia", "Mensual"))
+
+                    if st.button("📨 Enviar contrato manual", type="primary", key="btn_enviar_contrato_manual"):
+                        ok_send, err_send = enviar_contrato_credito(fila_p)
+                        if ok_send:
+                            set_flash("contrato_msg", "success", f"✅ Contrato enviado correctamente para el crédito {fila_p['id']}")
+                        else:
+                            set_flash("contrato_msg", "warning", f"⚠️ No se pudo enviar el contrato del crédito {fila_p['id']}: {err_send}")
+                        st.rerun()
+
+                pendientes_show = pendientes_df[["id", "cliente", "monto_original", "valor_cuota", "cuotas", "frecuencia", "tipo", "estado"]].copy()
+                pendientes_show["monto_original"] = pendientes_show["monto_original"].apply(pesos)
+                pendientes_show["valor_cuota"] = pendientes_show["valor_cuota"].apply(pesos)
+                pendientes_show = pendientes_show.rename(columns={
+                    "id": "Crédito",
+                    "cliente": "Cliente",
+                    "monto_original": "Capital",
+                    "valor_cuota": "Cuota",
+                    "cuotas": "N.° cuotas",
+                    "frecuencia": "Frecuencia",
+                    "tipo": "Tipo",
+                    "estado": "Estado"
+                })
+                st.dataframe(pendientes_show, use_container_width=True, hide_index=True)
 # ==========================
 # 📄 DETALLE
 # ==========================

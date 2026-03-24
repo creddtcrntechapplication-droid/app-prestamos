@@ -1443,9 +1443,14 @@ with tab_resumen:
     # ==========================
     st.divider()
     st.subheader("🔎 Consulta mensual (corte 02 → 02)")
+    meses_disponibles = pd.date_range("2025-12-01", "2030-12-01", freq="MS").strftime("%Y-%m").tolist()
+    mes_actual = date.today().strftime("%Y-%m")
+    index_actual = meses_disponibles.index(mes_actual) if mes_actual in meses_disponibles else 0
+
     mes_consulta = st.selectbox(
         "Selecciona el mes",
-        pd.date_range("2025-12-01", "2030-12-01", freq="MS").strftime("%Y-%m")
+        meses_disponibles,
+        index=index_actual
     )
     year, month = map(int, mes_consulta.split("-"))
     if year == 2025 and month == 12:
@@ -1568,59 +1573,65 @@ with tab_clientes:
             st.info("No hay clientes registrados.")
         else:
             clientes_df = clientes_df.fillna("")
+            cliente_options = [None] + clientes_df["cedula"].tolist()
             cliente_sel = st.selectbox(
                 "Selecciona un cliente",
-                clientes_df["cedula"].tolist(),
-                format_func=lambda x: f"{x} — {clientes_df.loc[clientes_df['cedula']==x, 'nombres'].iloc[0]} {clientes_df.loc[clientes_df['cedula']==x, 'apellidos'].iloc[0]}",
+                cliente_options,
+                index=0,
+                format_func=lambda x: "Selecciona un cliente" if x is None else f"{x} — {clientes_df.loc[clientes_df['cedula']==x, 'nombres'].iloc[0]} {clientes_df.loc[clientes_df['cedula']==x, 'apellidos'].iloc[0]}",
                 key="sel_cliente_gestion"
             )
-            fila = clientes_df[clientes_df["cedula"] == cliente_sel].iloc[0]
 
-            with st.expander("✏️ Editar cliente", expanded=False):
-                with st.form("form_editar_cliente"):
-                    st.text_input("Cédula", value=fila["cedula"], disabled=True)
-                    nombres_edit = st.text_input("Nombres", value=fila["nombres"])
-                    apellidos_edit = st.text_input("Apellidos", value=fila["apellidos"])
-                    ciudad_edit = st.text_input("Ciudad", value=fila["ciudad"])
-                    telefono_edit = st.text_input("Teléfono", value=fila["telefono"])
-                    correo_edit = st.text_input("Correo", value=fila["correo"])
-                    direccion_edit = st.text_input("Dirección", value=fila["direccion"])
-                    empresa_edit = st.text_input("Empresa", value=fila["empresa"])
-                    fecha_nacimiento_edit = st.date_input(
-                        "Fecha de nacimiento",
-                        value=_parse_fecha_cliente(fila["fecha_nacimiento"]),
-                        format="YYYY-MM-DD",
-                        key="fecha_nacimiento_edit"
-                    )
-                    cargo_edit = st.text_input("Cargo", value=fila["cargo"])
-                    actualizar = st.form_submit_button("Guardar cambios", type="primary")
-                    if actualizar:
-                        try:
-                            actualizar_cliente_db(cliente_sel, {
-                                "nombres": nombres_edit.strip(),
-                                "apellidos": apellidos_edit.strip(),
-                                "ciudad": ciudad_edit.strip(),
-                                "telefono": telefono_edit.strip(),
-                                "correo": correo_edit.strip(),
-                                "direccion": direccion_edit.strip(),
-                                "empresa": empresa_edit.strip(),
-                                "fecha_nacimiento": _fecha_cliente_db(fecha_nacimiento_edit),
-                                "cargo": cargo_edit.strip()
-                            })
-                            set_flash("clientes_msg", "success", "✅ Cliente actualizado correctamente")
+            if cliente_sel is None:
+                st.info("ℹ️ Selecciona un cliente para editar o borrar.")
+            else:
+                fila = clientes_df[clientes_df["cedula"] == cliente_sel].iloc[0]
+
+                with st.expander("✏️ Editar cliente", expanded=False):
+                    with st.form("form_editar_cliente"):
+                        st.text_input("Cédula", value=fila["cedula"], disabled=True)
+                        nombres_edit = st.text_input("Nombres", value=fila["nombres"])
+                        apellidos_edit = st.text_input("Apellidos", value=fila["apellidos"])
+                        ciudad_edit = st.text_input("Ciudad", value=fila["ciudad"])
+                        telefono_edit = st.text_input("Teléfono", value=fila["telefono"])
+                        correo_edit = st.text_input("Correo", value=fila["correo"])
+                        direccion_edit = st.text_input("Dirección", value=fila["direccion"])
+                        empresa_edit = st.text_input("Empresa", value=fila["empresa"])
+                        fecha_nacimiento_edit = st.date_input(
+                            "Fecha de nacimiento",
+                            value=_parse_fecha_cliente(fila["fecha_nacimiento"]),
+                            format="YYYY-MM-DD",
+                            key="fecha_nacimiento_edit"
+                        )
+                        cargo_edit = st.text_input("Cargo", value=fila["cargo"])
+                        actualizar = st.form_submit_button("Guardar cambios", type="primary")
+                        if actualizar:
+                            try:
+                                actualizar_cliente_db(cliente_sel, {
+                                    "nombres": nombres_edit.strip(),
+                                    "apellidos": apellidos_edit.strip(),
+                                    "ciudad": ciudad_edit.strip(),
+                                    "telefono": telefono_edit.strip(),
+                                    "correo": correo_edit.strip(),
+                                    "direccion": direccion_edit.strip(),
+                                    "empresa": empresa_edit.strip(),
+                                    "fecha_nacimiento": _fecha_cliente_db(fecha_nacimiento_edit),
+                                    "cargo": cargo_edit.strip()
+                                })
+                                set_flash("clientes_msg", "success", "✅ Cliente actualizado correctamente")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ No se pudo actualizar el cliente: {e}")
+
+                with st.expander("🗑️ Borrar cliente", expanded=False):
+                    st.warning("Esta acción eliminará el cliente solo si no tiene créditos asociados.")
+                    if st.button("Borrar cliente seleccionado", key="btn_borrar_cliente", type="secondary"):
+                        ok_del, err_del = eliminar_cliente_db(cliente_sel)
+                        if ok_del:
+                            set_flash("clientes_msg", "success", "✅ Cliente eliminado correctamente")
                             st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ No se pudo actualizar el cliente: {e}")
-
-            with st.expander("🗑️ Borrar cliente", expanded=False):
-                st.warning("Esta acción eliminará el cliente solo si no tiene créditos asociados.")
-                if st.button("Borrar cliente seleccionado", key="btn_borrar_cliente", type="secondary"):
-                    ok_del, err_del = eliminar_cliente_db(cliente_sel)
-                    if ok_del:
-                        set_flash("clientes_msg", "success", "✅ Cliente eliminado correctamente")
-                        st.rerun()
-                    else:
-                        st.error(f"❌ {err_del}")
+                        else:
+                            st.error(f"❌ {err_del}")
 
     st.divider()
     with st.expander("📋 Ver base de clientes", expanded=False):

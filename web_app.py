@@ -137,9 +137,9 @@ if st.session_state.get("app_busy") and st.session_state.get("app_busy_label"):
 # ==========================
 # VARIABLES SEGURAS
 # ==========================
-MAILERSEND_API_KEY = st.secrets["MAILERSEND_API_KEY"]
-MAILERSEND_FROM_EMAIL = st.secrets["MAILERSEND_FROM_EMAIL"]
-MAILERSEND_FROM_NAME = st.secrets.get("MAILERSEND_FROM_NAME", "CREDDT CRNTECH")
+BREVO_API_KEY = st.secrets["BREVO_API_KEY"]
+BREVO_FROM_EMAIL = st.secrets["BREVO_FROM_EMAIL"]
+BREVO_FROM_NAME = st.secrets.get("BREVO_FROM_NAME", "CREDDT CRNTECH")
 APP_BASE_URL = st.secrets.get("APP_BASE_URL", "").rstrip("/")
 def asegurar_estructura_base():
     with get_conn() as conn:
@@ -1158,7 +1158,7 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
 # =========================
 # ENVÍO DE CORREO
 # =========================
-def enviar_correo_mailersend(
+def enviar_correo_brevo(
         destino,
         asunto,
         cuerpo,
@@ -1170,14 +1170,16 @@ def enviar_correo_mailersend(
         destino = (destino or "").strip()
         if not destino:
             return False, "Cliente sin correo registrado"
+
         cuerpo = (cuerpo or "").strip()
         cuerpo_html = cuerpo.replace("\n", "<br>")
+
         html_template = f"""
         <div style="font-family: Arial, Helvetica, sans-serif; background-color: #f4f6f8; padding: 30px;">
             <div style="max-width: 650px; margin: 0 auto; background: #ffffff; border-radius: 10px; overflow: hidden; border: 1px solid #e5e7eb;">
                 <div style="background: #0f172a; padding: 24px 30px;">
                     <h2 style="margin: 0; color: #ffffff; font-size: 22px;">CREDDT CRNTECH</h2>
-                    <p style="margin: 8px 0 0 0; color: #cbd5e1; font-size: 14px;">Confirmación de pago</p>
+                    <p style="margin: 8px 0 0 0; color: #cbd5e1; font-size: 14px;">Notificación automática</p>
                 </div>
                 <div style="padding: 30px; color: #1f2937; font-size: 15px; line-height: 1.7; white-space: normal;">
                     {cuerpo_html}
@@ -1189,10 +1191,11 @@ def enviar_correo_mailersend(
             </div>
         </div>
         """
+
         payload = {
-            "from": {
-                "email": MAILERSEND_FROM_EMAIL,
-                "name": MAILERSEND_FROM_NAME
+            "sender": {
+                "name": BREVO_FROM_NAME,
+                "email": BREVO_FROM_EMAIL
             },
             "to": [
                 {
@@ -1201,42 +1204,50 @@ def enviar_correo_mailersend(
                 }
             ],
             "subject": asunto,
-            "text": cuerpo,
-            "html": html_override or html_template
+            "textContent": cuerpo,
+            "htmlContent": html_override or html_template
         }
+
         if attachment_bytes:
-            payload["attachments"] = [
+            payload["attachment"] = [
                 {
-                    "filename": attachment_name or "recibo.pdf",
-                    "content": base64.b64encode(attachment_bytes).decode("utf-8"),
-                    "disposition": "attachment"
+                    "name": attachment_name or "adjunto.pdf",
+                    "content": base64.b64encode(attachment_bytes).decode("utf-8")
                 }
             ]
+
         headers = {
-            "Authorization": f"Bearer {MAILERSEND_API_KEY}",
-            "Content-Type": "application/json"
+            "accept": "application/json",
+            "api-key": BREVO_API_KEY,
+            "content-type": "application/json"
         }
+
         response = requests.post(
-            "https://api.mailersend.com/v1/email",
+            "https://api.brevo.com/v3/smtp/email",
             headers=headers,
             json=payload,
             timeout=30
         )
+
         if response.status_code in (200, 201, 202):
             return True, None
+
         detalle = response.text
         try:
             detalle_json = response.json()
             detalle = detalle_json
         except Exception:
             pass
-        return False, f"MailerSend {response.status_code}: {detalle}"
+
+        return False, f"Brevo {response.status_code}: {detalle}"
+
     except requests.Timeout:
-        return False, "Timeout conectando con MailerSend"
+        return False, "Timeout conectando con Brevo"
     except requests.RequestException as e:
-        return False, f"Error de red con MailerSend: {e}"
+        return False, f"Error de red con Brevo: {e}"
     except Exception as e:
         return False, f"Error general enviando correo: {e}"
+
 def enviar_correo_async(
         destino,
         asunto,
@@ -1245,7 +1256,7 @@ def enviar_correo_async(
         attachment_name=None,
         html_override=None
 ):
-    return enviar_correo_mailersend(
+    return enviar_correo_brevo(
         destino=destino,
         asunto=asunto,
         cuerpo=cuerpo,
@@ -1253,6 +1264,7 @@ def enviar_correo_async(
         attachment_name=attachment_name,
         html_override=html_override
     )
+
 if token_aceptar:
     render_aceptacion_contrato(token_aceptar)
     st.stop()

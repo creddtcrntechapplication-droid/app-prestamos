@@ -145,15 +145,9 @@ with col2:
     <p style='text-align:center;color:#666;'>Plataforma inteligente de gestión de créditos</p>
     """, unsafe_allow_html=True)
 st.divider()
+show_flash("sistema_msg")
 if st.session_state.get("app_busy") and st.session_state.get("app_busy_label"):
     st.info(f"⏳ {st.session_state.get('app_busy_label')}")
-# ==========================
-# VARIABLES SEGURAS
-# ==========================
-BREVO_API_KEY = st.secrets["BREVO_API_KEY"]
-BREVO_FROM_EMAIL = st.secrets["BREVO_FROM_EMAIL"]
-BREVO_FROM_NAME = st.secrets.get("BREVO_FROM_NAME", "CREDDT CRNTECH")
-APP_BASE_URL = st.secrets.get("APP_BASE_URL", "").rstrip("/")
 def asegurar_estructura_base():
     with get_conn() as conn:
         conn.execute(text("""
@@ -233,6 +227,33 @@ def asegurar_estructura_base():
                 fecha_envio TEXT
             )
         """))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS eventos_credito (
+                id SERIAL PRIMARY KEY,
+                prestamo_id TEXT,
+                tipo_evento TEXT,
+                detalle TEXT,
+                fecha_evento TEXT
+            )
+        """))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS correos_pendientes (
+                id SERIAL PRIMARY KEY,
+                prestamo_id TEXT,
+                destinatario TEXT,
+                asunto TEXT,
+                cuerpo TEXT,
+                html_content TEXT,
+                attachment_name TEXT,
+                attachment_b64 TEXT,
+                tipo_correo TEXT,
+                ultimo_error TEXT,
+                estado TEXT DEFAULT 'Pendiente',
+                intentos INTEGER DEFAULT 0,
+                fecha_creacion TEXT,
+                fecha_ultimo_intento TEXT
+            )
+        """))
         for s in [
             "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS frecuencia TEXT",
             "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS contrato_aceptado INTEGER DEFAULT 0",
@@ -246,7 +267,16 @@ def asegurar_estructura_base():
             "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS tipo_movimiento TEXT",
             "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS detalle TEXT",
             "ALTER TABLE pagos_cuotas ADD COLUMN IF NOT EXISTS valor_aplicado NUMERIC(18,2)",
-            "ALTER TABLE reminders_sent ADD COLUMN IF NOT EXISTS tipo_recordatorio TEXT"
+            "ALTER TABLE reminders_sent ADD COLUMN IF NOT EXISTS tipo_recordatorio TEXT",
+            "ALTER TABLE correos_pendientes ADD COLUMN IF NOT EXISTS html_content TEXT",
+            "ALTER TABLE correos_pendientes ADD COLUMN IF NOT EXISTS attachment_name TEXT",
+            "ALTER TABLE correos_pendientes ADD COLUMN IF NOT EXISTS attachment_b64 TEXT",
+            "ALTER TABLE correos_pendientes ADD COLUMN IF NOT EXISTS tipo_correo TEXT",
+            "ALTER TABLE correos_pendientes ADD COLUMN IF NOT EXISTS ultimo_error TEXT",
+            "ALTER TABLE correos_pendientes ADD COLUMN IF NOT EXISTS estado TEXT DEFAULT 'Pendiente'",
+            "ALTER TABLE correos_pendientes ADD COLUMN IF NOT EXISTS intentos INTEGER DEFAULT 0",
+            "ALTER TABLE correos_pendientes ADD COLUMN IF NOT EXISTS fecha_creacion TEXT",
+            "ALTER TABLE correos_pendientes ADD COLUMN IF NOT EXISTS fecha_ultimo_intento TEXT"
         ]:
             conn.execute(text(s))
         conn.execute(text("""
@@ -268,6 +298,145 @@ def asegurar_estructura_base():
         """))
         conn.commit()
 asegurar_estructura_base()
+
+def registrar_evento_credito(prestamo_id, tipo_evento, detalle):
+    try:
+        with get_conn() as conn:
+            conn.execute(text("""
+                INSERT INTO eventos_credito (prestamo_id, tipo_evento, detalle, fecha_evento)
+                VALUES (:prestamo_id, :tipo_evento, :detalle, :fecha_evento)
+            """), {
+                "prestamo_id": prestamo_id,
+                "tipo_evento": tipo_evento,
+                "detalle": detalle,
+                "fecha_evento": datetime.now().isoformat(timespec="seconds")
+            })
+            conn.commit()
+    except Exception:
+        pass
+
+def registrar_correo_pendiente(prestamo_id, destinatario, asunto, cuerpo, html_content=None,
+                               attachment_bytes=None, attachment_name=None, tipo_correo="GENERAL",
+                               error=None):
+    try:
+        attachment_b64 = base64.b64encode(attachment_bytes).decode("utf-8") if attachment_bytes else None
+        with get_conn() as conn:
+            conn.execute(text("""
+                INSERT INTO correos_pendientes (
+                    prestamo_id, destinatario, asunto, cuerpo, html_content,
+                    attachment_name, attachment_b64, tipo_correo, ultimo_error,
+                    estado, intentos, fecha_creacion, fecha_ultimo_intento
+                ) VALUES (
+                    :prestamo_id, :destinatario, :asunto, :cuerpo, :html_content,
+                    :attachment_name, :attachment_b64, :tipo_correo, :ultimo_error,
+                    'Pendiente', 0, :fecha_creacion, NULL
+                )
+            """), {
+                "prestamo_id": prestamo_id,
+                "destinatario": destinatario,
+                "asunto": asunto,
+                "cuerpo": cuerpo,
+                "html_content": html_content,
+                "attachment_name": attachment_name,
+                "attachment_b64": attachment_b64,
+                "tipo_correo": tipo_correo,
+                "ultimo_error": error,
+                "fecha_creacion": datetime.now().isoformat(timespec="seconds")
+            })
+            conn.commit()
+    except Exception:
+        pass
+
+def procesar_correos_pendientes(max_intentos=10):
+    enviados = 0
+    with get_conn() as conn:
+        rows = conn.execute(text("""
+            SELECT *
+            FROM correos_pendientes
+            WHERE estado = 'Pendiente'
+              AND intentos < 5
+            ORDER BY id ASC
+            LIMIT :limite
+        """), {"limite": max_intentos}).mappings().all()
+    for row in rows:
+        attachment_bytes = base64.b64decode(row["attachment_b64"]) if row.get("attachment_b64") else None
+        ok, err = enviar_correo_brevo(
+            destino=row["destinatario"],
+            asunto=row["asunto"],
+            cuerpo=row["cuerpo"],
+            attachment_bytes=attachment_bytes,
+            attachment_name=row.get("attachment_name"),
+            html_override=row.get("html_content")
+        )
+        with get_conn() as conn:
+            if ok:
+                conn.execute(text("""
+                    UPDATE correos_pendientes
+                    SET estado = 'Enviado',
+                        ultimo_error = NULL,
+                        intentos = COALESCE(intentos, 0) + 1,
+                        fecha_ultimo_intento = :fecha
+                    WHERE id = :id
+                """), {"id": row["id"], "fecha": datetime.now().isoformat(timespec="seconds")})
+                conn.commit()
+                enviados += 1
+                if row.get("prestamo_id"):
+                    registrar_evento_credito(row["prestamo_id"], "CORREO_REINTENTADO", f"Correo {row.get('tipo_correo', 'GENERAL')} reenviado correctamente")
+            else:
+                conn.execute(text("""
+                    UPDATE correos_pendientes
+                    SET ultimo_error = :err,
+                        intentos = COALESCE(intentos, 0) + 1,
+                        fecha_ultimo_intento = :fecha
+                    WHERE id = :id
+                """), {"id": row["id"], "err": err, "fecha": datetime.now().isoformat(timespec="seconds")})
+                conn.commit()
+    return enviados
+
+def actualizar_mora_automatica():
+    with get_conn() as conn:
+        conn.execute(text("""
+            UPDATE cuotas
+            SET estado = 'Vencida'
+            WHERE estado IN ('Pendiente', 'Parcial')
+              AND fecha_vencimiento::date < CURRENT_DATE
+        """))
+        prestamos_mora = conn.execute(text("""
+            SELECT DISTINCT prestamo_id
+            FROM cuotas
+            WHERE estado IN ('Vencida', 'Parcial')
+              AND fecha_vencimiento::date < CURRENT_DATE
+        """)).fetchall()
+        ids_mora = {r[0] for r in prestamos_mora}
+        activos = conn.execute(text("""
+            SELECT id, COALESCE(contrato_aceptado,0) AS contrato_aceptado
+            FROM prestamos
+            WHERE estado <> 'Cancelado'
+        """)).mappings().all()
+        for p in activos:
+            if p["id"] in ids_mora:
+                nuevo = 'En mora'
+            else:
+                pendientes = conn.execute(text("SELECT COUNT(*) FROM cuotas WHERE prestamo_id = :id AND estado <> 'Pagada'"), {"id": p["id"]}).scalar()
+                if int(pendientes or 0) == 0:
+                    nuevo = 'Cancelado'
+                elif int(p["contrato_aceptado"] or 0) == 0:
+                    nuevo = 'Pendiente contrato'
+                else:
+                    nuevo = 'Activo'
+            conn.execute(text("UPDATE prestamos SET estado = :estado WHERE id = :id"), {"estado": nuevo, "id": p["id"]})
+        conn.commit()
+
+def asunto_correo(tipo_correo, prestamo_id):
+    mapa = {
+        "CONTRATO": f"CREDDT CRNTECH | Contrato de crédito {prestamo_id} para aceptación",
+        "DESEMBOLSO": f"CREDDT CRNTECH | Confirmación de desembolso del crédito {prestamo_id}",
+        "RECORDATORIO": f"CREDDT CRNTECH | Recordatorio de pago del crédito {prestamo_id}",
+        "RECIBO_CUOTA": f"CREDDT CRNTECH | Confirmación de pago recibido – crédito {prestamo_id}",
+        "RECIBO_ABONO": f"CREDDT CRNTECH | Confirmación de abono a capital – crédito {prestamo_id}",
+    }
+    return mapa.get(tipo_correo, f"CREDDT CRNTECH | Notificación crédito {prestamo_id}")
+
 def asegurar_estructura_financiera():
     with get_conn() as conn:
         sentencias = [
@@ -901,11 +1070,13 @@ def enviar_contrato_credito(prestamo_row):
         with open(ruta_pdf, "rb") as f:
             ok_mail, err_mail = enviar_correo_async(
                 prestamo_row["correo"],
-                f"Contrato crédito {prestamo_row['id']}",
+                asunto_correo("CONTRATO", prestamo_row["id"]),
                 cuerpo,
                 attachment_bytes=f.read(),
                 attachment_name=f"contrato_{prestamo_row['id']}.pdf",
-                html_override=html_boton
+                html_override=html_boton,
+                meta_tipo="CONTRATO",
+                meta_prestamo_id=prestamo_row["id"]
             )
         if ok_mail:
             with get_conn() as conn:
@@ -948,9 +1119,11 @@ def enviar_correo_desembolso_credito(prestamo_row):
     )
     ok_mail, err_mail = enviar_correo_async(
         prestamo_row["correo"],
-        f"Crédito {prestamo_row['id']} aprobado para desembolso",
+        asunto_correo("DESEMBOLSO", prestamo_row["id"]),
         cuerpo,
-        html_override=html_correo
+        html_override=html_correo,
+        meta_tipo="DESEMBOLSO",
+        meta_prestamo_id=prestamo_row["id"]
     )
     if ok_mail:
         with get_conn() as conn:
@@ -1093,6 +1266,7 @@ def aceptar_contrato_por_token(token):
             WHERE id = :id
         """), {"fecha": fecha_actual, "id": prestamo["id"]})
         conn.commit()
+        registrar_evento_credito(prestamo["id"], "CONTRATO_ACEPTADO", "Contrato aceptado por el cliente")
 
     prestamo_row = dict(prestamo)
 
@@ -1105,6 +1279,7 @@ def aceptar_contrato_por_token(token):
         return True, f"Contrato aceptado correctamente, pero ocurrió un error enviando el correo de desembolso: {e}", prestamo_row
 def procesar_recordatorios_automaticos():
     enviados = 0
+    etapas = {-3: "PREVIO_3", -1: "PREVIO_1", 0: "VENCE_HOY", 1: "MORA_1", 5: "MORA_5"}
     with get_conn() as conn:
         rows = conn.execute(text("""
             SELECT cu.id_cuota, cu.prestamo_id, cu.nro_cuota, cu.fecha_vencimiento::date AS fecha_vencimiento, cu.valor_cuota,
@@ -1112,27 +1287,147 @@ def procesar_recordatorios_automaticos():
             FROM cuotas cu
             JOIN prestamos p ON p.id = cu.prestamo_id
             JOIN clientes c ON c.cedula = p.cliente_cedula
-            WHERE cu.estado IN ('Pendiente', 'Parcial')
+            WHERE cu.estado IN ('Pendiente', 'Parcial', 'Vencida')
               AND c.correo IS NOT NULL
-              AND cu.fecha_vencimiento::date BETWEEN CURRENT_DATE - INTERVAL '1 day' AND CURRENT_DATE + INTERVAL '3 day'
+              AND cu.fecha_vencimiento::date BETWEEN CURRENT_DATE - INTERVAL '6 day' AND CURRENT_DATE + INTERVAL '3 day'
         """)).mappings().all()
         for r in rows:
-            dias = (r['fecha_vencimiento'] - date.today()).days
-            tipo_r = f"D{dias}"
-            ya = conn.execute(text("SELECT COUNT(*) FROM reminders_sent WHERE id_cuota = :id_cuota AND tipo_recordatorio = :tipo"), {"id_cuota": r['id_cuota'], "tipo": tipo_r}).scalar()
+            fecha_v = r["fecha_vencimiento"]
+            dias = (fecha_v - date.today()).days if isinstance(fecha_v, date) else (date.fromisoformat(str(fecha_v)) - date.today()).days
+            if dias not in etapas:
+                continue
+            tipo_r = etapas[dias]
+            ya = conn.execute(text("SELECT COUNT(*) FROM reminders_sent WHERE id_cuota = :id_cuota AND tipo_recordatorio = :tipo"), {"id_cuota": r["id_cuota"], "tipo": tipo_r}).scalar()
             if int(ya or 0) > 0:
                 continue
-            cuerpo = construir_cuerpo_correo('RECORDATORIO', r['cliente'], prestamo_id=r['prestamo_id'], cuota_nro=r['nro_cuota'], fecha_vencimiento=r['fecha_vencimiento'], valor=r['valor_cuota'])
-            html_correo = construir_html_correo('RECORDATORIO', r['cliente'], prestamo_id=r['prestamo_id'], cuota_nro=r['nro_cuota'], fecha_vencimiento=r['fecha_vencimiento'], valor=r['valor_cuota'])
-            ok, _ = enviar_correo_async(r['correo'], f"Recordatorio de pago crédito {r['prestamo_id']}", cuerpo, html_override=html_correo)
+            cuerpo = construir_cuerpo_correo(
+                "RECORDATORIO", r["cliente"],
+                prestamo_id=r["prestamo_id"],
+                cuota_nro=r["nro_cuota"],
+                fecha_vencimiento=r["fecha_vencimiento"],
+                valor=r["valor_cuota"],
+                dias_vencimiento=dias
+            )
+            html_correo = construir_html_correo(
+                "RECORDATORIO", r["cliente"],
+                prestamo_id=r["prestamo_id"],
+                cuota_nro=r["nro_cuota"],
+                fecha_vencimiento=r["fecha_vencimiento"],
+                valor=r["valor_cuota"],
+                dias_vencimiento=dias
+            )
+            ok, err = enviar_correo_async(
+                r["correo"],
+                asunto_correo("RECORDATORIO", r["prestamo_id"]),
+                cuerpo,
+                html_override=html_correo,
+                meta_tipo="RECORDATORIO",
+                meta_prestamo_id=r["prestamo_id"]
+            )
             if ok:
-                conn.execute(text("INSERT INTO reminders_sent (id_cuota, tipo_recordatorio, fecha_envio) VALUES (:id_cuota, :tipo, :fecha_envio)"), {"id_cuota": r['id_cuota'], "tipo": tipo_r, "fecha_envio": datetime.now().isoformat(timespec='seconds')})
+                conn.execute(text("INSERT INTO reminders_sent (id_cuota, tipo_recordatorio, fecha_envio) VALUES (:id_cuota, :tipo, :fecha_envio)"),
+                             {"id_cuota": r["id_cuota"], "tipo": tipo_r, "fecha_envio": datetime.now().isoformat(timespec="seconds")})
+                conn.commit()
+                registrar_evento_credito(r["prestamo_id"], "RECORDATORIO_ENVIADO", f"Recordatorio {tipo_r} enviado para cuota {r['nro_cuota']}")
                 enviados += 1
-        conn.commit()
+            else:
+                registrar_correo_pendiente(r["prestamo_id"], r["correo"], asunto_correo("RECORDATORIO", r["prestamo_id"]), cuerpo,
+                                           html_content=html_correo, tipo_correo="RECORDATORIO", error=err)
+                registrar_evento_credito(r["prestamo_id"], "RECORDATORIO_FALLIDO", f"Recordatorio {tipo_r} falló: {err}")
     return enviados
 def render_aceptacion_contrato(token):
-    st.markdown("<h2 style='text-align:center;'>CREDDT | CRNTECH</h2>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align:center;color:#666;'>Aceptación de contrato de crédito</p>", unsafe_allow_html=True)
+    st.markdown("""
+    <style>
+    .acept-wrap {
+        max-width: 760px;
+        margin: 0 auto;
+        padding: 12px 0 28px 0;
+    }
+    .acept-hero {
+        background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+        color: white;
+        border-radius: 22px;
+        padding: 30px 32px;
+        box-shadow: 0 12px 28px rgba(15, 23, 42, 0.18);
+        margin-bottom: 18px;
+    }
+    .acept-kicker {
+        font-size: 13px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #cbd5e1;
+        margin-bottom: 8px;
+    }
+    .acept-title {
+        font-size: 30px;
+        font-weight: 800;
+        line-height: 1.15;
+        margin: 0;
+    }
+    .acept-subtitle {
+        font-size: 15px;
+        color: #e2e8f0;
+        margin-top: 10px;
+        line-height: 1.6;
+    }
+    .acept-card {
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-radius: 20px;
+        padding: 24px;
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+        margin-bottom: 16px;
+    }
+    .acept-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+        margin-top: 16px;
+    }
+    .acept-item {
+        border: 1px solid #e5e7eb;
+        border-radius: 14px;
+        padding: 14px 16px;
+        background: #f8fafc;
+    }
+    .acept-label {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #64748b;
+        margin-bottom: 6px;
+    }
+    .acept-value {
+        font-size: 17px;
+        font-weight: 700;
+        color: #0f172a;
+    }
+    .acept-note {
+        border-left: 4px solid #0f172a;
+        background: #f8fafc;
+        padding: 14px 16px;
+        border-radius: 12px;
+        color: #334155;
+        line-height: 1.7;
+        margin-top: 16px;
+    }
+    @media (max-width: 640px) {
+        .acept-grid {
+            grid-template-columns: 1fr;
+        }
+        .acept-hero {
+            padding: 24px 20px;
+        }
+        .acept-card {
+            padding: 18px;
+        }
+        .acept-title {
+            font-size: 24px;
+        }
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
     with get_conn() as conn:
         prestamo = conn.execute(text("""
             SELECT p.id, p.monto_original, p.cuotas, p.frecuencia, p.valor_cuota, p.tipo, p.estado, p.contrato_aceptado,
@@ -1141,33 +1436,91 @@ def render_aceptacion_contrato(token):
             JOIN clientes c ON c.cedula = p.cliente_cedula
             WHERE p.contrato_token = :token
         """), {"token": token}).mappings().first()
+
+    st.markdown("<div class='acept-wrap'>", unsafe_allow_html=True)
+
     if not prestamo:
+        st.markdown("""
+        <div class='acept-hero'>
+            <div class='acept-kicker'>CREDDT CRNTECH</div>
+            <h1 class='acept-title'>Enlace no disponible</h1>
+            <div class='acept-subtitle'>
+                El enlace de aceptación no es válido o ya no se encuentra disponible.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
         st.error("❌ El enlace de aceptación no es válido.")
+        st.markdown("</div>", unsafe_allow_html=True)
         return
-    st.markdown(f"### Crédito {prestamo['id']}")
-    st.markdown(f"**Cliente:** {prestamo['cliente']}")
-    st.markdown(f"**Tipo:** {prestamo['tipo']}")
-    st.markdown(f"**Monto:** {pesos(prestamo['monto_original'])}")
-    st.markdown(f"**Frecuencia:** {prestamo['frecuencia']}")
-    st.markdown(f"**Cuotas:** {prestamo['cuotas']}")
-    st.markdown(f"**Valor cuota:** {pesos(prestamo['valor_cuota'])}")
+
+    st.markdown(f"""
+    <div class='acept-hero'>
+        <div class='acept-kicker'>CREDDT CRNTECH</div>
+        <h1 class='acept-title'>Aceptación de contrato de crédito</h1>
+        <div class='acept-subtitle'>
+            Estimado(a) <strong>{prestamo['cliente']}</strong>, por favor revise la información de su crédito y confirme la aceptación del contrato para continuar con el proceso.
+        </div>
+    </div>
+
+    <div class='acept-card'>
+        <div style='font-size:22px;font-weight:800;color:#0f172a;'>Crédito {prestamo['id']}</div>
+        <div style='font-size:14px;color:#64748b;margin-top:6px;'>Resumen de la operación aprobada</div>
+
+        <div class='acept-grid'>
+            <div class='acept-item'>
+                <div class='acept-label'>Cliente</div>
+                <div class='acept-value'>{prestamo['cliente']}</div>
+            </div>
+            <div class='acept-item'>
+                <div class='acept-label'>Tipo de crédito</div>
+                <div class='acept-value'>{prestamo['tipo']}</div>
+            </div>
+            <div class='acept-item'>
+                <div class='acept-label'>Monto aprobado</div>
+                <div class='acept-value'>{pesos(prestamo['monto_original'])}</div>
+            </div>
+            <div class='acept-item'>
+                <div class='acept-label'>Valor de la cuota</div>
+                <div class='acept-value'>{pesos(prestamo['valor_cuota'])}</div>
+            </div>
+            <div class='acept-item'>
+                <div class='acept-label'>Número de cuotas</div>
+                <div class='acept-value'>{prestamo['cuotas']}</div>
+            </div>
+            <div class='acept-item'>
+                <div class='acept-label'>Frecuencia</div>
+                <div class='acept-value'>{prestamo['frecuencia']}</div>
+            </div>
+        </div>
+
+        <div class='acept-note'>
+            Al confirmar la aceptación, el sistema registrará el contrato como aceptado y continuará con el flujo de desembolso y notificación correspondiente.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
     if int(prestamo['contrato_aceptado'] or 0) == 1:
         st.success("✅ Este contrato ya fue aceptado previamente.")
+        st.markdown("</div>", unsafe_allow_html=True)
         return
-    st.info("Al hacer clic en aceptar, su crédito quedará activado para continuar con el desembolso.")
-    if st.button("✅ Aceptar contrato", type="primary", disabled=st.session_state.get("app_busy", False)):
-        start_busy("Aceptando contrato...")
-        try:
-            ok, mensaje, _ = aceptar_contrato_por_token(token)
-            if ok:
-                if "pero" in str(mensaje).lower():
-                    st.warning(mensaje)
+
+    c1, c2, c3 = st.columns([1, 2, 1])
+    with c2:
+        if st.button("✅ Aceptar contrato", type="primary", use_container_width=True, disabled=st.session_state.get("app_busy", False)):
+            start_busy("Aceptando contrato...")
+            try:
+                ok, mensaje, _ = aceptar_contrato_por_token(token)
+                if ok:
+                    if "pero" in str(mensaje).lower():
+                        st.warning(mensaje)
+                    else:
+                        st.success(mensaje)
                 else:
-                    st.success(mensaje)
-            else:
-                st.error(mensaje)
-        finally:
-            stop_busy()
+                    st.error(mensaje)
+            finally:
+                stop_busy()
+
+    st.markdown("</div>", unsafe_allow_html=True)
 def enviar_recordatorio_credito(prestamo_row):
     if not prestamo_row.get("correo"):
         return False, "Cliente sin correo registrado"
@@ -1193,9 +1546,11 @@ def enviar_recordatorio_credito(prestamo_row):
     )
     return enviar_correo_async(
         prestamo_row["correo"],
-        f"Recordatorio de pago crédito {prestamo_row['id']}",
+        asunto_correo("RECORDATORIO", prestamo_row["id"]),
         cuerpo,
-        html_override=html_correo
+        html_override=html_correo,
+        meta_tipo="RECORDATORIO",
+        meta_prestamo_id=prestamo_row["id"]
     )
 def actualizar_estado_prestamo(conn, prestamo_id):
     pendientes = conn.execute(text("""
@@ -1203,7 +1558,26 @@ def actualizar_estado_prestamo(conn, prestamo_id):
         FROM cuotas
         WHERE prestamo_id = :id AND estado <> 'Pagada'
     """), {"id": prestamo_id}).scalar()
-    nuevo_estado = 'Cancelado' if int(pendientes or 0) == 0 else 'Activo'
+    vencidas = conn.execute(text("""
+        SELECT COUNT(*)
+        FROM cuotas
+        WHERE prestamo_id = :id
+          AND estado IN ('Vencida', 'Parcial')
+          AND fecha_vencimiento::date < CURRENT_DATE
+    """), {"id": prestamo_id}).scalar()
+    prestamo = conn.execute(text("""
+        SELECT COALESCE(contrato_aceptado,0) AS contrato_aceptado
+        FROM prestamos
+        WHERE id = :id
+    """), {"id": prestamo_id}).mappings().first()
+    if int(pendientes or 0) == 0:
+        nuevo_estado = 'Cancelado'
+    elif int(vencidas or 0) > 0:
+        nuevo_estado = 'En mora'
+    elif int((prestamo or {}).get("contrato_aceptado", 0) or 0) == 0:
+        nuevo_estado = 'Pendiente contrato'
+    else:
+        nuevo_estado = 'Activo'
     conn.execute(text("UPDATE prestamos SET estado = :estado WHERE id = :id"), {"estado": nuevo_estado, "id": prestamo_id})
 def registrar_pago_cuota(prestamo_id, fecha_pago):
     with get_conn() as conn:
@@ -1275,7 +1649,7 @@ def registrar_pago_cuota(prestamo_id, fecha_pago):
             )
             correo_ok, correo_error = enviar_pdf_por_correo(
                 correo_cliente,
-                f"Recibo pago {prestamo_id}",
+                asunto_correo("RECIBO_CUOTA", prestamo_id),
                 cuerpo,
                 pdf,
                 f"recibo_{prestamo_id}.pdf",
@@ -1500,9 +1874,11 @@ def enviar_correo_async(
         cuerpo,
         attachment_bytes=None,
         attachment_name=None,
-        html_override=None
+        html_override=None,
+        meta_tipo=None,
+        meta_prestamo_id=None
 ):
-    return enviar_correo_brevo(
+    ok, err = enviar_correo_brevo(
         destino=destino,
         asunto=asunto,
         cuerpo=cuerpo,
@@ -1510,6 +1886,14 @@ def enviar_correo_async(
         attachment_name=attachment_name,
         html_override=html_override
     )
+    if ok and meta_prestamo_id and meta_tipo:
+        registrar_evento_credito(meta_prestamo_id, "CORREO_ENVIADO", f"Correo {meta_tipo} enviado a {destino}")
+    elif (not ok) and meta_prestamo_id and meta_tipo:
+        registrar_correo_pendiente(meta_prestamo_id, destino, asunto, cuerpo, html_content=html_override,
+                                   attachment_bytes=attachment_bytes, attachment_name=attachment_name,
+                                   tipo_correo=meta_tipo, error=err)
+        registrar_evento_credito(meta_prestamo_id, "CORREO_FALLIDO", f"Correo {meta_tipo} falló: {err}")
+    return ok, err
 
 if token_aceptar:
     render_aceptacion_contrato(token_aceptar)
@@ -1580,9 +1964,12 @@ for col in [
         estado[col] = pd.to_numeric(estado[col])
 if "recordatorios_auto" not in st.session_state:
     try:
+        actualizar_mora_automatica()
         st.session_state.recordatorios_auto = procesar_recordatorios_automaticos()
+        st.session_state.correos_reintento = procesar_correos_pendientes()
     except Exception:
         st.session_state.recordatorios_auto = 0
+        st.session_state.correos_reintento = 0
 # ==========================
 # CALCULAR ALERTAS
 # ==========================
@@ -1662,6 +2049,20 @@ with tab_resumen:
     if st.session_state.get("recordatorios_auto", 0):
         enviados_auto = st.session_state.get("recordatorios_auto", 0)
         st.success(f"✅ Recordatorios automáticos enviados en esta sesión: {enviados_auto}")
+    if st.session_state.get("correos_reintento", 0):
+        st.info(f"📨 Correos pendientes reenviados automáticamente en esta sesión: {st.session_state.get('correos_reintento', 0)}")
+    with get_conn() as conn:
+        pendientes_ops = pd.read_sql(text("""
+            SELECT
+                (SELECT COUNT(*) FROM prestamos WHERE COALESCE(contrato_enviado,0)=1 AND COALESCE(contrato_aceptado,0)=0) AS contratos_pendientes,
+                (SELECT COUNT(*) FROM correos_pendientes WHERE estado='Pendiente' AND intentos < 5) AS correos_pendientes,
+                (SELECT COUNT(*) FROM cuotas WHERE estado IN ('Pendiente','Parcial','Vencida') AND fecha_vencimiento::date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '3 day') AS proximos_vencimientos
+        """), conn)
+    if not pendientes_ops.empty:
+        o1, o2, o3 = st.columns(3)
+        o1.metric("📨 Contratos por aceptar", int(pendientes_ops.loc[0, "contratos_pendientes"]))
+        o2.metric("🔁 Correos pendientes", int(pendientes_ops.loc[0, "correos_pendientes"]))
+        o3.metric("⏰ Cuotas próximas 3 días", int(pendientes_ops.loc[0, "proximos_vencimientos"]))
     total_colocado = estado["monto_original"].sum()
     total_cobrado = estado["total_pagado"].sum()
     saldo_pendiente = estado["saldo"].sum()
@@ -2005,10 +2406,11 @@ with tab_creditos:
             conn
         )
 
-    cred_tab1, cred_tab2, cred_tab3 = st.tabs([
+    cred_tab1, cred_tab2, cred_tab3, cred_tab4 = st.tabs([
         "💳 Crédito normal",
         "⚡ Crédito express",
-        "📨 Contratos pendientes"
+        "📨 Contratos pendientes",
+        "🔁 Correos pendientes"
     ])
 
     if clientes_credito_df.empty:
@@ -2179,6 +2581,28 @@ with tab_creditos:
 # ==========================
 # 📄 DETALLE
 # ==========================
+        with cred_tab4:
+            with get_conn() as conn:
+                pendientes_mail = pd.read_sql(text("""
+                    SELECT id, prestamo_id, destinatario, asunto, tipo_correo, ultimo_error, intentos, fecha_creacion
+                    FROM correos_pendientes
+                    WHERE estado = 'Pendiente'
+                    ORDER BY id DESC
+                """), conn)
+            if pendientes_mail.empty:
+                st.success("✅ No hay correos pendientes por reenviar.")
+            else:
+                st.warning("⚠️ Hay correos pendientes por error de envío. Puedes reintentarlos manualmente.")
+                st.dataframe(pendientes_mail, use_container_width=True, hide_index=True)
+                if st.button("🔁 Reintentar correos pendientes", key="btn_reintentar_correos", disabled=st.session_state.get("app_busy", False)):
+                    start_busy("Reintentando correos pendientes...")
+                    try:
+                        reenviados = procesar_correos_pendientes(25)
+                        set_flash("sistema_msg", "success", f"✅ Correos reenviados correctamente: {reenviados}")
+                        st.rerun()
+                    finally:
+                        stop_busy()
+
 with tab_detalle:
     st.subheader("📄 Detalle por crédito")
     st.caption("Consulta la ficha del crédito, su plan de cuotas y sus movimientos. Los créditos cerrados se conservan en historial para consulta.")

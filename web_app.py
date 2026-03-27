@@ -1,4 +1,5 @@
 import streamlit as st
+from streamlit.errors import StreamlitSecretNotFoundError
 import pandas as pd
 import os
 import tempfile
@@ -30,10 +31,8 @@ from io import BytesIO
 # ==========================
 st.set_page_config(page_title="CREDDT | CRNTECH", layout="wide")
 # ==========================
-# CONEXIÓN A SUPABASE
+# CONEXIÓN A SUPABASE / CONFIGURACIÓN
 # ==========================
-from streamlit.errors import StreamlitSecretNotFoundError
-
 def get_config(key, default=""):
     value = os.getenv(key)
     if value not in (None, ""):
@@ -44,12 +43,16 @@ def get_config(key, default=""):
         return default
 
 DATABASE_URL = get_config("DATABASE_URL")
+BREVO_API_KEY = get_config("BREVO_API_KEY")
+BREVO_FROM_EMAIL = get_config("BREVO_FROM_EMAIL")
+BREVO_FROM_NAME = get_config("BREVO_FROM_NAME", "CREDDT CRNTECH APPLICATION")
+APP_BASE_URL = get_config("APP_BASE_URL").rstrip("/")
+
 try:
-    # Creamos el motor de conexión usando el puerto 6543 y SSL
     engine = create_engine(
         DATABASE_URL,
         connect_args={"sslmode": "require"},
-        pool_pre_ping=True # Esto ayuda a que si la conexión se duerme, se despierte sola
+        pool_pre_ping=True
     )
 except Exception as e:
     st.error(f"❌ Error al conectar con la base de datos: {e}")
@@ -147,10 +150,10 @@ if st.session_state.get("app_busy") and st.session_state.get("app_busy_label"):
 # ==========================
 # VARIABLES SEGURAS
 # ==========================
-BREVO_API_KEY = get_config("BREVO_API_KEY")
-BREVO_FROM_EMAIL = get_config("BREVO_FROM_EMAIL")
-BREVO_FROM_NAME = get_config("BREVO_FROM_NAME", "CREDDT CRNTECH APPLICATION")
-APP_BASE_URL = get_config("APP_BASE_URL").rstrip("/")
+BREVO_API_KEY = st.secrets["BREVO_API_KEY"]
+BREVO_FROM_EMAIL = st.secrets["BREVO_FROM_EMAIL"]
+BREVO_FROM_NAME = st.secrets.get("BREVO_FROM_NAME", "CREDDT CRNTECH")
+APP_BASE_URL = st.secrets.get("APP_BASE_URL", "").rstrip("/")
 def asegurar_estructura_base():
     with get_conn() as conn:
         conn.execute(text("""
@@ -364,82 +367,267 @@ def obtener_proxima_cuota(conn, prestamo_id):
 def construir_cuerpo_correo(tipo, nombre_cliente, **kwargs):
     if tipo == "RECIBO_CUOTA":
         return f"""Estimado(a) {nombre_cliente},
-Reciba un cordial saludo.
+
+Reciba un cordial saludo de CREDDT CRNTECH.
+
 Le confirmamos que el pago de su cuota fue registrado exitosamente en nuestro sistema.
-Información del movimiento:
+
+Detalle de la operación:
 - Crédito: {kwargs.get('prestamo_id')}
 - Cuota aplicada: {kwargs.get('cuota_nro')}
 - Fecha de pago: {kwargs.get('fecha_pago')}
 - Valor pagado: {pesos(kwargs.get('valor'))}
-Adjunto encontrará el comprobante correspondiente para su soporte.
+
+Adjunto encontrará el comprobante correspondiente para su consulta y soporte.
+
 Cordialmente,
 CREDDT CRNTECH
 Área Administrativa y Financiera
 """
+
     if tipo == "RECIBO_ABONO":
         return f"""Estimado(a) {nombre_cliente},
-Reciba un cordial saludo.
+
+Reciba un cordial saludo de CREDDT CRNTECH.
+
 Le confirmamos que su abono a capital fue registrado exitosamente.
-Información del movimiento:
+
+Detalle de la operación:
 - Crédito: {kwargs.get('prestamo_id')}
 - Fecha de abono: {kwargs.get('fecha_pago')}
-- Abono a capital: {pesos(kwargs.get('valor'))}
-- Nuevo saldo capital: {pesos(kwargs.get('saldo_capital'))}
+- Valor abonado a capital: {pesos(kwargs.get('valor'))}
+- Nuevo saldo a capital: {pesos(kwargs.get('saldo_capital'))}
 - Nueva cuota estimada: {pesos(kwargs.get('nueva_cuota'))}
-Adjunto encontrará el comprobante correspondiente para su soporte.
+
+Adjunto encontrará el comprobante correspondiente para su consulta y soporte.
+
 Cordialmente,
 CREDDT CRNTECH
 Área Administrativa y Financiera
 """
+
     if tipo == "CONTRATO":
         return f"""Estimado(a) {nombre_cliente},
-Reciba un cordial saludo.
-Adjunto encontrará el contrato correspondiente a su crédito para consulta y soporte.
+
+Reciba un cordial saludo de CREDDT CRNTECH.
+
+Adjunto encontrará el contrato correspondiente a su crédito para revisión, consulta y soporte.
+
 Información base del crédito:
 - Crédito: {kwargs.get('prestamo_id')}
 - Monto aprobado: {pesos(kwargs.get('monto'))}
 - Número de cuotas: {kwargs.get('cuotas')}
 - Valor cuota actual: {pesos(kwargs.get('valor_cuota'))}
+
+Para continuar con el proceso, por favor confirme la aceptación del contrato desde el botón incluido en este correo.
+
 Cordialmente,
 CREDDT CRNTECH
 Área Administrativa y Financiera
 """
+
     if tipo == "RECORDATORIO":
         return f"""Estimado(a) {nombre_cliente},
-Reciba un cordial saludo.
-Le recordamos que tiene una cuota pendiente asociada a su crédito.
+
+Reciba un cordial saludo de CREDDT CRNTECH.
+
+Le recordamos que tiene una cuota próxima a vencer o pendiente asociada a su crédito.
+
 Información del recordatorio:
 - Crédito: {kwargs.get('prestamo_id')}
-- Cuota pendiente: {kwargs.get('cuota_nro')}
+- Cuota: {kwargs.get('cuota_nro')}
 - Fecha de vencimiento: {kwargs.get('fecha_vencimiento')}
 - Valor a pagar: {pesos(kwargs.get('valor'))}
+
 Agradecemos realizar el pago oportunamente para mantener su crédito al día.
+
 Cordialmente,
 CREDDT CRNTECH
 Área Administrativa y Financiera
 """
+
     if tipo == "DESEMBOLSO":
         return f"""Estimado(a) {nombre_cliente},
-Reciba un cordial saludo.
-Le informamos que su contrato fue aceptado correctamente y su crédito quedó activo para proceso de desembolso.
+
+Reciba un cordial saludo de CREDDT CRNTECH.
+
+Le informamos que su contrato fue aceptado correctamente y su crédito quedó activo para continuar con el proceso de desembolso.
+
 Información del crédito:
 - Crédito: {kwargs.get('prestamo_id')}
 - Tipo: {kwargs.get('tipo')}
 - Monto aprobado: {pesos(kwargs.get('monto'))}
 - Frecuencia: {kwargs.get('frecuencia')}
-- Cuotas: {kwargs.get('cuotas')}
+- Número de cuotas: {kwargs.get('cuotas')}
 - Valor cuota: {pesos(kwargs.get('valor_cuota'))}
+
+Nuestro equipo continuará con la gestión correspondiente.
+
 Cordialmente,
 CREDDT CRNTECH
 Área Administrativa y Financiera
 """
+
     return f"""Estimado(a) {nombre_cliente},
+
 Reciba un cordial saludo de CREDDT CRNTECH.
+
 Adjunto encontrará la información correspondiente a su crédito.
+
 Cordialmente,
 CREDDT CRNTECH
 Área Administrativa y Financiera
 """
+
+def construir_html_correo(tipo, nombre_cliente, **kwargs):
+    titulo = "Notificación de crédito"
+    subtitulo = "Información importante sobre su operación"
+    intro = "Le compartimos la información correspondiente a su crédito."
+    cta_html = ""
+    detalle_rows = []
+
+    if tipo == "RECIBO_CUOTA":
+        titulo = "Recibo de pago registrado"
+        subtitulo = "Confirmación de pago de cuota"
+        intro = "Hemos registrado exitosamente el pago de su cuota en nuestro sistema."
+        detalle_rows = [
+            ("Crédito", kwargs.get("prestamo_id")),
+            ("Cuota aplicada", kwargs.get("cuota_nro")),
+            ("Fecha de pago", kwargs.get("fecha_pago")),
+            ("Valor pagado", pesos(kwargs.get("valor"))),
+        ]
+
+    elif tipo == "RECIBO_ABONO":
+        titulo = "Abono a capital registrado"
+        subtitulo = "Confirmación de abono extraordinario"
+        intro = "Hemos registrado exitosamente su abono a capital."
+        detalle_rows = [
+            ("Crédito", kwargs.get("prestamo_id")),
+            ("Fecha de abono", kwargs.get("fecha_pago")),
+            ("Valor abonado", pesos(kwargs.get("valor"))),
+            ("Nuevo saldo a capital", pesos(kwargs.get("saldo_capital"))),
+            ("Nueva cuota estimada", pesos(kwargs.get("nueva_cuota"))),
+        ]
+
+    elif tipo == "CONTRATO":
+        titulo = "Aceptación de contrato"
+        subtitulo = "Contrato de crédito para revisión y aceptación"
+        intro = "Adjuntamos el contrato correspondiente a su crédito para revisión, consulta y aceptación."
+        detalle_rows = [
+            ("Crédito", kwargs.get("prestamo_id")),
+            ("Monto aprobado", pesos(kwargs.get("monto"))),
+            ("Número de cuotas", kwargs.get("cuotas")),
+            ("Valor cuota actual", pesos(kwargs.get("valor_cuota"))),
+        ]
+        enlace = kwargs.get("enlace_aceptacion")
+        if enlace:
+            cta_html = f"""
+            <table role="presentation" cellspacing="0" cellpadding="0" style="margin:0 auto 22px auto;">
+              <tr>
+                <td align="center" style="border-radius:10px;background:#0f172a;">
+                  <a href="{enlace}" target="_blank" style="display:inline-block;padding:14px 28px;font-size:15px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:10px;">
+                    Aceptar contrato
+                  </a>
+                </td>
+              </tr>
+            </table>
+            <p style="margin:0 0 24px 0;font-size:13px;line-height:1.7;color:#6b7280;">
+              Si el botón no se abre correctamente, copie y pegue este enlace en su navegador:<br>
+              <a href="{enlace}" target="_blank" style="color:#2563eb;text-decoration:none;word-break:break-all;">{enlace}</a>
+            </p>
+            """
+
+    elif tipo == "RECORDATORIO":
+        titulo = "Recordatorio de pago"
+        subtitulo = "Cuota próxima a vencer o pendiente"
+        intro = "Le recordamos que tiene una cuota asociada a su crédito para gestión de pago."
+        detalle_rows = [
+            ("Crédito", kwargs.get("prestamo_id")),
+            ("Cuota", kwargs.get("cuota_nro")),
+            ("Fecha de vencimiento", kwargs.get("fecha_vencimiento")),
+            ("Valor a pagar", pesos(kwargs.get("valor"))),
+        ]
+
+    elif tipo == "DESEMBOLSO":
+        titulo = "Crédito activo para desembolso"
+        subtitulo = "Contrato aceptado correctamente"
+        intro = "Su contrato fue aceptado correctamente y su crédito quedó activo para continuar con el proceso de desembolso."
+        detalle_rows = [
+            ("Crédito", kwargs.get("prestamo_id")),
+            ("Tipo", kwargs.get("tipo")),
+            ("Monto aprobado", pesos(kwargs.get("monto"))),
+            ("Frecuencia", kwargs.get("frecuencia")),
+            ("Número de cuotas", kwargs.get("cuotas")),
+            ("Valor cuota", pesos(kwargs.get("valor_cuota"))),
+        ]
+
+    detalle_html = "".join(
+        f"""
+        <tr>
+          <td style="padding:8px 0;font-size:14px;color:#64748b;">{label}</td>
+          <td align="right" style="padding:8px 0;font-size:15px;font-weight:700;color:#111827;">{value if value not in (None, '') else '-'}</td>
+        </tr>
+        """
+        for label, value in detalle_rows
+    )
+
+    return f"""
+    <html>
+      <body style="margin:0;padding:0;background-color:#f4f7fb;font-family:Arial,Helvetica,sans-serif;color:#1f2937;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:#f4f7fb;padding:32px 16px;">
+          <tr>
+            <td align="center">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#ffffff;border-radius:18px;overflow:hidden;border:1px solid #e5e7eb;">
+                <tr>
+                  <td style="background:#0f172a;padding:28px 32px;">
+                    <div style="font-size:24px;font-weight:700;color:#ffffff;letter-spacing:0.3px;">CREDDT CRNTECH</div>
+                    <div style="font-size:14px;color:#cbd5e1;margin-top:6px;">{subtitulo}</div>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:32px;">
+                    <p style="margin:0 0 18px 0;font-size:16px;line-height:1.6;">
+                      Estimado(a) <strong>{nombre_cliente}</strong>,
+                    </p>
+
+                    <p style="margin:0 0 18px 0;font-size:15px;line-height:1.7;color:#374151;">
+                      {intro}
+                    </p>
+
+                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:14px;margin:0 0 26px 0;">
+                      <tr>
+                        <td style="padding:22px;">
+                          <div style="font-size:16px;font-weight:700;color:#111827;margin-bottom:12px;">{titulo}</div>
+                          <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                            {detalle_html}
+                          </table>
+                        </td>
+                      </tr>
+                    </table>
+
+                    {cta_html}
+
+                    <div style="border-top:1px solid #e5e7eb;padding-top:20px;">
+                      <p style="margin:0 0 10px 0;font-size:14px;line-height:1.7;color:#374151;">
+                        Agradecemos su confianza en nuestra organización.
+                      </p>
+
+                      <p style="margin:0;font-size:14px;line-height:1.7;color:#374151;">
+                        Cordialmente,<br>
+                        <strong>CREDDT CRNTECH</strong><br>
+                        Área Administrativa y Financiera
+                      </p>
+                    </div>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+      </body>
+    </html>
+    """
+
 def calcular_cuotas_pagadas(total_pagado, valor_cuota):
     if valor_cuota <= 0:
         return 0
@@ -663,14 +851,15 @@ def obtener_datos_cliente(conn, cedula):
         FROM clientes
         WHERE cedula = :cedula
     """), {"cedula": cedula}).fetchone()
-def enviar_pdf_por_correo(destino, asunto, cuerpo, ruta_pdf, nombre_adj):
+def enviar_pdf_por_correo(destino, asunto, cuerpo, ruta_pdf, nombre_adj, html_override=None):
     with open(ruta_pdf, "rb") as f:
         return enviar_correo_async(
             destino=destino,
             asunto=asunto,
             cuerpo=cuerpo,
             attachment_bytes=f.read(),
-            attachment_name=nombre_adj
+            attachment_name=nombre_adj,
+            html_override=html_override
         )
 def enviar_contrato_credito(prestamo_row):
     if not prestamo_row.get("correo"):
@@ -700,26 +889,15 @@ def enviar_contrato_credito(prestamo_row):
             cuotas=prestamo_row["cuotas"],
             valor_cuota=prestamo_row["valor_cuota"]
         )
-        html_boton = None
-        if enlace:
-            cuerpo_html = cuerpo.replace("\n", "<br>")
-            html_boton = f"""
-            <div style="font-family: Arial, Helvetica, sans-serif; background-color: #f4f6f8; padding: 30px;">
-                <div style="max-width: 680px; margin: 0 auto; background: #ffffff; border-radius: 12px; overflow: hidden; border: 1px solid #e5e7eb;">
-                    <div style="background: #0f172a; padding: 24px 30px;">
-                        <h2 style="margin: 0; color: #ffffff; font-size: 22px;">CREDDT CRNTECH</h2>
-                        <p style="margin: 8px 0 0 0; color: #cbd5e1; font-size: 14px;">Aceptación de contrato</p>
-                    </div>
-                    <div style="padding: 30px; color: #1f2937; font-size: 15px; line-height: 1.7;">
-                        {cuerpo_html}<br><br>
-                        <div style="text-align:center; margin: 28px 0;">
-                            <a href="{enlace}" style="background:#0f172a; color:#ffffff; padding:14px 24px; border-radius:8px; text-decoration:none; font-weight:700; display:inline-block;">Aceptar contrato</a>
-                        </div>
-                        <p style="font-size:13px; color:#64748b;">Si el botón no abre, copie y pegue este enlace en su navegador:<br>{enlace}</p>
-                    </div>
-                </div>
-            </div>
-            """
+        html_boton = construir_html_correo(
+            "CONTRATO",
+            prestamo_row["cliente"],
+            prestamo_id=prestamo_row["id"],
+            monto=prestamo_row["monto_original"],
+            cuotas=prestamo_row["cuotas"],
+            valor_cuota=prestamo_row["valor_cuota"],
+            enlace_aceptacion=enlace
+        )
         with open(ruta_pdf, "rb") as f:
             ok_mail, err_mail = enviar_correo_async(
                 prestamo_row["correo"],
@@ -758,7 +936,22 @@ def enviar_correo_desembolso_credito(prestamo_row):
         cuotas=prestamo_row["cuotas"],
         valor_cuota=prestamo_row["valor_cuota"]
     )
-    ok_mail, err_mail = enviar_correo_async(prestamo_row["correo"], f"Crédito {prestamo_row['id']} aprobado para desembolso", cuerpo)
+    html_correo = construir_html_correo(
+        "DESEMBOLSO",
+        prestamo_row["cliente"],
+        prestamo_id=prestamo_row["id"],
+        tipo=prestamo_row["tipo"],
+        monto=prestamo_row["monto_original"],
+        frecuencia=prestamo_row.get("frecuencia", "Mensual"),
+        cuotas=prestamo_row["cuotas"],
+        valor_cuota=prestamo_row["valor_cuota"]
+    )
+    ok_mail, err_mail = enviar_correo_async(
+        prestamo_row["correo"],
+        f"Crédito {prestamo_row['id']} aprobado para desembolso",
+        cuerpo,
+        html_override=html_correo
+    )
     if ok_mail:
         with get_conn() as conn:
             conn.execute(text("""
@@ -890,15 +1083,26 @@ def aceptar_contrato_por_token(token):
             return False, "Enlace inválido o vencido", None
         if int(prestamo["contrato_aceptado"] or 0) == 1:
             return True, "El contrato ya había sido aceptado previamente", dict(prestamo)
+
+        fecha_actual = datetime.now().isoformat(timespec='seconds')
         conn.execute(text("""
             UPDATE prestamos
-            SET contrato_aceptado = 1, estado = 'Activo', fecha_aceptacion = :fecha, fecha_desembolso = :fecha
+            SET contrato_aceptado = 1,
+                estado = 'Activo',
+                fecha_aceptacion = :fecha
             WHERE id = :id
-        """), {"fecha": datetime.now().isoformat(timespec='seconds'), "id": prestamo["id"]})
+        """), {"fecha": fecha_actual, "id": prestamo["id"]})
         conn.commit()
+
     prestamo_row = dict(prestamo)
-    enviar_correo_desembolso_credito(prestamo_row)
-    return True, "Contrato aceptado correctamente", prestamo_row
+
+    try:
+        ok_mail, err_mail = enviar_correo_desembolso_credito(prestamo_row)
+        if ok_mail:
+            return True, "Contrato aceptado correctamente y correo de desembolso enviado.", prestamo_row
+        return True, f"Contrato aceptado correctamente, pero el correo de desembolso no se pudo enviar: {err_mail}", prestamo_row
+    except Exception as e:
+        return True, f"Contrato aceptado correctamente, pero ocurrió un error enviando el correo de desembolso: {e}", prestamo_row
 def procesar_recordatorios_automaticos():
     enviados = 0
     with get_conn() as conn:
@@ -919,7 +1123,8 @@ def procesar_recordatorios_automaticos():
             if int(ya or 0) > 0:
                 continue
             cuerpo = construir_cuerpo_correo('RECORDATORIO', r['cliente'], prestamo_id=r['prestamo_id'], cuota_nro=r['nro_cuota'], fecha_vencimiento=r['fecha_vencimiento'], valor=r['valor_cuota'])
-            ok, _ = enviar_correo_async(r['correo'], f"Recordatorio de pago crédito {r['prestamo_id']}", cuerpo)
+            html_correo = construir_html_correo('RECORDATORIO', r['cliente'], prestamo_id=r['prestamo_id'], cuota_nro=r['nro_cuota'], fecha_vencimiento=r['fecha_vencimiento'], valor=r['valor_cuota'])
+            ok, _ = enviar_correo_async(r['correo'], f"Recordatorio de pago crédito {r['prestamo_id']}", cuerpo, html_override=html_correo)
             if ok:
                 conn.execute(text("INSERT INTO reminders_sent (id_cuota, tipo_recordatorio, fecha_envio) VALUES (:id_cuota, :tipo, :fecha_envio)"), {"id_cuota": r['id_cuota'], "tipo": tipo_r, "fecha_envio": datetime.now().isoformat(timespec='seconds')})
                 enviados += 1
@@ -955,7 +1160,10 @@ def render_aceptacion_contrato(token):
         try:
             ok, mensaje, _ = aceptar_contrato_por_token(token)
             if ok:
-                st.success(mensaje)
+                if "pero" in str(mensaje).lower():
+                    st.warning(mensaje)
+                else:
+                    st.success(mensaje)
             else:
                 st.error(mensaje)
         finally:
@@ -975,10 +1183,19 @@ def enviar_recordatorio_credito(prestamo_row):
         fecha_vencimiento=proxima[3],
         valor=proxima[2]
     )
+    html_correo = construir_html_correo(
+        "RECORDATORIO",
+        prestamo_row["cliente"],
+        prestamo_id=prestamo_row["id"],
+        cuota_nro=proxima[1],
+        fecha_vencimiento=proxima[3],
+        valor=proxima[2]
+    )
     return enviar_correo_async(
         prestamo_row["correo"],
         f"Recordatorio de pago crédito {prestamo_row['id']}",
-        cuerpo
+        cuerpo,
+        html_override=html_correo
     )
 def actualizar_estado_prestamo(conn, prestamo_id):
     pendientes = conn.execute(text("""
@@ -1048,12 +1265,21 @@ def registrar_pago_cuota(prestamo_id, fecha_pago):
             valor=valor_pago
         )
         if correo_cliente:
+            html_correo = construir_html_correo(
+                "RECIBO_CUOTA",
+                nombre_cliente,
+                prestamo_id=prestamo_id,
+                cuota_nro=nro_cuota,
+                fecha_pago=fecha_pago.isoformat(),
+                valor=valor_pago
+            )
             correo_ok, correo_error = enviar_pdf_por_correo(
                 correo_cliente,
                 f"Recibo pago {prestamo_id}",
                 cuerpo,
                 pdf,
-                f"recibo_{prestamo_id}.pdf"
+                f"recibo_{prestamo_id}.pdf",
+                html_override=html_correo
             )
         else:
             correo_error = "Cliente sin correo registrado"
@@ -1141,12 +1367,22 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
             nueva_cuota=nueva_cuota
         )
         if correo_cliente:
+            html_correo = construir_html_correo(
+                "RECIBO_ABONO",
+                nombre_cliente,
+                prestamo_id=prestamo_id,
+                fecha_pago=fecha_pago.isoformat(),
+                valor=valor_abono,
+                saldo_capital=nuevo_saldo_capital,
+                nueva_cuota=nueva_cuota
+            )
             correo_ok, correo_error = enviar_pdf_por_correo(
                 correo_cliente,
                 f"Abono a capital crédito {prestamo_id}",
                 cuerpo,
                 pdf,
-                f"abono_capital_{prestamo_id}.pdf"
+                f"abono_capital_{prestamo_id}.pdf",
+                html_override=html_correo
             )
         else:
             correo_error = "Cliente sin correo registrado"
@@ -1274,59 +1510,6 @@ def enviar_correo_async(
         attachment_name=attachment_name,
         html_override=html_override
     )
-
-def diagnostico_brevo_envio():
-    try:
-        headers = {
-            "accept": "application/json",
-            "api-key": BREVO_API_KEY,
-            "content-type": "application/json"
-        }
-        payload = {
-            "sender": {
-                "name": BREVO_FROM_NAME,
-                "email": BREVO_FROM_EMAIL
-            },
-            "to": [
-                {
-                    "email": BREVO_FROM_EMAIL,
-                    "name": "Prueba interna"
-                }
-            ],
-            "subject": "Prueba técnica Brevo - CREDDT CRNTECH",
-            "htmlContent": "<p>Prueba técnica de Brevo desde CREDDT CRNTECH.</p>",
-            "textContent": "Prueba técnica de Brevo desde CREDDT CRNTECH."
-        }
-
-        response = requests.post(
-            "https://api.brevo.com/v3/smtp/email",
-            headers=headers,
-            json=payload,
-            timeout=30
-        )
-
-        try:
-            body = response.json()
-        except Exception:
-            body = response.text
-
-        return {
-            "ok": response.status_code in (200, 201, 202),
-            "status_code": response.status_code,
-            "response": body,
-            "key_suffix": BREVO_API_KEY[-6:] if BREVO_API_KEY else "VACIA",
-            "from_email": BREVO_FROM_EMAIL,
-            "from_name": BREVO_FROM_NAME,
-        }
-    except Exception as e:
-        return {
-            "ok": False,
-            "status_code": None,
-            "response": str(e),
-            "key_suffix": BREVO_API_KEY[-6:] if BREVO_API_KEY else "VACIA",
-            "from_email": BREVO_FROM_EMAIL,
-            "from_name": BREVO_FROM_NAME,
-        }
 
 if token_aceptar:
     render_aceptacion_contrato(token_aceptar)
@@ -1828,32 +2011,6 @@ with tab_creditos:
         "📨 Contratos pendientes"
     ])
 
-    with st.expander("🧪 Diagnóstico Brevo"):
-        st.caption("Úsalo para validar qué clave está leyendo la app y si Brevo permite el envío.")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Sufijo API key", BREVO_API_KEY[-6:] if BREVO_API_KEY else "VACIA")
-        c2.metric("From email", BREVO_FROM_EMAIL or "VACIO")
-        c3.metric("From name", BREVO_FROM_NAME or "VACIO")
-
-        if st.button("Probar Brevo", key="btn_probar_brevo"):
-            with st.spinner("Probando envío con Brevo..."):
-                test_brevo = diagnostico_brevo_envio()
-
-            if test_brevo["ok"]:
-                st.success(f"✅ Brevo respondió OK ({test_brevo['status_code']}).")
-            else:
-                st.error(f"❌ Brevo respondió {test_brevo['status_code']}: {test_brevo['response']}")
-
-            st.write("Sufijo leído por la app:", test_brevo["key_suffix"])
-            st.write("From email leído por la app:", test_brevo["from_email"])
-            st.write("From name leído por la app:", test_brevo["from_name"])
-
-    if "cliente_normal_credito" not in st.session_state:
-        st.session_state["cliente_normal_credito"] = None
-
-    if "cliente_express_credito" not in st.session_state:
-        st.session_state["cliente_express_credito"] = None
-
     if clientes_credito_df.empty:
         st.info("ℹ️ Primero registra un cliente para crear créditos.")
     else:
@@ -1873,11 +2030,7 @@ with tab_creditos:
                 cuotas_normal_new = st.selectbox("Número de cuotas", [12, 15], key="nuevo_cuotas_normal")
                 frecuencia_normal_new = st.selectbox("Frecuencia", ["Mensual", "Quincenal"], key="nuevo_frec_normal")
                 fecha_inicio_normal = st.date_input("Fecha de inicio", value=date.today(), key="fecha_inicio_normal")
-                cuota_normal_preview = calcular_cuota_normal(monto_normal_new, cuotas_normal_new, frecuencia_normal_new)
-                st.info(
-                    f"📌 Cuota estimada a guardar: {pesos(cuota_normal_preview)} | "
-                    f"{cuotas_normal_new} cuotas | {frecuencia_normal_new}"
-                )
+                st.caption("La simulación final se procesa al registrar el crédito.")
                 submit_normal = st.form_submit_button("Registrar crédito normal", type="primary", disabled=st.session_state.get("app_busy", False))
             if submit_normal:
                 if cliente_normal is None:
@@ -1887,16 +2040,11 @@ with tab_creditos:
                     try:
                         ok_c, err_c, prestamo_creado = crear_credito_db(cliente_normal, monto_normal_new, cuotas_normal_new, frecuencia_normal_new, "Normal", fecha_inicio_normal)
                         if ok_c:
-                            mensaje_base = (
-                                f"✅ Crédito {prestamo_creado['id']} creado.\n\n"
-                                f"📌 Cuota guardada: {pesos(prestamo_creado['valor_cuota'])}\n"
-                                f"📆 Cuotas: {prestamo_creado['cuotas']}\n"
-                                f"🔁 Frecuencia: {prestamo_creado['frecuencia']}"
-                            )
+                            st.session_state["cliente_normal_credito"] = None
                             if not err_c:
-                                set_flash("credito_msg", "success", mensaje_base + "\n\n📨 Contrato enviado correctamente")
+                                set_flash("credito_msg", "success", f"✅ Crédito {prestamo_creado['id']} creado y contrato enviado correctamente")
                             else:
-                                set_flash("credito_msg", "warning", mensaje_base + f"\n\n⚠️ El contrato quedó pendiente: {err_c}")
+                                set_flash("credito_msg", "warning", f"⚠️ Crédito {prestamo_creado['id']} creado, pero el contrato quedó pendiente: {err_c}")
                             st.rerun()
                         else:
                             st.error(f"❌ {err_c}")
@@ -1916,11 +2064,7 @@ with tab_creditos:
                 frecuencia_express_new = st.selectbox("Frecuencia", ["Mensual", "Quincenal"], key="nuevo_frec_express")
                 cuotas_express_new = 5 if frecuencia_express_new == "Mensual" else 6
                 fecha_inicio_express = st.date_input("Fecha de inicio", value=date.today(), key="fecha_inicio_express")
-                cuota_express_preview = calcular_cuota_express(monto_express_new, cuotas_express_new, frecuencia_express_new)
-                st.info(
-                    f"📌 Cuota estimada a guardar: {pesos(cuota_express_preview)} | "
-                    f"{cuotas_express_new} cuotas | {frecuencia_express_new}"
-                )
+                st.caption(f"Crédito express a {cuotas_express_new} cuotas de frecuencia {frecuencia_express_new.lower()}.")
                 submit_express = st.form_submit_button("Registrar crédito express", type="primary", disabled=st.session_state.get("app_busy", False))
             if submit_express:
                 if cliente_express is None:
@@ -1930,16 +2074,11 @@ with tab_creditos:
                     try:
                         ok_c, err_c, prestamo_creado = crear_credito_db(cliente_express, monto_express_new, cuotas_express_new, frecuencia_express_new, "Express", fecha_inicio_express)
                         if ok_c:
-                            mensaje_base = (
-                                f"✅ Crédito {prestamo_creado['id']} creado.\n\n"
-                                f"📌 Cuota guardada: {pesos(prestamo_creado['valor_cuota'])}\n"
-                                f"📆 Cuotas: {prestamo_creado['cuotas']}\n"
-                                f"🔁 Frecuencia: {prestamo_creado['frecuencia']}"
-                            )
+                            st.session_state["cliente_express_credito"] = None
                             if not err_c:
-                                set_flash("credito_msg", "success", mensaje_base + "\n\n📨 Contrato enviado correctamente")
+                                set_flash("credito_msg", "success", f"✅ Crédito {prestamo_creado['id']} creado y contrato enviado correctamente")
                             else:
-                                set_flash("credito_msg", "warning", mensaje_base + f"\n\n⚠️ El contrato quedó pendiente: {err_c}")
+                                set_flash("credito_msg", "warning", f"⚠️ Crédito {prestamo_creado['id']} creado, pero el contrato quedó pendiente: {err_c}")
                             st.rerun()
                         else:
                             st.error(f"❌ {err_c}")
@@ -2301,6 +2440,7 @@ with tab_sim:
                 f"💰 Total a pagar estimado: **{pesos(cuota * cuotas_express)}**\n\n"
                 f"📈 Tasa aplicada: **{calcular_tasa_express(frecuencia)*100:.2f}%**"
             )
+
 
 
 

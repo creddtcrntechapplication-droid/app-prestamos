@@ -137,10 +137,10 @@ if st.session_state.get("app_busy") and st.session_state.get("app_busy_label"):
 # ==========================
 # VARIABLES SEGURAS
 # ==========================
-BREVO_API_KEY = st.secrets["BREVO_API_KEY"]
-BREVO_FROM_EMAIL = st.secrets["BREVO_FROM_EMAIL"]
-BREVO_FROM_NAME = st.secrets.get("BREVO_FROM_NAME", "CREDDT CRNTECH")
-APP_BASE_URL = st.secrets.get("APP_BASE_URL", "").rstrip("/")
+BREVO_API_KEY = os.getenv("BREVO_API_KEY", st.secrets.get("BREVO_API_KEY", ""))
+BREVO_FROM_EMAIL = os.getenv("BREVO_FROM_EMAIL", st.secrets.get("BREVO_FROM_EMAIL", ""))
+BREVO_FROM_NAME = os.getenv("BREVO_FROM_NAME", st.secrets.get("BREVO_FROM_NAME", "CREDDT CRNTECH"))
+APP_BASE_URL = os.getenv("APP_BASE_URL", st.secrets.get("APP_BASE_URL", "")).rstrip("/")
 def asegurar_estructura_base():
     with get_conn() as conn:
         conn.execute(text("""
@@ -1265,6 +1265,59 @@ def enviar_correo_async(
         html_override=html_override
     )
 
+def diagnostico_brevo_envio():
+    try:
+        headers = {
+            "accept": "application/json",
+            "api-key": BREVO_API_KEY,
+            "content-type": "application/json"
+        }
+        payload = {
+            "sender": {
+                "name": BREVO_FROM_NAME,
+                "email": BREVO_FROM_EMAIL
+            },
+            "to": [
+                {
+                    "email": BREVO_FROM_EMAIL,
+                    "name": "Prueba interna"
+                }
+            ],
+            "subject": "Prueba técnica Brevo - CREDDT CRNTECH",
+            "htmlContent": "<p>Prueba técnica de Brevo desde CREDDT CRNTECH.</p>",
+            "textContent": "Prueba técnica de Brevo desde CREDDT CRNTECH."
+        }
+
+        response = requests.post(
+            "https://api.brevo.com/v3/smtp/email",
+            headers=headers,
+            json=payload,
+            timeout=30
+        )
+
+        try:
+            body = response.json()
+        except Exception:
+            body = response.text
+
+        return {
+            "ok": response.status_code in (200, 201, 202),
+            "status_code": response.status_code,
+            "response": body,
+            "key_suffix": BREVO_API_KEY[-6:] if BREVO_API_KEY else "VACIA",
+            "from_email": BREVO_FROM_EMAIL,
+            "from_name": BREVO_FROM_NAME,
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "status_code": None,
+            "response": str(e),
+            "key_suffix": BREVO_API_KEY[-6:] if BREVO_API_KEY else "VACIA",
+            "from_email": BREVO_FROM_EMAIL,
+            "from_name": BREVO_FROM_NAME,
+        }
+
 if token_aceptar:
     render_aceptacion_contrato(token_aceptar)
     st.stop()
@@ -1765,6 +1818,26 @@ with tab_creditos:
         "📨 Contratos pendientes"
     ])
 
+    with st.expander("🧪 Diagnóstico Brevo"):
+        st.caption("Úsalo para validar qué clave está leyendo la app y si Brevo permite el envío.")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Sufijo API key", BREVO_API_KEY[-6:] if BREVO_API_KEY else "VACIA")
+        c2.metric("From email", BREVO_FROM_EMAIL or "VACIO")
+        c3.metric("From name", BREVO_FROM_NAME or "VACIO")
+
+        if st.button("Probar Brevo", key="btn_probar_brevo"):
+            with st.spinner("Probando envío con Brevo..."):
+                test_brevo = diagnostico_brevo_envio()
+
+            if test_brevo["ok"]:
+                st.success(f"✅ Brevo respondió OK ({test_brevo['status_code']}).")
+            else:
+                st.error(f"❌ Brevo respondió {test_brevo['status_code']}: {test_brevo['response']}")
+
+            st.write("Sufijo leído por la app:", test_brevo["key_suffix"])
+            st.write("From email leído por la app:", test_brevo["from_email"])
+            st.write("From name leído por la app:", test_brevo["from_name"])
+
     if "cliente_normal_credito" not in st.session_state:
         st.session_state["cliente_normal_credito"] = None
 
@@ -2218,5 +2291,6 @@ with tab_sim:
                 f"💰 Total a pagar estimado: **{pesos(cuota * cuotas_express)}**\n\n"
                 f"📈 Tasa aplicada: **{calcular_tasa_express(frecuencia)*100:.2f}%**"
             )
+
 
 

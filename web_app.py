@@ -33,7 +33,7 @@ st.set_page_config(page_title="CREDDT | CRNTECH", layout="wide")
 # CONEXIÓN A SUPABASE
 # ==========================
 # Aquí Python va y busca la dirección mágica en tu archivo secrets.toml o en Render
-DATABASE_URL = st.secrets["DATABASE_URL"]
+DATABASE_URL = os.getenv("DATABASE_URL", st.secrets.get("DATABASE_URL", ""))
 try:
     # Creamos el motor de conexión usando el puerto 6543 y SSL
     engine = create_engine(
@@ -139,7 +139,7 @@ if st.session_state.get("app_busy") and st.session_state.get("app_busy_label"):
 # ==========================
 BREVO_API_KEY = os.getenv("BREVO_API_KEY", st.secrets.get("BREVO_API_KEY", ""))
 BREVO_FROM_EMAIL = os.getenv("BREVO_FROM_EMAIL", st.secrets.get("BREVO_FROM_EMAIL", ""))
-BREVO_FROM_NAME = os.getenv("BREVO_FROM_NAME", st.secrets.get("BREVO_FROM_NAME", "CREDDT CRNTECH"))
+BREVO_FROM_NAME = os.getenv("BREVO_FROM_NAME", st.secrets.get("BREVO_FROM_NAME", "CREDDT CRNTECH APPLICATION"))
 APP_BASE_URL = os.getenv("APP_BASE_URL", st.secrets.get("APP_BASE_URL", "")).rstrip("/")
 def asegurar_estructura_base():
     with get_conn() as conn:

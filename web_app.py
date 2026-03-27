@@ -360,317 +360,299 @@ def obtener_proxima_cuota(conn, prestamo_id):
         ORDER BY nro_cuota ASC
         LIMIT 1
     """), {"id": prestamo_id}).fetchone()
-def construir_cuerpo_correo(tipo, nombre_cliente, **kwargs):
-    if tipo == "RECIBO_CUOTA":
-        return f"""Estimado(a) {nombre_cliente},
-Reciba un cordial saludo.
-Le confirmamos que el pago de su cuota fue registrado exitosamente en nuestro sistema.
-Información del movimiento:
-- Crédito: {kwargs.get('prestamo_id')}
-- Cuota aplicada: {kwargs.get('cuota_nro')}
-- Fecha de pago: {kwargs.get('fecha_pago')}
-- Valor pagado: {pesos(kwargs.get('valor'))}
-Adjunto encontrará el comprobante correspondiente para su soporte.
-Cordialmente,
-CREDDT CRNTECH
-Área Administrativa y Financiera
-"""
-    if tipo == "RECIBO_ABONO":
-        return f"""Estimado(a) {nombre_cliente},
-Reciba un cordial saludo.
-Le confirmamos que su abono a capital fue registrado exitosamente.
-Información del movimiento:
-- Crédito: {kwargs.get('prestamo_id')}
-- Fecha de abono: {kwargs.get('fecha_pago')}
-- Abono a capital: {pesos(kwargs.get('valor'))}
-- Nuevo saldo capital: {pesos(kwargs.get('saldo_capital'))}
-- Nueva cuota estimada: {pesos(kwargs.get('nueva_cuota'))}
-Adjunto encontrará el comprobante correspondiente para su soporte.
-Cordialmente,
-CREDDT CRNTECH
-Área Administrativa y Financiera
-"""
-    if tipo == "CONTRATO":
-        return f"""Estimado(a) {nombre_cliente},
-Reciba un cordial saludo.
-Adjunto encontrará el contrato correspondiente a su crédito para consulta y soporte.
-Información base del crédito:
-- Crédito: {kwargs.get('prestamo_id')}
-- Monto aprobado: {pesos(kwargs.get('monto'))}
-- Número de cuotas: {kwargs.get('cuotas')}
-- Valor cuota actual: {pesos(kwargs.get('valor_cuota'))}
-Cordialmente,
-CREDDT CRNTECH
-Área Administrativa y Financiera
-"""
-    if tipo == "RECORDATORIO":
-        return f"""Estimado(a) {nombre_cliente},
-Reciba un cordial saludo.
-Le recordamos que tiene una cuota pendiente asociada a su crédito.
-Información del recordatorio:
-- Crédito: {kwargs.get('prestamo_id')}
-- Cuota pendiente: {kwargs.get('cuota_nro')}
-- Fecha de vencimiento: {kwargs.get('fecha_vencimiento')}
-- Valor a pagar: {pesos(kwargs.get('valor'))}
-Agradecemos realizar el pago oportunamente para mantener su crédito al día.
-Cordialmente,
-CREDDT CRNTECH
-Área Administrativa y Financiera
-"""
-    if tipo == "DESEMBOLSO":
-        return f"""Estimado(a) {nombre_cliente},
-Reciba un cordial saludo.
-Le informamos que su contrato fue aceptado correctamente y su crédito quedó activo para proceso de desembolso.
-Información del crédito:
-- Crédito: {kwargs.get('prestamo_id')}
-- Tipo: {kwargs.get('tipo')}
-- Monto aprobado: {pesos(kwargs.get('monto'))}
-- Frecuencia: {kwargs.get('frecuencia')}
-- Cuotas: {kwargs.get('cuotas')}
-- Valor cuota: {pesos(kwargs.get('valor_cuota'))}
-Cordialmente,
-CREDDT CRNTECH
-Área Administrativa y Financiera
-"""
-    return f"""Estimado(a) {nombre_cliente},
-Reciba un cordial saludo de CREDDT CRNTECH.
-Adjunto encontrará la información correspondiente a su crédito.
-Cordialmente,
-CREDDT CRNTECH
-Área Administrativa y Financiera
-"""
-def calcular_cuotas_pagadas(total_pagado, valor_cuota):
-    if valor_cuota <= 0:
-        return 0
-    return int(total_pagado // valor_cuota)
+
+def _area_responsable(tipo_correo):
+    return {
+        "CONTRATO": "Área de Aprobación",
+        "DESEMBOLSO": "Área de Operaciones",
+        "RECORDATORIO": "Área de Cartera",
+        "RECIBO_CUOTA": "Área Administrativa y Financiera",
+        "RECIBO_ABONO": "Área Administrativa y Financiera",
+    }.get(tipo_correo, "Área Administrativa y Financiera")
+
+
+def _titulo_correo(tipo_correo):
+    return {
+        "CONTRATO": "Aceptación de contrato de crédito",
+        "DESEMBOLSO": "Confirmación de activación y desembolso",
+        "RECORDATORIO": "Recordatorio de pago",
+        "RECIBO_CUOTA": "Confirmación de pago recibido",
+        "RECIBO_ABONO": "Confirmación de abono a capital",
+    }.get(tipo_correo, "Notificación de crédito")
+
+
+def _intro_correo(tipo_correo):
+    return {
+        "CONTRATO": "Adjuntamos el contrato de su crédito para revisión y aceptación. Este documento contiene el resumen aprobado de la operación y sus condiciones generales.",
+        "DESEMBOLSO": "Le confirmamos que su contrato fue aceptado correctamente y que su crédito quedó activo para continuar el proceso operativo del desembolso.",
+        "RECORDATORIO": "Le recordamos oportunamente la información de su obligación para facilitar la gestión de pago y mantener su crédito al día.",
+        "RECIBO_CUOTA": "Le confirmamos que el pago de su cuota fue registrado exitosamente en nuestro sistema. Adjuntamos el comprobante para su soporte.",
+        "RECIBO_ABONO": "Le confirmamos que su abono a capital fue registrado exitosamente en nuestro sistema. Adjuntamos el comprobante para su soporte.",
+    }.get(tipo_correo, "Adjuntamos la información correspondiente a su crédito para consulta y soporte.")
+
+
+def _resumen_items_correo(tipo_correo, **kwargs):
+    if tipo_correo == "CONTRATO":
+        return [
+            ("Crédito", kwargs.get("prestamo_id")),
+            ("Monto aprobado", pesos(kwargs.get("monto"))),
+            ("Número de cuotas", kwargs.get("cuotas")),
+            ("Valor de la cuota", pesos(kwargs.get("valor_cuota"))),
+            ("Tipo de crédito", kwargs.get("tipo_credito") or kwargs.get("tipo")),
+        ]
+    if tipo_correo == "DESEMBOLSO":
+        return [
+            ("Crédito", kwargs.get("prestamo_id")),
+            ("Tipo de crédito", kwargs.get("tipo_credito") or kwargs.get("tipo")),
+            ("Monto aprobado", pesos(kwargs.get("monto"))),
+            ("Frecuencia", kwargs.get("frecuencia")),
+            ("Número de cuotas", kwargs.get("cuotas")),
+            ("Valor de la cuota", pesos(kwargs.get("valor_cuota"))),
+        ]
+    if tipo_correo == "RECORDATORIO":
+        return [
+            ("Crédito", kwargs.get("prestamo_id")),
+            ("Cuota", kwargs.get("cuota_nro")),
+            ("Fecha de vencimiento", kwargs.get("fecha_vencimiento")),
+            ("Valor a pagar", pesos(kwargs.get("valor"))),
+        ]
+    if tipo_correo == "RECIBO_CUOTA":
+        return [
+            ("Crédito", kwargs.get("prestamo_id")),
+            ("Cuota aplicada", kwargs.get("cuota_nro")),
+            ("Fecha de pago", kwargs.get("fecha_pago")),
+            ("Valor pagado", pesos(kwargs.get("valor"))),
+        ]
+    if tipo_correo == "RECIBO_ABONO":
+        return [
+            ("Crédito", kwargs.get("prestamo_id")),
+            ("Fecha del abono", kwargs.get("fecha_pago")),
+            ("Abono a capital", pesos(kwargs.get("valor"))),
+            ("Nuevo saldo capital", pesos(kwargs.get("saldo_capital"))),
+            ("Nueva cuota estimada", pesos(kwargs.get("nueva_cuota"))),
+        ]
+    return []
+
+
+def construir_cuerpo_correo(tipo_correo, nombre_cliente, **kwargs):
+    area = _area_responsable(tipo_correo)
+    titulo = _titulo_correo(tipo_correo)
+    intro = _intro_correo(tipo_correo)
+    lineas = [
+        f"Estimado(a) {nombre_cliente},",
+        "",
+        "Reciba un cordial saludo de CREDDT CRNTECH.",
+        "",
+        intro,
+        "",
+        f"{titulo}:",
+    ]
+    for etiqueta, valor in _resumen_items_correo(tipo_correo, **kwargs):
+        if valor not in (None, ""):
+            lineas.append(f"- {etiqueta}: {valor}")
+    if tipo_correo == "CONTRATO" and kwargs.get("link_aceptacion"):
+        lineas.extend([
+            "",
+            "Para continuar con el proceso, por favor confirme la aceptación del contrato desde el enlace incluido en el correo.",
+        ])
+    elif tipo_correo == "RECORDATORIO":
+        lineas.extend([
+            "",
+            "Agradecemos realizar el pago dentro del plazo correspondiente para mantener su obligación al día.",
+        ])
+    lineas.extend([
+        "",
+        "Cordialmente,",
+        "CREDDT CRNTECH",
+        area,
+    ])
+    return "\n".join(lineas)
+
+
+def construir_html_correo(tipo_correo, nombre_cliente, **kwargs):
+    titulo = _titulo_correo(tipo_correo)
+    area = _area_responsable(tipo_correo)
+    intro = _intro_correo(tipo_correo)
+    filas = _resumen_items_correo(tipo_correo, **kwargs)
+    filas_html = "".join(
+        f"""
+        <tr>
+            <td style=\"padding:10px 0;font-size:14px;color:#64748b;border-bottom:1px solid #e5e7eb;\">{label}</td>
+            <td align=\"right\" style=\"padding:10px 0;font-size:14px;font-weight:700;color:#0f172a;border-bottom:1px solid #e5e7eb;\">{value if value not in (None, '') else '-'}</td>
+        </tr>
+        """
+        for label, value in filas
+    )
+    bloque_accion = ""
+    if tipo_correo == "CONTRATO" and kwargs.get("link_aceptacion"):
+        enlace = kwargs.get("link_aceptacion")
+        bloque_accion = f"""
+        <div style=\"text-align:center;margin:28px 0 20px 0;\">
+            <a href=\"{enlace}\" target=\"_blank\" style=\"display:inline-block;background:#0f172a;color:#ffffff;text-decoration:none;padding:14px 28px;border-radius:10px;font-weight:700;\">Aceptar contrato</a>
+        </div>
+        <p style=\"margin:0;font-size:12px;line-height:1.7;color:#64748b;word-break:break-all;\">
+            Si el botón no abre correctamente, copie y pegue este enlace en su navegador:<br>
+            <a href=\"{enlace}\" target=\"_blank\" style=\"color:#2563eb;text-decoration:none;\">{enlace}</a>
+        </p>
+        """
+
+    return f"""
+    <div style=\"margin:0;padding:24px;background:#f3f6fb;font-family:Arial,Helvetica,sans-serif;color:#0f172a;\">
+        <div style=\"max-width:720px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:18px;overflow:hidden;\">
+            <div style=\"background:#0f172a;padding:28px 32px;\">
+                <div style=\"font-size:24px;font-weight:800;color:#ffffff;letter-spacing:.2px;\">CREDDT CRNTECH</div>
+                <div style=\"margin-top:6px;font-size:14px;color:#cbd5e1;\">{titulo}</div>
+            </div>
+            <div style=\"padding:30px 32px;\">
+                <p style=\"margin:0 0 16px 0;font-size:15px;line-height:1.75;\">Estimado(a) <strong>{nombre_cliente}</strong>,</p>
+                <p style=\"margin:0 0 18px 0;font-size:15px;line-height:1.75;color:#334155;\">{intro}</p>
+                <div style=\"background:#f8fafc;border:1px solid #e5e7eb;border-radius:14px;padding:20px 22px;margin:0 0 24px 0;\">
+                    <div style=\"font-size:13px;font-weight:700;letter-spacing:.4px;color:#475569;margin-bottom:12px;text-transform:uppercase;\">Resumen de la operación</div>
+                    <table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"border-collapse:collapse;\">{filas_html}</table>
+                </div>
+                {bloque_accion}
+                <div style=\"border-top:1px solid #e5e7eb;padding-top:18px;margin-top:18px;\">
+                    <p style=\"margin:0;font-size:14px;line-height:1.7;color:#334155;\">Cordialmente,<br><strong>CREDDT CRNTECH</strong><br>{area}</p>
+                </div>
+            </div>
+            <div style=\"background:#f8fafc;border-top:1px solid #e5e7eb;padding:16px 32px;font-size:12px;line-height:1.6;color:#64748b;\">
+                Este mensaje fue generado automáticamente por CREDDT CRNTECH. Si requiere validación adicional, responda este correo o contacte el área responsable.
+            </div>
+        </div>
+    </div>
+    """
+
+
 def generar_recibo_pdf(prestamo_id, cliente, monto_credito, fecha_pago, valor_pagado, titulo="RECIBO DE PAGO", subtitulo="VALOR PAGADO"):
-    from reportlab.platypus import (
-        SimpleDocTemplate, Paragraph, Spacer, HRFlowable
-    )
-    from reportlab.lib import colors, pagesizes
-    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-    from reportlab.lib.units import inch
-    from reportlab.lib.enums import TA_CENTER
-    from reportlab.platypus import Image
-    import os
     ruta_pdf = os.path.join(tempfile.gettempdir(), f"recibo_{prestamo_id}.pdf")
-    doc = SimpleDocTemplate(
-        ruta_pdf,
-        pagesize=pagesizes.A4,
-        rightMargin=60,
-        leftMargin=60,
-        topMargin=60,
-        bottomMargin=50
-    )
-    elementos = []
+    doc = SimpleDocTemplate(ruta_pdf, pagesize=pagesizes.A4, rightMargin=42, leftMargin=42, topMargin=38, bottomMargin=34)
     estilos = getSampleStyleSheet()
-    azul = colors.HexColor("#1E3A8A")
+    azul_oscuro = colors.HexColor("#0F172A")
+    azul = colors.HexColor("#1D4ED8")
     gris = colors.HexColor("#64748B")
-    # ==========================
-    # LOGO (opcional)
-    # ==========================
-    logo_path = "logo_creddt.png"
-    if os.path.exists(logo_path):
-        logo = Image(logo_path, width=2.3*inch, height=1.1*inch)
+    gris_claro = colors.HexColor("#E2E8F0")
+    fondo = colors.HexColor("#F8FAFC")
+    exito = colors.HexColor("#166534")
+    style_brand = ParagraphStyle('PdfBrand', parent=estilos['Normal'], fontSize=18, leading=22, textColor=colors.white, alignment=TA_CENTER)
+    style_band = ParagraphStyle('PdfBand', parent=estilos['Normal'], fontSize=10, leading=12, textColor=colors.white, alignment=TA_CENTER)
+    style_title = ParagraphStyle('PdfTitle', parent=estilos['Heading1'], fontSize=20, leading=24, textColor=azul_oscuro, alignment=TA_CENTER, spaceAfter=6)
+    style_subtitle = ParagraphStyle('PdfSubtitle', parent=estilos['Normal'], fontSize=10, leading=14, textColor=gris, alignment=TA_CENTER, spaceAfter=16)
+    style_label = ParagraphStyle('PdfLabel', parent=estilos['Normal'], fontSize=9.2, leading=12, textColor=gris)
+    style_value = ParagraphStyle('PdfValue', parent=estilos['Normal'], fontSize=11, leading=14, textColor=azul_oscuro)
+    style_section = ParagraphStyle('PdfSection', parent=estilos['Normal'], fontSize=9, leading=12, textColor=gris, alignment=TA_CENTER)
+    style_amount = ParagraphStyle('PdfAmount', parent=estilos['Normal'], fontSize=18, leading=22, textColor=exito, alignment=TA_CENTER)
+    style_note = ParagraphStyle('PdfNote', parent=estilos['Normal'], fontSize=9.5, leading=14, textColor=gris)
+    style_footer = ParagraphStyle('PdfFooter', parent=estilos['Normal'], fontSize=8.8, leading=12, textColor=gris, alignment=TA_CENTER)
+    story = []
+    header = Table([[Paragraph("<b>CREDDT CRNTECH</b>", style_brand)]], colWidths=[doc.width])
+    header.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, -1), azul_oscuro), ('TOPPADDING', (0, 0), (-1, -1), 14), ('BOTTOMPADDING', (0, 0), (-1, -1), 14)]))
+    story.append(header)
+    banda = Table([[Paragraph("Área Administrativa y Financiera", style_band)]], colWidths=[doc.width])
+    banda.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, -1), azul), ('TOPPADDING', (0, 0), (-1, -1), 7), ('BOTTOMPADDING', (0, 0), (-1, -1), 7)]))
+    story.append(banda)
+    story.append(Spacer(1, 16))
+    if os.path.exists("logo_creddt.png"):
+        logo = Image("logo_creddt.png", width=1.55 * inch, height=0.72 * inch)
         logo.hAlign = 'CENTER'
-        elementos.append(logo)
-        elementos.append(Spacer(1, 15))
-    # ==========================
-    # MARCA + SLOGAN
-    # ==========================
-    estilo_marca = ParagraphStyle(
-        name='Marca',
-        parent=estilos['Normal'],
-        alignment=TA_CENTER,
-        fontSize=14,
-        textColor=colors.black,
-        spaceAfter=4
-    )
-    estilo_slogan = ParagraphStyle(
-        name='Slogan',
-        parent=estilos['Normal'],
-        alignment=TA_CENTER,
-        fontSize=10,
-        textColor=gris,
-        spaceAfter=20
-    )
-    elementos.append(Paragraph("<b>CREDDT CRNTECH APPLICATION</b>", estilo_marca))
-    elementos.append(Paragraph("Tu crédito, tu ritmo.", estilo_slogan))
-    # Línea fina elegante
-    elementos.append(HRFlowable(width="60%", thickness=1, color=colors.lightgrey))
-    elementos.append(Spacer(1, 25))
-    # ==========================
-    # TÍTULO
-    # ==========================
-    estilo_titulo = ParagraphStyle(
-        name='Titulo',
-        parent=estilos['Heading1'],
-        alignment=TA_CENTER,
-        fontSize=18,
-        textColor=azul,
-        spaceAfter=25
-    )
-    elementos.append(Paragraph(titulo, estilo_titulo))
-    # ==========================
-    # DATOS
-    # ==========================
-    estilo_label = ParagraphStyle(
-        name='Label',
-        parent=estilos['Normal'],
-        fontSize=11,
-        textColor=gris,
-        spaceAfter=6
-    )
-    estilo_valor = ParagraphStyle(
-        name='Valor',
-        parent=estilos['Normal'],
-        fontSize=12,
-        textColor=colors.black,
-        spaceAfter=12
-    )
-    elementos.append(Paragraph("Préstamo ID", estilo_label))
-    elementos.append(Paragraph(f"<b>{prestamo_id}</b>", estilo_valor))
-    elementos.append(Paragraph("Cliente", estilo_label))
-    elementos.append(Paragraph(f"<b>{cliente}</b>", estilo_valor))
-    elementos.append(Paragraph("Fecha de pago", estilo_label))
-    elementos.append(Paragraph(f"{fecha_pago}", estilo_valor))
-    elementos.append(Paragraph("Monto original", estilo_label))
-    elementos.append(Paragraph(f"$ {monto_credito:,.0f}", estilo_valor))
-    elementos.append(Spacer(1, 25))
-    # ==========================
-    # VALOR DESTACADO
-    # ==========================
-    elementos.append(HRFlowable(width="100%", thickness=1, color=colors.lightgrey))
-    elementos.append(Spacer(1, 20))
-    estilo_pago = ParagraphStyle(
-        name='PagoGrande',
-        parent=estilos['Normal'],
-        alignment=TA_CENTER,
-        fontSize=28,
-        textColor=azul,
-        spaceAfter=5
-    )
-    estilo_pago_label = ParagraphStyle(
-        name='PagoLabel',
-        parent=estilos['Normal'],
-        alignment=TA_CENTER,
-        fontSize=11,
-        textColor=gris
-    )
-    elementos.append(Paragraph(subtitulo, estilo_pago_label))
-    elementos.append(Spacer(1, 5))
-    elementos.append(Paragraph(f"<b>$ {valor_pagado:,.0f}</b>", estilo_pago))
-    elementos.append(Spacer(1, 40))
-    # ==========================
-    # FOOTER
-    # ==========================
-    elementos.append(HRFlowable(width="100%", thickness=1, color=colors.lightgrey))
-    elementos.append(Spacer(1, 10))
-    estilo_footer = ParagraphStyle(
-        name='Footer',
-        parent=estilos['Normal'],
-        alignment=TA_CENTER,
-        fontSize=9,
-        textColor=gris
-    )
-    elementos.append(Paragraph(
-        "Este documento es un comprobante oficial generado automáticamente.",
-        estilo_footer
-    ))
-    elementos.append(Spacer(1, 5))
-    elementos.append(Paragraph(
-        "CREDDT CRNTECH APPLICATION • Cali - Colombia • creddtcrntechapplication@gmail.com",
-        estilo_footer
-    ))
-    # ✅ GENERAR PDF
-    doc.build(elementos)
+        story.append(logo)
+        story.append(Spacer(1, 10))
+    story.append(Paragraph(titulo, style_title))
+    story.append(Paragraph("Documento soporte generado automáticamente por el sistema de créditos.", style_subtitle))
+    resumen = Table([
+        [Paragraph("N.° de crédito", style_label), Paragraph(f"<b>{prestamo_id}</b>", style_value), Paragraph("Fecha de operación", style_label), Paragraph(f"<b>{fecha_pago}</b>", style_value)],
+        [Paragraph("Cliente", style_label), Paragraph(f"<b>{cliente}</b>", style_value), Paragraph("Capital del crédito", style_label), Paragraph(f"<b>{pesos(monto_credito)}</b>", style_value)],
+    ], colWidths=[doc.width * 0.18, doc.width * 0.32, doc.width * 0.18, doc.width * 0.32])
+    resumen.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, -1), fondo), ('BOX', (0, 0), (-1, -1), 1, gris_claro), ('INNERGRID', (0, 0), (-1, -1), 0.5, gris_claro), ('TOPPADDING', (0, 0), (-1, -1), 9), ('BOTTOMPADDING', (0, 0), (-1, -1), 9), ('LEFTPADDING', (0, 0), (-1, -1), 10), ('RIGHTPADDING', (0, 0), (-1, -1), 10), ('VALIGN', (0, 0), (-1, -1), 'MIDDLE')]))
+    story.append(resumen)
+    story.append(Spacer(1, 14))
+    destaque = Table([[Paragraph(subtitulo, style_section)], [Paragraph(f"<b>{pesos(valor_pagado)}</b>", style_amount)]], colWidths=[doc.width])
+    destaque.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, -1), colors.white), ('BOX', (0, 0), (-1, -1), 1.2, gris_claro), ('TOPPADDING', (0, 0), (-1, 0), 10), ('BOTTOMPADDING', (0, 0), (-1, 0), 4), ('TOPPADDING', (0, 1), (-1, 1), 4), ('BOTTOMPADDING', (0, 1), (-1, 1), 14)]))
+    story.append(destaque)
+    story.append(Spacer(1, 14))
+    nota = Table([[Paragraph("El presente documento constituye soporte formal del movimiento registrado en la plataforma CREDDT CRNTECH. Conserve este comprobante para control interno, conciliación y soporte de futuras validaciones.", style_note)]], colWidths=[doc.width])
+    nota.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, -1), fondo), ('BOX', (0, 0), (-1, -1), 1, gris_claro), ('TOPPADDING', (0, 0), (-1, -1), 12), ('BOTTOMPADDING', (0, 0), (-1, -1), 12), ('LEFTPADDING', (0, 0), (-1, -1), 12), ('RIGHTPADDING', (0, 0), (-1, -1), 12)]))
+    story.append(nota)
+    story.append(Spacer(1, 18))
+    story.append(HRFlowable(width="100%", thickness=1, color=gris_claro))
+    story.append(Spacer(1, 10))
+    story.append(Paragraph("CREDDT CRNTECH • Área Administrativa y Financiera • Documento generado automáticamente", style_footer))
+    doc.build(story)
     return ruta_pdf
+
+
 def generar_contrato_pdf(prestamo_id, cliente, monto_credito, cuotas, valor_cuota, tipo_credito, fecha_emision=None):
     ruta_pdf = os.path.join(tempfile.gettempdir(), f"contrato_{prestamo_id}.pdf")
     fecha_emision = fecha_emision or date.today().isoformat()
-    doc = SimpleDocTemplate(
-        ruta_pdf,
-        pagesize=pagesizes.A4,
-        rightMargin=55,
-        leftMargin=55,
-        topMargin=55,
-        bottomMargin=45
-    )
+    doc = SimpleDocTemplate(ruta_pdf, pagesize=pagesizes.A4, rightMargin=40, leftMargin=40, topMargin=36, bottomMargin=34)
     estilos = getSampleStyleSheet()
-    elementos = []
-    azul = colors.HexColor("#1E3A8A")
+    azul_oscuro = colors.HexColor("#0F172A")
+    azul = colors.HexColor("#1D4ED8")
     gris = colors.HexColor("#64748B")
-    estilo_titulo = ParagraphStyle(
-        name='TituloContrato',
-        parent=estilos['Heading1'],
-        alignment=TA_CENTER,
-        fontSize=18,
-        textColor=azul,
-        spaceAfter=20
-    )
-    estilo_normal = ParagraphStyle(
-        name='ContratoNormal',
-        parent=estilos['Normal'],
-        fontSize=10.5,
-        leading=15,
-        textColor=colors.black,
-        spaceAfter=10
-    )
-    estilo_footer = ParagraphStyle(
-        name='ContratoFooter',
-        parent=estilos['Normal'],
-        fontSize=9,
-        alignment=TA_CENTER,
-        textColor=gris
-    )
+    gris_claro = colors.HexColor("#E2E8F0")
+    fondo = colors.HexColor("#F8FAFC")
+    style_brand = ParagraphStyle('ContratoBrand', parent=estilos['Normal'], fontSize=18, leading=22, textColor=colors.white, alignment=TA_CENTER)
+    style_band = ParagraphStyle('ContratoBand', parent=estilos['Normal'], fontSize=10, leading=12, textColor=colors.white, alignment=TA_CENTER)
+    style_title = ParagraphStyle('ContratoTitle', parent=estilos['Heading1'], fontSize=20, leading=24, textColor=azul_oscuro, alignment=TA_CENTER, spaceAfter=6)
+    style_subtitle = ParagraphStyle('ContratoSubtitle', parent=estilos['Normal'], fontSize=10, leading=14, textColor=gris, alignment=TA_CENTER, spaceAfter=14)
+    style_label = ParagraphStyle('ContratoLabel', parent=estilos['Normal'], fontSize=9.2, leading=12, textColor=gris)
+    style_value = ParagraphStyle('ContratoValue', parent=estilos['Normal'], fontSize=11, leading=14, textColor=azul_oscuro)
+    style_clause_title = ParagraphStyle('ContratoClauseTitle', parent=estilos['Normal'], fontSize=10.8, leading=14, textColor=azul_oscuro, spaceAfter=4)
+    style_clause = ParagraphStyle('ContratoClause', parent=estilos['Normal'], fontSize=9.8, leading=15, textColor=colors.black, spaceAfter=8)
+    style_footer = ParagraphStyle('ContratoFooter', parent=estilos['Normal'], fontSize=8.8, leading=12, textColor=gris, alignment=TA_CENTER)
+    story = []
+    header = Table([[Paragraph("<b>CREDDT CRNTECH</b>", style_brand)]], colWidths=[doc.width])
+    header.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, -1), azul_oscuro), ('TOPPADDING', (0, 0), (-1, -1), 14), ('BOTTOMPADDING', (0, 0), (-1, -1), 14)]))
+    story.append(header)
+    banda = Table([[Paragraph("Área de Aprobación", style_band)]], colWidths=[doc.width])
+    banda.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, -1), azul), ('TOPPADDING', (0, 0), (-1, -1), 7), ('BOTTOMPADDING', (0, 0), (-1, -1), 7)]))
+    story.append(banda)
+    story.append(Spacer(1, 16))
     if os.path.exists("logo_creddt.png"):
-        logo = Image("logo_creddt.png", width=2.2*inch, height=1.0*inch)
+        logo = Image("logo_creddt.png", width=1.75 * inch, height=0.8 * inch)
         logo.hAlign = 'CENTER'
-        elementos.append(logo)
-        elementos.append(Spacer(1, 12))
-    elementos.append(Paragraph("CONTRATO DE CRÉDITO", estilo_titulo))
-    elementos.append(Paragraph(f"Fecha de emisión: <b>{fecha_emision}</b>", estilo_normal))
-    elementos.append(Paragraph(
-        f"Cliente: <b>{cliente}</b><br/>"
-        f"Crédito: <b>{prestamo_id}</b><br/>"
-        f"Tipo de crédito: <b>{tipo_credito}</b><br/>"
-        f"Monto aprobado: <b>{pesos(monto_credito)}</b><br/>"
-        f"Número de cuotas: <b>{cuotas}</b><br/>"
-        f"Valor cuota actual: <b>{pesos(valor_cuota)}</b>",
-        estilo_normal
-    ))
-    elementos.append(Paragraph(
-        "El presente documento deja constancia de las condiciones generales del crédito aprobado por CREDDT CRNTECH. "
-        "El cliente se compromete a realizar los pagos de sus cuotas en las fechas establecidas y a mantener actualizada "
-        "su información de contacto para notificaciones, recibos y recordatorios.",
-        estilo_normal
-    ))
-    elementos.append(Paragraph(
-        "Los abonos extraordinarios a capital, cuando sean aceptados y registrados, reducirán el saldo del crédito y "
-        "permitirán recalcular el valor de las cuotas pendientes, manteniendo la cantidad de cuotas restantes.",
-        estilo_normal
-    ))
-    elementos.append(Spacer(1, 25))
-    elementos.append(HRFlowable(width="100%", thickness=1, color=colors.lightgrey))
-    elementos.append(Spacer(1, 18))
-    elementos.append(Paragraph("CREDDT CRNTECH • Documento generado automáticamente para soporte del crédito.", estilo_footer))
-    doc.build(elementos)
+        story.append(logo)
+        story.append(Spacer(1, 10))
+    story.append(Paragraph("CONTRATO DE CRÉDITO", style_title))
+    story.append(Paragraph("Documento de aprobación y formalización de la operación", style_subtitle))
+    resumen = Table([
+        [Paragraph("Crédito", style_label), Paragraph(f"<b>{prestamo_id}</b>", style_value), Paragraph("Fecha de emisión", style_label), Paragraph(f"<b>{fecha_emision}</b>", style_value)],
+        [Paragraph("Cliente", style_label), Paragraph(f"<b>{cliente}</b>", style_value), Paragraph("Tipo de crédito", style_label), Paragraph(f"<b>{tipo_credito}</b>", style_value)],
+        [Paragraph("Monto aprobado", style_label), Paragraph(f"<b>{pesos(monto_credito)}</b>", style_value), Paragraph("Número de cuotas", style_label), Paragraph(f"<b>{cuotas}</b>", style_value)],
+        [Paragraph("Valor de la cuota", style_label), Paragraph(f"<b>{pesos(valor_cuota)}</b>", style_value), Paragraph("Estado inicial", style_label), Paragraph("<b>Pendiente de aceptación</b>", style_value)],
+    ], colWidths=[doc.width * 0.18, doc.width * 0.32, doc.width * 0.18, doc.width * 0.32])
+    resumen.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, -1), fondo), ('BOX', (0, 0), (-1, -1), 1, gris_claro), ('INNERGRID', (0, 0), (-1, -1), 0.5, gris_claro), ('TOPPADDING', (0, 0), (-1, -1), 9), ('BOTTOMPADDING', (0, 0), (-1, -1), 9), ('LEFTPADDING', (0, 0), (-1, -1), 10), ('RIGHTPADDING', (0, 0), (-1, -1), 10), ('VALIGN', (0, 0), (-1, -1), 'MIDDLE')]))
+    story.append(resumen)
+    story.append(Spacer(1, 16))
+    story.append(Paragraph("<b>1. Objeto de la operación</b>", style_clause_title))
+    story.append(Paragraph("Mediante el presente documento, CREDDT CRNTECH deja constancia de la aprobación inicial del crédito descrito en el resumen anterior y de las condiciones base de la operación financiera ofrecida al cliente.", style_clause))
+    story.append(Paragraph("<b>2. Condiciones generales de pago</b>", style_clause_title))
+    story.append(Paragraph("El cliente se compromete a atender oportunamente el pago de las cuotas pactadas en las fechas de vencimiento definidas por el sistema, de acuerdo con la frecuencia del crédito y las políticas internas aplicables.", style_clause))
+    story.append(Paragraph("<b>3. Abonos extraordinarios y recalculo</b>", style_clause_title))
+    story.append(Paragraph("Los abonos extraordinarios a capital, cuando sean aceptados y registrados, reducirán el saldo del crédito y podrán generar un recalculo del valor de las cuotas pendientes, manteniendo la estructura operativa definida por la entidad.", style_clause))
+    story.append(Paragraph("<b>4. Aceptación electrónica</b>", style_clause_title))
+    story.append(Paragraph("La aceptación del contrato mediante el enlace enviado al correo registrado del cliente tendrá validez como manifestación expresa de conformidad frente a la información, condiciones y trazabilidad de la operación aquí descrita.", style_clause))
+    validacion = Table([[Paragraph("<b>Validación institucional:</b><br/>La presente aprobación queda sujeta a verificación, aceptación del contrato por parte del cliente y continuidad del proceso operativo correspondiente.", style_clause)]], colWidths=[doc.width])
+    validacion.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, -1), fondo), ('BOX', (0, 0), (-1, -1), 1, gris_claro), ('TOPPADDING', (0, 0), (-1, -1), 12), ('BOTTOMPADDING', (0, 0), (-1, -1), 12), ('LEFTPADDING', (0, 0), (-1, -1), 12), ('RIGHTPADDING', (0, 0), (-1, -1), 12)]))
+    story.append(validacion)
+    story.append(Spacer(1, 18))
+    story.append(HRFlowable(width="100%", thickness=1, color=gris_claro))
+    story.append(Spacer(1, 10))
+    story.append(Paragraph("CREDDT CRNTECH • Área de Aprobación • Documento generado automáticamente", style_footer))
+    doc.build(story)
     return ruta_pdf
+
 def obtener_datos_cliente(conn, cedula):
     return conn.execute(text("""
         SELECT nombres || ' ' || apellidos AS nombre, correo
         FROM clientes
         WHERE cedula = :cedula
     """), {"cedula": cedula}).fetchone()
-def enviar_pdf_por_correo(destino, asunto, cuerpo, ruta_pdf, nombre_adj):
+
+def enviar_pdf_por_correo(destino, asunto, cuerpo, ruta_pdf, nombre_adj, html_override=None):
     with open(ruta_pdf, "rb") as f:
-        return enviar_correo_async(
-            destino=destino,
-            asunto=asunto,
-            cuerpo=cuerpo,
-            attachment_bytes=f.read(),
-            attachment_name=nombre_adj
-        )
+        return enviar_correo_async(destino=destino, asunto=asunto, cuerpo=cuerpo, attachment_bytes=f.read(), attachment_name=nombre_adj, html_override=html_override)
+
+
 def enviar_contrato_credito(prestamo_row):
     if not prestamo_row.get("correo"):
         return False, "Cliente sin correo registrado"
@@ -683,51 +665,11 @@ def enviar_contrato_credito(prestamo_row):
     enlace = f"{APP_BASE_URL}?aceptar={token}" if APP_BASE_URL else None
     ruta_pdf = None
     try:
-        ruta_pdf = generar_contrato_pdf(
-            prestamo_row["id"],
-            prestamo_row["cliente"],
-            prestamo_row["monto_original"],
-            prestamo_row["cuotas"],
-            prestamo_row["valor_cuota"],
-            prestamo_row["tipo"]
-        )
-        cuerpo = construir_cuerpo_correo(
-            "CONTRATO",
-            prestamo_row["cliente"],
-            prestamo_id=prestamo_row["id"],
-            monto=prestamo_row["monto_original"],
-            cuotas=prestamo_row["cuotas"],
-            valor_cuota=prestamo_row["valor_cuota"]
-        )
-        html_boton = None
-        if enlace:
-            cuerpo_html = cuerpo.replace("\n", "<br>")
-            html_boton = f"""
-            <div style="font-family: Arial, Helvetica, sans-serif; background-color: #f4f6f8; padding: 30px;">
-                <div style="max-width: 680px; margin: 0 auto; background: #ffffff; border-radius: 12px; overflow: hidden; border: 1px solid #e5e7eb;">
-                    <div style="background: #0f172a; padding: 24px 30px;">
-                        <h2 style="margin: 0; color: #ffffff; font-size: 22px;">CREDDT CRNTECH</h2>
-                        <p style="margin: 8px 0 0 0; color: #cbd5e1; font-size: 14px;">Aceptación de contrato</p>
-                    </div>
-                    <div style="padding: 30px; color: #1f2937; font-size: 15px; line-height: 1.7;">
-                        {cuerpo_html}<br><br>
-                        <div style="text-align:center; margin: 28px 0;">
-                            <a href="{enlace}" style="background:#0f172a; color:#ffffff; padding:14px 24px; border-radius:8px; text-decoration:none; font-weight:700; display:inline-block;">Aceptar contrato</a>
-                        </div>
-                        <p style="font-size:13px; color:#64748b;">Si el botón no abre, copie y pegue este enlace en su navegador:<br>{enlace}</p>
-                    </div>
-                </div>
-            </div>
-            """
+        ruta_pdf = generar_contrato_pdf(prestamo_row["id"], prestamo_row["cliente"], prestamo_row["monto_original"], prestamo_row["cuotas"], prestamo_row["valor_cuota"], prestamo_row["tipo"])
+        cuerpo = construir_cuerpo_correo("CONTRATO", prestamo_row["cliente"], prestamo_id=prestamo_row["id"], monto=prestamo_row["monto_original"], cuotas=prestamo_row["cuotas"], valor_cuota=prestamo_row["valor_cuota"], tipo_credito=prestamo_row.get("tipo"), link_aceptacion=enlace)
+        html_correo = construir_html_correo("CONTRATO", prestamo_row["cliente"], prestamo_id=prestamo_row["id"], monto=prestamo_row["monto_original"], cuotas=prestamo_row["cuotas"], valor_cuota=prestamo_row["valor_cuota"], tipo_credito=prestamo_row.get("tipo"), link_aceptacion=enlace)
         with open(ruta_pdf, "rb") as f:
-            ok_mail, err_mail = enviar_correo_async(
-                prestamo_row["correo"],
-                f"Contrato crédito {prestamo_row['id']}",
-                cuerpo,
-                attachment_bytes=f.read(),
-                attachment_name=f"contrato_{prestamo_row['id']}.pdf",
-                html_override=html_boton
-            )
+            ok_mail, err_mail = enviar_correo_async(prestamo_row["correo"], "CREDDT CRNTECH | Contrato de crédito para aceptación", cuerpo, attachment_bytes=f.read(), attachment_name=f"contrato_{prestamo_row['id']}.pdf", html_override=html_correo)
         if ok_mail:
             with get_conn() as conn:
                 conn.execute(text("""
@@ -744,20 +686,14 @@ def enviar_contrato_credito(prestamo_row):
                 os.remove(ruta_pdf)
             except Exception:
                 pass
+
+
 def enviar_correo_desembolso_credito(prestamo_row):
     if not prestamo_row.get("correo"):
         return False, "Cliente sin correo registrado"
-    cuerpo = construir_cuerpo_correo(
-        "DESEMBOLSO",
-        prestamo_row["cliente"],
-        prestamo_id=prestamo_row["id"],
-        tipo=prestamo_row["tipo"],
-        monto=prestamo_row["monto_original"],
-        frecuencia=prestamo_row.get("frecuencia", "Mensual"),
-        cuotas=prestamo_row["cuotas"],
-        valor_cuota=prestamo_row["valor_cuota"]
-    )
-    ok_mail, err_mail = enviar_correo_async(prestamo_row["correo"], f"Crédito {prestamo_row['id']} aprobado para desembolso", cuerpo)
+    cuerpo = construir_cuerpo_correo("DESEMBOLSO", prestamo_row["cliente"], prestamo_id=prestamo_row["id"], tipo_credito=prestamo_row.get("tipo"), monto=prestamo_row["monto_original"], frecuencia=prestamo_row.get("frecuencia", "Mensual"), cuotas=prestamo_row["cuotas"], valor_cuota=prestamo_row["valor_cuota"])
+    html_correo = construir_html_correo("DESEMBOLSO", prestamo_row["cliente"], prestamo_id=prestamo_row["id"], tipo_credito=prestamo_row.get("tipo"), monto=prestamo_row["monto_original"], frecuencia=prestamo_row.get("frecuencia", "Mensual"), cuotas=prestamo_row["cuotas"], valor_cuota=prestamo_row["valor_cuota"])
+    ok_mail, err_mail = enviar_correo_async(prestamo_row["correo"], f"CREDDT CRNTECH | Confirmación de desembolso del crédito {prestamo_row['id']}", cuerpo, html_override=html_correo)
     if ok_mail:
         with get_conn() as conn:
             conn.execute(text("""
@@ -768,6 +704,7 @@ def enviar_correo_desembolso_credito(prestamo_row):
             """), {"fecha": datetime.now().isoformat(timespec='seconds'), "id": prestamo_row["id"]})
             conn.commit()
     return ok_mail, err_mail
+
 def guardar_cliente_db(data):
     with get_conn() as conn:
         conn.execute(text("""
@@ -876,6 +813,7 @@ def crear_credito_db(cliente_cedula, monto, cuotas, frecuencia, tipo, fecha_inic
         }
     ok_mail, err_mail = enviar_contrato_credito(prestamo_row)
     return True, None if ok_mail else err_mail, prestamo_row
+
 def aceptar_contrato_por_token(token):
     with get_conn() as conn:
         prestamo = conn.execute(text("""
@@ -888,18 +826,28 @@ def aceptar_contrato_por_token(token):
         if not prestamo:
             return False, "Enlace inválido o vencido", None
         if int(prestamo["contrato_aceptado"] or 0) == 1:
-            return True, "El contrato ya había sido aceptado previamente", dict(prestamo)
+            return True, "El contrato ya había sido aceptado previamente.", dict(prestamo)
         conn.execute(text("""
             UPDATE prestamos
-            SET contrato_aceptado = 1, estado = 'Activo', fecha_aceptacion = :fecha, fecha_desembolso = :fecha
+            SET contrato_aceptado = 1,
+                estado = 'Activo',
+                fecha_aceptacion = :fecha
             WHERE id = :id
         """), {"fecha": datetime.now().isoformat(timespec='seconds'), "id": prestamo["id"]})
         conn.commit()
     prestamo_row = dict(prestamo)
-    enviar_correo_desembolso_credito(prestamo_row)
-    return True, "Contrato aceptado correctamente", prestamo_row
+    try:
+        ok_mail, err_mail = enviar_correo_desembolso_credito(prestamo_row)
+        if ok_mail:
+            return True, "Contrato aceptado correctamente y correo de desembolso enviado.", prestamo_row
+        return True, f"Contrato aceptado correctamente, pero el correo de desembolso no se pudo enviar: {err_mail}", prestamo_row
+    except Exception as e:
+        return True, f"Contrato aceptado correctamente, pero ocurrió un error enviando el correo de desembolso: {e}", prestamo_row
+
+
 def procesar_recordatorios_automaticos():
     enviados = 0
+    tipos_permitidos = {-3: "D-3", -1: "D-1", 0: "D0", 1: "D+1", 5: "D+5"}
     with get_conn() as conn:
         rows = conn.execute(text("""
             SELECT cu.id_cuota, cu.prestamo_id, cu.nro_cuota, cu.fecha_vencimiento::date AS fecha_vencimiento, cu.valor_cuota,
@@ -909,21 +857,25 @@ def procesar_recordatorios_automaticos():
             JOIN clientes c ON c.cedula = p.cliente_cedula
             WHERE cu.estado IN ('Pendiente', 'Parcial')
               AND c.correo IS NOT NULL
-              AND cu.fecha_vencimiento::date BETWEEN CURRENT_DATE - INTERVAL '1 day' AND CURRENT_DATE + INTERVAL '3 day'
+              AND cu.fecha_vencimiento::date BETWEEN CURRENT_DATE - INTERVAL '5 day' AND CURRENT_DATE + INTERVAL '3 day'
         """)).mappings().all()
         for r in rows:
             dias = (r['fecha_vencimiento'] - date.today()).days
-            tipo_r = f"D{dias}"
+            if dias not in tipos_permitidos:
+                continue
+            tipo_r = tipos_permitidos[dias]
             ya = conn.execute(text("SELECT COUNT(*) FROM reminders_sent WHERE id_cuota = :id_cuota AND tipo_recordatorio = :tipo"), {"id_cuota": r['id_cuota'], "tipo": tipo_r}).scalar()
             if int(ya or 0) > 0:
                 continue
             cuerpo = construir_cuerpo_correo('RECORDATORIO', r['cliente'], prestamo_id=r['prestamo_id'], cuota_nro=r['nro_cuota'], fecha_vencimiento=r['fecha_vencimiento'], valor=r['valor_cuota'])
-            ok, _ = enviar_correo_async(r['correo'], f"Recordatorio de pago crédito {r['prestamo_id']}", cuerpo)
+            html_correo = construir_html_correo('RECORDATORIO', r['cliente'], prestamo_id=r['prestamo_id'], cuota_nro=r['nro_cuota'], fecha_vencimiento=r['fecha_vencimiento'], valor=r['valor_cuota'])
+            ok, _ = enviar_correo_async(r['correo'], f"CREDDT CRNTECH | Recordatorio de pago del crédito {r['prestamo_id']}", cuerpo, html_override=html_correo)
             if ok:
                 conn.execute(text("INSERT INTO reminders_sent (id_cuota, tipo_recordatorio, fecha_envio) VALUES (:id_cuota, :tipo, :fecha_envio)"), {"id_cuota": r['id_cuota'], "tipo": tipo_r, "fecha_envio": datetime.now().isoformat(timespec='seconds')})
                 enviados += 1
         conn.commit()
     return enviados
+
 def render_aceptacion_contrato(token):
     st.markdown("<h2 style='text-align:center;'>CREDDT | CRNTECH</h2>", unsafe_allow_html=True)
     st.markdown("<p style='text-align:center;color:#666;'>Aceptación de contrato de crédito</p>", unsafe_allow_html=True)
@@ -1049,10 +1001,18 @@ def registrar_pago_cuota(prestamo_id, fecha_pago):
         if correo_cliente:
             correo_ok, correo_error = enviar_pdf_por_correo(
                 correo_cliente,
-                f"Recibo pago {prestamo_id}",
+                f"CREDDT CRNTECH | Confirmación de pago del crédito {prestamo_id}",
                 cuerpo,
                 pdf,
-                f"recibo_{prestamo_id}.pdf"
+                f"recibo_{prestamo_id}.pdf",
+                html_override=construir_html_correo(
+                    "RECIBO_CUOTA",
+                    nombre_cliente,
+                    prestamo_id=prestamo_id,
+                    cuota_nro=nro_cuota,
+                    fecha_pago=fecha_pago.isoformat(),
+                    valor=valor_pago
+                )
             )
         else:
             correo_error = "Cliente sin correo registrado"

@@ -1765,6 +1765,12 @@ with tab_creditos:
         "📨 Contratos pendientes"
     ])
 
+    if "cliente_normal_credito" not in st.session_state:
+        st.session_state["cliente_normal_credito"] = None
+
+    if "cliente_express_credito" not in st.session_state:
+        st.session_state["cliente_express_credito"] = None
+
     if clientes_credito_df.empty:
         st.info("ℹ️ Primero registra un cliente para crear créditos.")
     else:
@@ -1784,7 +1790,11 @@ with tab_creditos:
                 cuotas_normal_new = st.selectbox("Número de cuotas", [12, 15], key="nuevo_cuotas_normal")
                 frecuencia_normal_new = st.selectbox("Frecuencia", ["Mensual", "Quincenal"], key="nuevo_frec_normal")
                 fecha_inicio_normal = st.date_input("Fecha de inicio", value=date.today(), key="fecha_inicio_normal")
-                st.caption("La simulación final se procesa al registrar el crédito.")
+                cuota_normal_preview = calcular_cuota_normal(monto_normal_new, cuotas_normal_new, frecuencia_normal_new)
+                st.info(
+                    f"📌 Cuota estimada a guardar: {pesos(cuota_normal_preview)} | "
+                    f"{cuotas_normal_new} cuotas | {frecuencia_normal_new}"
+                )
                 submit_normal = st.form_submit_button("Registrar crédito normal", type="primary", disabled=st.session_state.get("app_busy", False))
             if submit_normal:
                 if cliente_normal is None:
@@ -1794,11 +1804,16 @@ with tab_creditos:
                     try:
                         ok_c, err_c, prestamo_creado = crear_credito_db(cliente_normal, monto_normal_new, cuotas_normal_new, frecuencia_normal_new, "Normal", fecha_inicio_normal)
                         if ok_c:
-                            st.session_state["cliente_normal_credito"] = None
+                            mensaje_base = (
+                                f"✅ Crédito {prestamo_creado['id']} creado.\n\n"
+                                f"📌 Cuota guardada: {pesos(prestamo_creado['valor_cuota'])}\n"
+                                f"📆 Cuotas: {prestamo_creado['cuotas']}\n"
+                                f"🔁 Frecuencia: {prestamo_creado['frecuencia']}"
+                            )
                             if not err_c:
-                                set_flash("credito_msg", "success", f"✅ Crédito {prestamo_creado['id']} creado y contrato enviado correctamente")
+                                set_flash("credito_msg", "success", mensaje_base + "\n\n📨 Contrato enviado correctamente")
                             else:
-                                set_flash("credito_msg", "warning", f"⚠️ Crédito {prestamo_creado['id']} creado, pero el contrato quedó pendiente: {err_c}")
+                                set_flash("credito_msg", "warning", mensaje_base + f"\n\n⚠️ El contrato quedó pendiente: {err_c}")
                             st.rerun()
                         else:
                             st.error(f"❌ {err_c}")
@@ -1818,7 +1833,11 @@ with tab_creditos:
                 frecuencia_express_new = st.selectbox("Frecuencia", ["Mensual", "Quincenal"], key="nuevo_frec_express")
                 cuotas_express_new = 5 if frecuencia_express_new == "Mensual" else 6
                 fecha_inicio_express = st.date_input("Fecha de inicio", value=date.today(), key="fecha_inicio_express")
-                st.caption(f"Crédito express a {cuotas_express_new} cuotas de frecuencia {frecuencia_express_new.lower()}.")
+                cuota_express_preview = calcular_cuota_express(monto_express_new, cuotas_express_new, frecuencia_express_new)
+                st.info(
+                    f"📌 Cuota estimada a guardar: {pesos(cuota_express_preview)} | "
+                    f"{cuotas_express_new} cuotas | {frecuencia_express_new}"
+                )
                 submit_express = st.form_submit_button("Registrar crédito express", type="primary", disabled=st.session_state.get("app_busy", False))
             if submit_express:
                 if cliente_express is None:
@@ -1828,11 +1847,16 @@ with tab_creditos:
                     try:
                         ok_c, err_c, prestamo_creado = crear_credito_db(cliente_express, monto_express_new, cuotas_express_new, frecuencia_express_new, "Express", fecha_inicio_express)
                         if ok_c:
-                            st.session_state["cliente_express_credito"] = None
+                            mensaje_base = (
+                                f"✅ Crédito {prestamo_creado['id']} creado.\n\n"
+                                f"📌 Cuota guardada: {pesos(prestamo_creado['valor_cuota'])}\n"
+                                f"📆 Cuotas: {prestamo_creado['cuotas']}\n"
+                                f"🔁 Frecuencia: {prestamo_creado['frecuencia']}"
+                            )
                             if not err_c:
-                                set_flash("credito_msg", "success", f"✅ Crédito {prestamo_creado['id']} creado y contrato enviado correctamente")
+                                set_flash("credito_msg", "success", mensaje_base + "\n\n📨 Contrato enviado correctamente")
                             else:
-                                set_flash("credito_msg", "warning", f"⚠️ Crédito {prestamo_creado['id']} creado, pero el contrato quedó pendiente: {err_c}")
+                                set_flash("credito_msg", "warning", mensaje_base + f"\n\n⚠️ El contrato quedó pendiente: {err_c}")
                             st.rerun()
                         else:
                             st.error(f"❌ {err_c}")
@@ -2194,4 +2218,5 @@ with tab_sim:
                 f"💰 Total a pagar estimado: **{pesos(cuota * cuotas_express)}**\n\n"
                 f"📈 Tasa aplicada: **{calcular_tasa_express(frecuencia)*100:.2f}%**"
             )
+
 

@@ -2441,6 +2441,3 @@ with tab_sim:
                 f"📈 Tasa aplicada: **{calcular_tasa_express(frecuencia)*100:.2f}%**"
             )
 
-
-
-

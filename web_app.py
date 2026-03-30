@@ -330,6 +330,213 @@ def pesos(valor):
         return f"${float(valor):,.0f}".replace(",", ".")
     except Exception:
         return "$0"
+
+
+def formatear_fecha_visual(valor):
+    if valor in (None, "", "-", "None"):
+        return "-"
+    try:
+        if isinstance(valor, datetime):
+            return valor.strftime("%d %b %Y")
+        if isinstance(valor, date):
+            return valor.strftime("%d %b %Y")
+        txt = str(valor).strip()
+        if len(txt) >= 10:
+            return datetime.strptime(txt[:10], "%Y-%m-%d").strftime("%d %b %Y")
+        return txt
+    except Exception:
+        return str(valor)
+
+
+def _bool_flag(valor):
+    try:
+        return int(valor or 0) == 1
+    except Exception:
+        return bool(valor)
+
+
+def inyectar_estilos_kpi():
+    st.markdown("""
+    <style>
+    .kpi-shell{margin:0 0 18px 0;}
+    .kpi-hero{
+        position:relative; overflow:hidden; border-radius:24px; padding:24px 26px;
+        background:
+            radial-gradient(circle at top right, rgba(96,165,250,.28), transparent 28%),
+            linear-gradient(135deg, #0f172a 0%, #13223f 52%, #1d4ed8 100%);
+        color:#fff; border:1px solid rgba(255,255,255,.08);
+        box-shadow:0 18px 40px rgba(15,23,42,.18);
+    }
+    .kpi-hero::after{
+        content:""; position:absolute; right:-40px; top:-40px; width:160px; height:160px;
+        background:rgba(255,255,255,.06); border-radius:50%; filter:blur(1px);
+    }
+    .kpi-overline{font-size:12px; font-weight:700; letter-spacing:.12em; text-transform:uppercase; color:rgba(255,255,255,.72); margin-bottom:10px;}
+    .kpi-title{font-size:28px; font-weight:800; line-height:1.1; margin-bottom:8px;}
+    .kpi-subtitle{font-size:14px; color:rgba(255,255,255,.82); line-height:1.6; margin-bottom:16px;}
+    .kpi-badges{display:flex; flex-wrap:wrap; gap:10px; margin-top:10px;}
+    .kpi-badge{padding:8px 12px; border-radius:999px; font-size:12px; font-weight:700; background:rgba(255,255,255,.12); color:#fff; border:1px solid rgba(255,255,255,.12); backdrop-filter:blur(4px);}
+    .kpi-grid{display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:14px; margin:16px 0 10px 0;}
+    .kpi-card{
+        border-radius:22px; padding:18px 18px 16px 18px;
+        background:linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+        border:1px solid #e2e8f0; box-shadow:0 10px 24px rgba(15,23,42,.06); min-height:132px;
+    }
+    .kpi-card-dark{background:linear-gradient(135deg, #0f172a 0%, #1e293b 100%); border:1px solid rgba(255,255,255,.06); color:#ffffff;}
+    .kpi-label{font-size:12px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; color:#64748b; margin-bottom:10px;}
+    .kpi-card-dark .kpi-label{color:rgba(255,255,255,.72);}
+    .kpi-value{font-size:28px; line-height:1.1; font-weight:800; color:#0f172a; margin-bottom:8px;}
+    .kpi-card-dark .kpi-value{color:#ffffff;}
+    .kpi-meta{font-size:13px; line-height:1.55; color:#64748b;}
+    .kpi-card-dark .kpi-meta{color:rgba(255,255,255,.76);}
+    .flow-wrap{
+        margin-top:8px; border-radius:22px; padding:18px 18px 16px 18px; background:#ffffff;
+        border:1px solid #e2e8f0; box-shadow:0 10px 24px rgba(15,23,42,.06);
+    }
+    .flow-header{display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px;}
+    .flow-title{font-size:16px; font-weight:800; color:#0f172a;}
+    .flow-percent{font-size:14px; font-weight:800; color:#1d4ed8;}
+    .flow-bar{width:100%; height:12px; border-radius:999px; background:#e2e8f0; overflow:hidden; margin-bottom:16px;}
+    .flow-fill{height:100%; border-radius:999px; background:linear-gradient(90deg, #2563eb 0%, #38bdf8 100%);}
+    .timeline{display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:12px;}
+    .step{border-radius:18px; padding:14px; border:1px solid #e2e8f0; background:#f8fafc;}
+    .step.ok{background:linear-gradient(180deg, #ecfdf5 0%, #f0fdf4 100%); border:1px solid #bbf7d0;}
+    .step.wait{background:linear-gradient(180deg, #eff6ff 0%, #f8fbff 100%); border:1px solid #bfdbfe;}
+    .step.off{background:linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);}
+    .step-kicker{font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:.06em; color:#64748b; margin-bottom:8px;}
+    .step-title{font-size:15px; font-weight:800; color:#0f172a; margin-bottom:6px; line-height:1.3;}
+    .step-date{font-size:12px; color:#475569; line-height:1.45;}
+    .kpi-note{margin-top:12px; padding:14px 16px; border-radius:16px; font-size:14px; line-height:1.6; font-weight:600;}
+    .kpi-note.info{background:#eff6ff; color:#1e3a8a; border:1px solid #bfdbfe;}
+    .kpi-note.warn{background:#fff7ed; color:#9a3412; border:1px solid #fdba74;}
+    .kpi-note.ok{background:#ecfdf5; color:#166534; border:1px solid #86efac;}
+    @media (max-width: 1100px){
+        .kpi-grid, .timeline{grid-template-columns:repeat(2, minmax(0, 1fr));}
+    }
+    @media (max-width: 700px){
+        .kpi-grid, .timeline{grid-template-columns:1fr;}
+        .kpi-title{font-size:22px;}
+        .kpi-value{font-size:24px;}
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+
+def kpi_card_html(label, value, meta="", dark=False):
+    dark_class = "kpi-card-dark" if dark else ""
+    return f"""
+    <div class="kpi-card {dark_class}">
+        <div class="kpi-label">{label}</div>
+        <div class="kpi-value">{value}</div>
+        <div class="kpi-meta">{meta}</div>
+    </div>
+    """
+
+
+def render_kpis_credito_detalle(fila_p):
+    inyectar_estilos_kpi()
+
+    credito_id = fila_p.get("id", "-")
+    cliente = fila_p.get("cliente", "-")
+    tipo_credito = fila_p.get("tipo", "-")
+    estado_credito = fila_p.get("estado", "-")
+    frecuencia = fila_p.get("frecuencia", "Mensual")
+
+    contrato_enviado = _bool_flag(fila_p.get("contrato_enviado", 0))
+    contrato_aceptado = _bool_flag(fila_p.get("contrato_aceptado", 0))
+    desembolso_notificado = _bool_flag(fila_p.get("desembolso_notificado", 0))
+
+    fecha_envio = formatear_fecha_visual(fila_p.get("fecha_envio_contrato"))
+    fecha_aceptacion = formatear_fecha_visual(fila_p.get("fecha_aceptacion"))
+    fecha_desembolso = formatear_fecha_visual(fila_p.get("fecha_desembolso"))
+
+    capital = pesos(fila_p.get("monto_original", 0))
+    cuota = pesos(fila_p.get("valor_cuota", 0))
+    cuotas = int(fila_p.get("cuotas", 0) or 0)
+
+    pasos = [
+        ("Registro", True, "Creado en plataforma", f"Estado actual: {estado_credito}"),
+        ("Contrato", contrato_enviado, "Contrato enviado", fecha_envio if contrato_enviado else "Pendiente de envío"),
+        ("Aceptación", contrato_aceptado, "Contrato aceptado", fecha_aceptacion if contrato_aceptado else "Esperando confirmación"),
+        ("Desembolso", desembolso_notificado, "Desembolso notificado", fecha_desembolso if desembolso_notificado else "Pendiente de notificación"),
+    ]
+    progreso = int((sum(1 for _, done, _, _ in pasos if done) / len(pasos)) * 100)
+
+    badge_estado = f'<span class="kpi-badge">Estado: {estado_credito}</span>'
+    badge_tipo = f'<span class="kpi-badge">Tipo: {tipo_credito}</span>'
+    badge_frecuencia = f'<span class="kpi-badge">Frecuencia: {frecuencia}</span>'
+
+    st.markdown(f"""
+    <div class="kpi-shell">
+        <div class="kpi-hero">
+            <div class="kpi-overline">Panel ejecutivo del crédito</div>
+            <div class="kpi-title">Crédito {credito_id}</div>
+            <div class="kpi-subtitle">
+                {cliente}<br>
+                Visualiza en una sola vista el resumen financiero y el avance operativo del flujo contractual.
+            </div>
+            <div class="kpi-badges">
+                {badge_estado}
+                {badge_tipo}
+                {badge_frecuencia}
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown(
+        f"""
+        <div class="kpi-grid">
+            {kpi_card_html("Capital aprobado", capital, "Monto inicial aprobado al cliente", dark=True)}
+            {kpi_card_html("Cuota actual", cuota, "Valor vigente por período de pago")}
+            {kpi_card_html("Número de cuotas", cuotas, "Plan total definido para la operación")}
+            {kpi_card_html("Siguiente fase", "Aceptación" if contrato_enviado and not contrato_aceptado else ("Desembolso" if contrato_aceptado and not desembolso_notificado else ("Completado" if desembolso_notificado else "Envío de contrato")), "Lectura rápida del punto actual del flujo")}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    timeline_html = ""
+    for idx, (kicker, done, title, dtxt) in enumerate(pasos, start=1):
+        step_class = "ok" if done else ("wait" if idx == sum(1 for _, d, _, _ in pasos if d) + 1 else "off")
+        timeline_html += f"""
+        <div class="step {step_class}">
+            <div class="step-kicker">Paso {idx} · {kicker}</div>
+            <div class="step-title">{title}</div>
+            <div class="step-date">{dtxt}</div>
+        </div>
+        """
+
+    if not contrato_enviado:
+        nota_class = "warn"
+        nota_texto = "Este crédito sigue pendiente porque aún no se ha enviado el contrato al cliente."
+    elif contrato_enviado and not contrato_aceptado:
+        nota_class = "info"
+        nota_texto = "El contrato ya fue enviado. El siguiente hito es la aceptación del cliente."
+    elif contrato_aceptado and not desembolso_notificado:
+        nota_class = "warn"
+        nota_texto = "El contrato ya fue aceptado. Falta confirmar la notificación del desembolso."
+    else:
+        nota_class = "ok"
+        nota_texto = "El flujo contractual y la notificación de desembolso ya quedaron completados."
+
+    st.markdown(f"""
+    <div class="flow-wrap">
+        <div class="flow-header">
+            <div class="flow-title">Avance del flujo</div>
+            <div class="flow-percent">{progreso}% completado</div>
+        </div>
+        <div class="flow-bar">
+            <div class="flow-fill" style="width:{progreso}%;"></div>
+        </div>
+        <div class="timeline">
+            {timeline_html}
+        </div>
+        <div class="kpi-note {nota_class}">
+            {nota_texto}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 def normalizar_decimal(valor):
     return Decimal(str(valor or 0)).quantize(Decimal("0.01"))
 def enviar_correo(destino, asunto, cuerpo):
@@ -1831,41 +2038,7 @@ with tab_creditos:
                 else:
                     fila_p = pendientes_df[pendientes_df["id"] == prestamo_pend_sel].iloc[0].to_dict()
 
-                    st.markdown(f"""
-                    <div style="border:1px solid #e5e7eb;border-radius:16px;padding:14px 16px;background:#ffffff;margin-bottom:10px;">
-                        <div style="font-size:18px;font-weight:800;color:#0f172a;">Crédito {fila_p['id']}</div>
-                        <div style="font-size:13px;color:#64748b;margin-top:4px;">{fila_p['cliente']} · {fila_p['tipo']} · Estado: {fila_p['estado']}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-                    r1, r2, r3, r4 = st.columns(4)
-                    r1.metric("Capital", pesos(fila_p["monto_original"]))
-                    r2.metric("Cuota", pesos(fila_p["valor_cuota"]))
-                    r3.metric("Cuotas", int(fila_p["cuotas"]))
-                    r4.metric("Frecuencia", fila_p.get("frecuencia", "Mensual"))
-
-                    contrato_enviado = int(fila_p.get("contrato_enviado", 0) or 0) == 1
-                    contrato_aceptado = int(fila_p.get("contrato_aceptado", 0) or 0) == 1
-                    desembolso_notificado = int(fila_p.get("desembolso_notificado", 0) or 0) == 1
-                    fecha_envio = fila_p.get("fecha_envio_contrato") or "-"
-                    fecha_aceptacion = fila_p.get("fecha_aceptacion") or "-"
-                    fecha_desembolso = fila_p.get("fecha_desembolso") or "-"
-
-                    st.markdown("### Estado del flujo")
-                    f1, f2, f3, f4 = st.columns(4)
-                    f1.metric("Contrato enviado", "Sí" if contrato_enviado else "No", fecha_envio if contrato_enviado else None)
-                    f2.metric("Esperando aceptación", "Sí" if contrato_enviado and not contrato_aceptado else "No")
-                    f3.metric("Contrato aceptado", "Sí" if contrato_aceptado else "No", fecha_aceptacion if contrato_aceptado else None)
-                    f4.metric("Desembolso notificado", "Sí" if desembolso_notificado else "No", fecha_desembolso if desembolso_notificado else None)
-
-                    if not contrato_enviado:
-                        st.warning("⚠️ Este crédito está pendiente porque aún no se ha enviado el contrato al cliente.")
-                    elif contrato_enviado and not contrato_aceptado:
-                        st.info("⏳ El contrato ya fue enviado y el sistema está esperando la aceptación del cliente.")
-                    elif contrato_aceptado and not desembolso_notificado:
-                        st.warning("⚠️ El contrato ya fue aceptado, pero aún no hay confirmación de notificación de desembolso.")
-                    else:
-                        st.success("✅ El flujo del contrato y desembolso ya quedó completado para este crédito.")
+                    render_kpis_credito_detalle(fila_p)
 
                     if st.button("📨 Enviar contrato manual", type="primary", key="btn_enviar_contrato_manual", disabled=st.session_state.get("app_busy", False)):
                         start_busy("Enviando contrato manual...")
@@ -2163,5 +2336,7 @@ with tab_sim:
                 f"💰 Total a pagar estimado: **{pesos(cuota * cuotas_express)}**\n\n"
                 f"📈 Tasa aplicada: **{calcular_tasa_express(frecuencia)*100:.2f}%**"
             )
+
+
 
 

@@ -351,131 +351,15 @@ def calcular_cuota_amortizada(capital, tasa_mensual, cuotas_restantes):
     factor = (1 + tasa_mensual) ** cuotas_restantes
     cuota = capital * ((tasa_mensual * factor) / (factor - 1))
     return round(cuota, 2)
-def decimal_2(valor):
-    return Decimal(str(valor or 0)).quantize(Decimal("0.01"))
-
-
-def obtener_aplicado_cuota(conn, id_cuota):
-    aplicado = conn.execute(text("""
-        SELECT COALESCE(SUM(valor_aplicado), 0)
-        FROM pagos_cuotas
-        WHERE id_cuota = :id_cuota
-    """), {"id_cuota": id_cuota}).scalar()
-    return decimal_2(aplicado)
-
-
 def obtener_proxima_cuota(conn, prestamo_id):
-    row = conn.execute(text("""
-        SELECT id_cuota, nro_cuota, fecha_vencimiento, valor_cuota, estado
+    return conn.execute(text("""
+        SELECT id_cuota, nro_cuota, valor_cuota, fecha_vencimiento, estado
         FROM cuotas
         WHERE prestamo_id = :id
           AND estado <> 'Pagada'
         ORDER BY nro_cuota ASC
         LIMIT 1
-    """), {"id": prestamo_id}).mappings().first()
-    if not row:
-        return None
-
-    valor_cuota = decimal_2(row["valor_cuota"])
-    aplicado = obtener_aplicado_cuota(conn, row["id_cuota"])
-    saldo_cuota = valor_cuota - aplicado
-    if saldo_cuota < 0:
-        saldo_cuota = Decimal("0.00")
-
-    data = dict(row)
-    data["valor_cuota"] = valor_cuota
-    data["valor_aplicado"] = aplicado
-    data["saldo_cuota"] = saldo_cuota
-    return data
-
-
-def sincronizar_prestamo(conn, prestamo_id):
-    resumen = conn.execute(text("""
-        SELECT
-            COUNT(*) FILTER (WHERE estado = 'Pagada') AS pagadas,
-            COUNT(*) FILTER (WHERE estado IN ('Pendiente', 'Parcial')) AS abiertas
-        FROM cuotas
-        WHERE prestamo_id = :id
-    """), {"id": prestamo_id}).mappings().first()
-
-    abiertas = int((resumen or {}).get("abiertas") or 0)
-
-    prestamo = conn.execute(text("""
-        SELECT id, contrato_aceptado, COALESCE(saldo_capital, monto_original) AS saldo_capital
-        FROM prestamos
-        WHERE id = :id
-    """), {"id": prestamo_id}).mappings().first()
-
-    if not prestamo:
-        return
-
-    if abiertas == 0:
-        conn.execute(text("""
-            UPDATE prestamos
-            SET estado = 'Cancelado',
-                saldo_capital = 0
-            WHERE id = :id
-        """), {"id": prestamo_id})
-        return
-
-    estado_nuevo = 'Activo' if int(prestamo.get("contrato_aceptado") or 0) == 1 else 'Pendiente'
-    conn.execute(text("""
-        UPDATE prestamos
-        SET estado = :estado
-        WHERE id = :id
-    """), {"id": prestamo_id, "estado": estado_nuevo})
-
-
-def actualizar_estado_prestamo(conn, prestamo_id):
-    sincronizar_prestamo(conn, prestamo_id)
-
-
-def aplicar_pago_a_una_cuota(conn, id_pago, id_cuota, valor_aplicar):
-    valor_aplicar = decimal_2(valor_aplicar)
-    if valor_aplicar <= 0:
-        return Decimal("0.00")
-
-    cuota = conn.execute(text("""
-        SELECT id_cuota, valor_cuota, estado
-        FROM cuotas
-        WHERE id_cuota = :id_cuota
-    """), {"id_cuota": id_cuota}).mappings().first()
-
-    if not cuota:
-        raise ValueError("La cuota no existe")
-
-    valor_cuota = decimal_2(cuota["valor_cuota"])
-    aplicado_actual = obtener_aplicado_cuota(conn, id_cuota)
-    saldo_cuota = valor_cuota - aplicado_actual
-    if saldo_cuota < 0:
-        saldo_cuota = Decimal("0.00")
-
-    valor_final = min(valor_aplicar, saldo_cuota)
-    if valor_final <= 0:
-        return Decimal("0.00")
-
-    conn.execute(text("""
-        INSERT INTO pagos_cuotas (id_pago, id_cuota, valor_aplicado)
-        VALUES (:id_pago, :id_cuota, :valor_aplicado)
-    """), {
-        "id_pago": id_pago,
-        "id_cuota": id_cuota,
-        "valor_aplicado": valor_final,
-    })
-
-    nuevo_aplicado = aplicado_actual + valor_final
-    nuevo_estado = 'Pagada' if nuevo_aplicado >= valor_cuota else 'Parcial'
-
-    conn.execute(text("""
-        UPDATE cuotas
-        SET estado = :estado
-        WHERE id_cuota = :id_cuota
-    """), {
-        "estado": nuevo_estado,
-        "id_cuota": id_cuota,
-    })
-
-    return valor_final
+    """), {"id": prestamo_id}).fetchone()
 
 def _area_responsable(tipo_correo):
     return {
@@ -1058,79 +942,59 @@ def actualizar_estado_prestamo(conn, prestamo_id):
 def registrar_pago_cuota(prestamo_id, fecha_pago):
     with get_conn() as conn:
         prestamo_db = conn.execute(text("""
-            SELECT id, cliente_cedula, monto_original,
-                   COALESCE(saldo_capital, monto_original) AS saldo_capital,
-                   COALESCE(tasa_mensual, 0) AS tasa_mensual,
-                   valor_cuota
+            SELECT id, cliente_cedula, monto_original, COALESCE(saldo_capital, monto_original) AS saldo_capital,
+                   COALESCE(tasa_mensual, 0) AS tasa_mensual, valor_cuota
             FROM prestamos
             WHERE id = :id
         """), {"id": prestamo_id}).mappings().first()
-
         if not prestamo_db:
             return {"ok": False, "error": "No se pudo obtener el préstamo"}
-
         proxima = obtener_proxima_cuota(conn, prestamo_id)
         if not proxima:
             return {"ok": False, "error": "Todas las cuotas ya están pagadas"}
-
-        valor_pago = decimal_2(proxima["saldo_cuota"] or proxima["valor_cuota"])
-        if valor_pago <= 0:
-            return {"ok": False, "error": "La próxima cuota no tiene saldo pendiente"}
-
-        saldo_capital_actual = decimal_2(prestamo_db["saldo_capital"])
-        tasa_mensual = decimal_2(prestamo_db["tasa_mensual"])
+        id_cuota, nro_cuota, valor_cuota, fecha_vencimiento, _ = proxima
+        valor_pago = normalizar_decimal(valor_cuota)
+        saldo_capital_actual = normalizar_decimal(prestamo_db["saldo_capital"])
+        tasa_mensual = Decimal(str(prestamo_db["tasa_mensual"] or 0))
         interes_periodo = (saldo_capital_actual * tasa_mensual).quantize(Decimal("0.01")) if tasa_mensual > 0 else Decimal("0.00")
         capital_pagado = valor_pago - interes_periodo
         if capital_pagado < 0:
             capital_pagado = Decimal("0.00")
-
         nuevo_saldo_capital = saldo_capital_actual - capital_pagado
         if nuevo_saldo_capital < 0:
             nuevo_saldo_capital = Decimal("0.00")
-
         result_pago = conn.execute(text("""
             INSERT INTO pagos (prestamo_id, fecha_pago, valor, estado, tipo_movimiento, detalle)
-            VALUES (:prestamo_id, :fecha_pago, :valor, 'Pagado', 'CUOTA', :detalle)
+            VALUES (:id, :fecha, :valor, 'Pagado', 'CUOTA', :detalle)
             RETURNING id_pago
         """), {
-            "prestamo_id": prestamo_id,
-            "fecha_pago": fecha_pago.isoformat(),
+            "id": prestamo_id,
+            "fecha": fecha_pago.isoformat(),
             "valor": valor_pago,
-            "detalle": f"Pago cuota #{proxima['nro_cuota']}",
+            "detalle": f"Pago cuota #{nro_cuota}"
         })
         id_pago = result_pago.fetchone()[0]
-
-        aplicado = aplicar_pago_a_una_cuota(conn, id_pago, proxima["id_cuota"], valor_pago)
-        if aplicado <= 0:
-            conn.rollback()
-            return {"ok": False, "error": "No se pudo aplicar el pago a la cuota"}
-
         conn.execute(text("""
-            UPDATE prestamos
-            SET saldo_capital = :saldo_capital
-            WHERE id = :id
-        """), {
-            "saldo_capital": nuevo_saldo_capital,
-            "id": prestamo_id,
-        })
-
-        sincronizar_prestamo(conn, prestamo_id)
+            INSERT INTO pagos_cuotas (id_pago, id_cuota, valor_aplicado)
+            VALUES (:id_pago, :id_cuota, :valor_aplicado)
+        """), {"id_pago": id_pago, "id_cuota": id_cuota, "valor_aplicado": valor_pago})
+        conn.execute(text("UPDATE cuotas SET estado = 'Pagada' WHERE id_cuota = :id_cuota"), {"id_cuota": id_cuota})
+        conn.execute(text("UPDATE prestamos SET saldo_capital = :saldo_capital WHERE id = :id"), {"saldo_capital": nuevo_saldo_capital, "id": prestamo_id})
+        actualizar_estado_prestamo(conn, prestamo_id)
         conn.commit()
         cliente = obtener_datos_cliente(conn, prestamo_db["cliente_cedula"])
-
     nombre_cliente = cliente[0] if cliente else "Cliente"
     correo_cliente = (cliente[1] or "").strip() if cliente else ""
     pdf = None
     correo_ok = False
     correo_error = None
-
     try:
         pdf = generar_recibo_pdf(prestamo_id, nombre_cliente, prestamo_db["monto_original"], fecha_pago.isoformat(), valor_pago)
         cuerpo = construir_cuerpo_correo(
             "RECIBO_CUOTA",
             nombre_cliente,
             prestamo_id=prestamo_id,
-            cuota_nro=proxima["nro_cuota"],
+            cuota_nro=nro_cuota,
             fecha_pago=fecha_pago.isoformat(),
             valor=valor_pago
         )
@@ -1145,7 +1009,7 @@ def registrar_pago_cuota(prestamo_id, fecha_pago):
                     "RECIBO_CUOTA",
                     nombre_cliente,
                     prestamo_id=prestamo_id,
-                    cuota_nro=proxima["nro_cuota"],
+                    cuota_nro=nro_cuota,
                     fecha_pago=fecha_pago.isoformat(),
                     valor=valor_pago
                 )
@@ -1158,97 +1022,74 @@ def registrar_pago_cuota(prestamo_id, fecha_pago):
                 os.remove(pdf)
             except Exception:
                 pass
-
     return {
         "ok": True,
         "credito": prestamo_id,
-        "cuota": proxima["nro_cuota"],
+        "cuota": nro_cuota,
         "valor": valor_pago,
         "correo": correo_ok,
         "tiene_correo": bool(correo_cliente),
         "correo_error": correo_error
     }
-
 def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
-    valor_abono = decimal_2(valor_abono)
+    valor_abono = normalizar_decimal(valor_abono)
     if valor_abono <= 0:
         return {"ok": False, "error": "El abono a capital debe ser mayor a cero"}
-
     with get_conn() as conn:
         prestamo_db = conn.execute(text("""
-            SELECT id, cliente_cedula, monto_original,
-                   COALESCE(saldo_capital, monto_original) AS saldo_capital,
-                   COALESCE(tasa_mensual, 0) AS tasa_mensual,
-                   valor_cuota
+            SELECT id, cliente_cedula, monto_original, COALESCE(saldo_capital, monto_original) AS saldo_capital,
+                   COALESCE(tasa_mensual, 0) AS tasa_mensual, valor_cuota
             FROM prestamos
             WHERE id = :id
         """), {"id": prestamo_id}).mappings().first()
         if not prestamo_db:
             return {"ok": False, "error": "No se pudo obtener el préstamo"}
-
-        saldo_capital_actual = decimal_2(prestamo_db["saldo_capital"])
-        if valor_abono >= saldo_capital_actual:
-            return {"ok": False, "error": "El abono no puede ser igual o mayor al saldo capital actual. Para cierre total, usa una liquidación controlada."}
-
         cuotas_pendientes = conn.execute(text("""
             SELECT id_cuota, nro_cuota
             FROM cuotas
             WHERE prestamo_id = :id
-              AND estado IN ('Pendiente', 'Parcial')
+              AND estado <> 'Pagada'
             ORDER BY nro_cuota ASC
-        """), {"id": prestamo_id}).mappings().all()
+        """), {"id": prestamo_id}).fetchall()
         if not cuotas_pendientes:
-            return {"ok": False, "error": "El préstamo no tiene cuotas pendientes para recalcular"}
-
+            return {"ok": False, "error": "No hay cuotas pendientes para recalcular"}
+        saldo_capital_actual = normalizar_decimal(prestamo_db["saldo_capital"])
+        if valor_abono >= saldo_capital_actual:
+            return {"ok": False, "error": "El abono a capital no puede ser igual o mayor al saldo capital actual"}
         nuevo_saldo_capital = saldo_capital_actual - valor_abono
-        tasa_mensual = float(prestamo_db["tasa_mensual"] or 0)
-        nueva_cuota = decimal_2(calcular_cuota_amortizada(float(nuevo_saldo_capital), tasa_mensual, len(cuotas_pendientes)))
-
+        cuotas_restantes = len(cuotas_pendientes)
+        nueva_cuota = Decimal(str(calcular_cuota_amortizada(nuevo_saldo_capital, prestamo_db["tasa_mensual"], cuotas_restantes))).quantize(Decimal("0.01"))
         result_pago = conn.execute(text("""
             INSERT INTO pagos (prestamo_id, fecha_pago, valor, estado, tipo_movimiento, detalle)
-            VALUES (:prestamo_id, :fecha_pago, :valor, 'Pagado', 'ABONO_CAPITAL', :detalle)
+            VALUES (:id, :fecha, :valor, 'Pagado', 'ABONO_CAPITAL', :detalle)
             RETURNING id_pago
         """), {
-            "prestamo_id": prestamo_id,
-            "fecha_pago": fecha_pago.isoformat(),
+            "id": prestamo_id,
+            "fecha": fecha_pago.isoformat(),
             "valor": valor_abono,
-            "detalle": 'Abono extraordinario a capital'
+            "detalle": f"Abono a capital por {valor_abono}"
         })
-        result_pago.fetchone()[0]
-
-        conn.execute(text("""
-            UPDATE prestamos
-            SET saldo_capital = :saldo_capital,
-                valor_cuota = :valor_cuota
-            WHERE id = :id
-        """), {
+        id_pago = result_pago.fetchone()[0]
+        conn.execute(text("UPDATE prestamos SET saldo_capital = :saldo_capital, valor_cuota = :valor_cuota WHERE id = :id"), {
             "saldo_capital": nuevo_saldo_capital,
             "valor_cuota": nueva_cuota,
             "id": prestamo_id
         })
-
-        conn.execute(text("""
-            UPDATE cuotas
-            SET valor_cuota = :valor_cuota,
-                estado = CASE WHEN estado = 'Pagada' THEN 'Pagada' ELSE 'Pendiente' END
-            WHERE prestamo_id = :id
-              AND estado IN ('Pendiente', 'Parcial')
-        """), {
-            "valor_cuota": nueva_cuota,
-            "id": prestamo_id
-        })
-
-        sincronizar_prestamo(conn, prestamo_id)
+        for id_cuota, _ in cuotas_pendientes:
+            conn.execute(text("UPDATE cuotas SET valor_cuota = :valor_cuota WHERE id_cuota = :id_cuota AND estado <> 'Pagada'"), {
+                "valor_cuota": nueva_cuota,
+                "id_cuota": id_cuota
+            })
+        actualizar_estado_prestamo(conn, prestamo_id)
         conn.commit()
         cliente = obtener_datos_cliente(conn, prestamo_db["cliente_cedula"])
-
     nombre_cliente = cliente[0] if cliente else "Cliente"
     correo_cliente = (cliente[1] or "").strip() if cliente else ""
     pdf = None
     correo_ok = False
     correo_error = None
     try:
-        pdf = generar_recibo_pdf(prestamo_id, nombre_cliente, prestamo_db["monto_original"], fecha_pago.isoformat(), valor_abono, titulo="RECIBO DE ABONO A CAPITAL", subtitulo="ABONO REGISTRADO")
+        pdf = generar_recibo_pdf(prestamo_id, nombre_cliente, prestamo_db["monto_original"], fecha_pago.isoformat(), valor_abono, titulo="RECIBO DE ABONO A CAPITAL", subtitulo="ABONO A CAPITAL")
         cuerpo = construir_cuerpo_correo(
             "RECIBO_ABONO",
             nombre_cliente,
@@ -1261,19 +1102,10 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
         if correo_cliente:
             correo_ok, correo_error = enviar_pdf_por_correo(
                 correo_cliente,
-                f"CREDDT CRNTECH | Confirmación de abono a capital del crédito {prestamo_id}",
+                f"Abono a capital crédito {prestamo_id}",
                 cuerpo,
                 pdf,
-                f"abono_capital_{prestamo_id}.pdf",
-                html_override=construir_html_correo(
-                    "RECIBO_ABONO",
-                    nombre_cliente,
-                    prestamo_id=prestamo_id,
-                    fecha_pago=fecha_pago.isoformat(),
-                    valor=valor_abono,
-                    saldo_capital=nuevo_saldo_capital,
-                    nueva_cuota=nueva_cuota
-                )
+                f"abono_capital_{prestamo_id}.pdf"
             )
         else:
             correo_error = "Cliente sin correo registrado"
@@ -1283,18 +1115,15 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
                 os.remove(pdf)
             except Exception:
                 pass
-
     return {
         "ok": True,
         "credito": prestamo_id,
         "valor": valor_abono,
         "nueva_cuota": nueva_cuota,
-        "saldo_capital": nuevo_saldo_capital,
         "correo": correo_ok,
         "tiene_correo": bool(correo_cliente),
         "correo_error": correo_error
     }
-
 # =========================
 # ENVÍO DE CORREO
 # =========================
@@ -1404,130 +1233,6 @@ def enviar_correo_async(
         attachment_name=attachment_name,
         html_override=html_override
     )
-
-
-
-def cargar_kpis_financieros_pro(conn):
-    return pd.read_sql(text("SELECT * FROM vw_kpis_financieros"), conn)
-
-
-def cargar_resumen_financiero_prestamos(conn):
-    return pd.read_sql(text("SELECT * FROM vw_resumen_financiero_prestamos ORDER BY id"), conn)
-
-
-def cargar_proyeccion_mensual(conn):
-    return pd.read_sql(text("SELECT * FROM vw_proyeccion_mensual_cuotas ORDER BY mes"), conn)
-
-
-def cargar_recaudo_real_mensual(conn):
-    return pd.read_sql(text("SELECT * FROM vw_recaudo_real_mensual ORDER BY mes"), conn)
-
-
-def pesos_int(valor):
-    try:
-        return f"${float(valor):,.0f}".replace(",", ".")
-    except Exception:
-        return "$0"
-
-
-def card_kpi_pro(titulo, valor, subtitulo="", icono="💠", color="#0F172A"):
-    st.markdown(
-        f"""
-        <div style="background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%); border: 1px solid #e2e8f0; border-radius: 22px; padding: 18px 18px 16px 18px; box-shadow: 0 10px 28px rgba(15,23,42,.06); min-height: 140px;">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-                <div style="font-size:14px;font-weight:700;color:#475569;">{titulo}</div>
-                <div style="width:42px;height:42px;border-radius:14px;background:{color};display:flex;align-items:center;justify-content:center;font-size:20px;color:white;">{icono}</div>
-            </div>
-            <div style="font-size:30px;font-weight:900;color:#0f172a;line-height:1.1;margin-bottom:6px;">{valor}</div>
-            <div style="font-size:13px;color:#64748b;line-height:1.5;">{subtitulo}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def render_dashboard_finanzas_pro(conn, inversion_inicial=0):
-    try:
-        kpi_df = cargar_kpis_financieros_pro(conn)
-        resumen_df = cargar_resumen_financiero_prestamos(conn)
-        proy_df = cargar_proyeccion_mensual(conn)
-        recaudo_df = cargar_recaudo_real_mensual(conn)
-    except Exception as e:
-        st.warning(f"No fue posible cargar el dashboard financiero pro desde las vistas de Supabase: {e}")
-        return
-
-    if kpi_df.empty:
-        st.info("No hay datos financieros para mostrar.")
-        return
-
-    k = kpi_df.iloc[0]
-    base_prestada = float(k.get("base_prestada_total", 0) or 0)
-    total_recaudado = float(k.get("total_recaudado_real", 0) or 0)
-    saldo_cuotas = float(k.get("saldo_cuotas_total", 0) or 0)
-    entra_este_mes = float(k.get("entra_este_mes", 0) or 0)
-    entra_proximo_mes = float(k.get("entra_proximo_mes", 0) or 0)
-    cartera_en_mora = float(k.get("cartera_en_mora", 0) or 0)
-    prestamos_activos = int(k.get("prestamos_activos", 0) or 0)
-    prestamos_pendientes = int(k.get("prestamos_pendientes", 0) or 0)
-    prestamos_descuadrados = int(k.get("prestamos_descuadrados", 0) or 0)
-
-    inversion_inicial = float(inversion_inicial or 0)
-    faltante_recuperacion = max(inversion_inicial - total_recaudado, 0)
-    utilidad_bruta_proyectada = max((total_recaudado + saldo_cuotas) - base_prestada, 0)
-    porcentaje_recuperado = ((total_recaudado / inversion_inicial) * 100) if inversion_inicial > 0 else 0
-
-    st.markdown("## 📊 Dashboard financiero pro")
-    st.caption("Base prestada, recaudo real, proyección, recuperación de inversión y control de descuadres.")
-
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        card_kpi_pro("Base prestada", pesos_int(base_prestada), f"Activos: {prestamos_activos} • Pendientes: {prestamos_pendientes}", "💰", "#0F172A")
-    with c2:
-        card_kpi_pro("Total recaudado real", pesos_int(total_recaudado), f"Recuperado de inversión: {porcentaje_recuperado:.1f}%", "📥", "#166534")
-    with c3:
-        card_kpi_pro("Saldo por recoger", pesos_int(saldo_cuotas), "Basado en cuotas abiertas, no en saldo histórico roto.", "🧾", "#1D4ED8")
-    with c4:
-        card_kpi_pro("Utilidad bruta proyectada", pesos_int(utilidad_bruta_proyectada), "Recaudo real + cuotas abiertas - base prestada.", "📈", "#7C3AED")
-
-    c5, c6, c7, c8 = st.columns(4)
-    with c5:
-        card_kpi_pro("Entra este mes", pesos_int(entra_este_mes), "Programado por fecha de vencimiento.", "📅", "#0EA5E9")
-    with c6:
-        card_kpi_pro("Entra próximo mes", pesos_int(entra_proximo_mes), "Dato clave para saber cuándo recoger.", "⏭️", "#F59E0B")
-    with c7:
-        card_kpi_pro("Faltante para recoger inversión", pesos_int(faltante_recuperacion), f"Tomando inversión inicial = {pesos_int(inversion_inicial)}", "🎯", "#DC2626")
-    with c8:
-        card_kpi_pro("Cartera en mora", pesos_int(cartera_en_mora), f"Descuadrados detectados: {prestamos_descuadrados}", "🚨", "#334155")
-
-    st.markdown("### 🧠 Lectura rápida")
-    texto = []
-    if inversion_inicial > 0:
-        texto.append(f"- Has recuperado **{pesos_int(total_recaudado)}** de una inversión inicial de **{pesos_int(inversion_inicial)}**.")
-        texto.append(f"- Te faltan **{pesos_int(faltante_recuperacion)}** para recoger completo lo invertido.")
-    texto.append(f"- Este mes programado: **{pesos_int(entra_este_mes)}**.")
-    texto.append(f"- Próximo mes programado: **{pesos_int(entra_proximo_mes)}**.")
-    texto.append(f"- Saldo total aún por recoger: **{pesos_int(saldo_cuotas)}**.")
-    texto.append(f"- Cartera en mora real: **{pesos_int(cartera_en_mora)}**.")
-    st.markdown("\n".join(texto))
-
-    st.markdown("### 📆 Proyección mensual de cuotas")
-    if not proy_df.empty:
-        proy_show = proy_df.copy()
-        if "mes" in proy_show.columns:
-            proy_show["mes"] = pd.to_datetime(proy_show["mes"]).dt.strftime("%Y-%m")
-        st.dataframe(proy_show, use_container_width=True, hide_index=True)
-
-    st.markdown("### 💵 Recaudo real mensual")
-    if not recaudo_df.empty:
-        rec_show = recaudo_df.copy()
-        if "mes" in rec_show.columns:
-            rec_show["mes"] = pd.to_datetime(rec_show["mes"]).dt.strftime("%Y-%m")
-        st.dataframe(rec_show, use_container_width=True, hide_index=True)
-
-    st.markdown("### 🔎 Detalle operativo por préstamo")
-    if not resumen_df.empty:
-        detalle = resumen_df.copy()
-        st.dataframe(detalle, use_container_width=True, hide_index=True)
 
 if token_aceptar:
     render_aceptacion_contrato(token_aceptar)
@@ -1677,9 +1382,6 @@ tab_resumen, tab_clientes, tab_creditos, tab_detalle, tab_pagos, tab_sim = st.ta
 # ==========================
 with tab_resumen:
     st.subheader("📊 Resumen general")
-    with get_conn() as conn:
-        render_dashboard_finanzas_pro(conn, inversion_inicial=20700000)
-    st.divider()
     if st.session_state.get("recordatorios_auto", 0):
         enviados_auto = st.session_state.get("recordatorios_auto", 0)
         st.success(f"✅ Recordatorios automáticos enviados en esta sesión: {enviados_auto}")
@@ -2328,8 +2030,8 @@ with tab_pagos:
                     st.markdown(f"""
                     <div style='padding:14px 16px;border:1px solid #e5e7eb;border-radius:16px;background:#f8fafc;margin-bottom:12px;'>
                         <div style='font-size:13px;color:#64748b;margin-bottom:6px;'>Próxima cuota pendiente</div>
-                        <div style='font-size:18px;font-weight:800;color:#0f172a;'>Cuota #{proxima_cuota['nro_cuota']} — {pesos(proxima_cuota['saldo_cuota'])}</div>
-                        <div style='font-size:13px;color:#475569;margin-top:4px;'>Fecha de vencimiento: {proxima_cuota['fecha_vencimiento']}</div>
+                        <div style='font-size:18px;font-weight:800;color:#0f172a;'>Cuota #{proxima_cuota[1]} — {pesos(proxima_cuota[2])}</div>
+                        <div style='font-size:13px;color:#475569;margin-top:4px;'>Fecha de vencimiento: {proxima_cuota[3]}</div>
                     </div>
                     """, unsafe_allow_html=True)
                     with st.form("form_pago_cuota", clear_on_submit=True):

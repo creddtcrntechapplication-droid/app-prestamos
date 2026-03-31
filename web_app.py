@@ -1262,6 +1262,12 @@ with get_conn() as conn:
             COALESCE(p.tasa_mensual, 0) AS tasa_mensual,
             COALESCE(SUM(pg.valor),0) AS total_pagado,
             COALESCE((
+                SELECT COUNT(*)
+                FROM cuotas cu
+                WHERE cu.prestamo_id = p.id
+                  AND cu.estado = 'Pagada'
+            ),0) AS cuotas_pagadas,
+            COALESCE((
                 SELECT SUM(cu.valor_cuota)
                 FROM cuotas cu
                 WHERE cu.prestamo_id = p.id
@@ -1297,7 +1303,8 @@ for col in [
     "total_pagado",
     "saldo",
     "saldo_capital",
-    "tasa_mensual"
+    "tasa_mensual",
+    "cuotas_pagadas"
 ]:
     if col in estado.columns:
         estado[col] = pd.to_numeric(estado[col])
@@ -1366,6 +1373,73 @@ def calcular_fecha_vencimiento(fecha_inicio, nro_cuota, frecuencia):
     return fecha_inicio + timedelta(days=dias * nro_cuota)
 def obtener_nuevo_id_prestamo(prefix="P"):
     return prefix + uuid.uuid4().hex[:6].upper()
+
+
+CAPITAL_INICIAL_NEGOCIO = 20_700_000
+
+def obtener_tasa_producto_visual(tipo_credito, cuotas, frecuencia):
+    tipo_credito = str(tipo_credito or "").strip().lower()
+    if tipo_credito == "express":
+        return calcular_tasa_express(frecuencia)
+    return calcular_tasa_normal(cuotas)
+
+def calcular_informe_credito_visual(monto_original, cuotas, tipo_credito, frecuencia, cuotas_pagadas):
+    monto_original = float(monto_original or 0)
+    cuotas = int(cuotas or 0)
+    cuotas_pagadas = int(cuotas_pagadas or 0)
+    if monto_original <= 0 or cuotas <= 0:
+        return {
+            "tasa": 0.0,
+            "interes_total": 0.0,
+            "capital_por_cuota": 0.0,
+            "interes_por_cuota": 0.0,
+            "cuotas_pagadas": 0,
+            "pagado_capital": 0.0,
+            "pagado_interes": 0.0,
+            "capital_pendiente": 0.0,
+            "interes_pendiente": 0.0,
+        }
+    tasa = float(obtener_tasa_producto_visual(tipo_credito, cuotas, frecuencia) or 0)
+    interes_total = monto_original * tasa
+    capital_por_cuota = monto_original / cuotas
+    interes_por_cuota = interes_total / cuotas
+    cuotas_pagadas = max(0, min(cuotas_pagadas, cuotas))
+    pagado_capital = capital_por_cuota * cuotas_pagadas
+    pagado_interes = interes_por_cuota * cuotas_pagadas
+    capital_pendiente = max(monto_original - pagado_capital, 0)
+    interes_pendiente = max(interes_total - pagado_interes, 0)
+    return {
+        "tasa": tasa,
+        "interes_total": interes_total,
+        "capital_por_cuota": capital_por_cuota,
+        "interes_por_cuota": interes_por_cuota,
+        "cuotas_pagadas": cuotas_pagadas,
+        "pagado_capital": pagado_capital,
+        "pagado_interes": pagado_interes,
+        "capital_pendiente": capital_pendiente,
+        "interes_pendiente": interes_pendiente,
+    }
+
+def calcular_totales_negocio_visual(df_estado):
+    generado_cobrado = 0.0
+    generado_pendiente = 0.0
+    for _, fila in df_estado.iterrows():
+        detalle = calcular_informe_credito_visual(
+            fila.get("monto_original", 0),
+            fila.get("cuotas", 0),
+            fila.get("tipo", ""),
+            fila.get("frecuencia", "Mensual"),
+            fila.get("cuotas_pagadas", 0),
+        )
+        generado_cobrado += detalle["pagado_interes"]
+        generado_pendiente += detalle["interes_pendiente"]
+    return {
+        "capital_inicial": CAPITAL_INICIAL_NEGOCIO,
+        "dinero_generado_cobrado": generado_cobrado,
+        "dinero_generado_pendiente": generado_pendiente,
+        "capital_operativo_vigente": float(df_estado["saldo_capital"].sum()) if not df_estado.empty and "saldo_capital" in df_estado.columns else 0.0,
+        "total_prestado_acumulado": float(df_estado["monto_original"].sum()) if not df_estado.empty and "monto_original" in df_estado.columns else 0.0,
+    }
 # ==========================
 # TABS
 # ==========================
@@ -1395,6 +1469,36 @@ with tab_resumen:
     k2.metric("✅ Total cobrado", pesos(total_cobrado))
     k3.metric("⏳ Saldo pendiente", pesos(saldo_pendiente))
     k4.metric("📄 Créditos activos", creditos_activos)
+
+    if "mostrar_informe_financiero" not in st.session_state:
+        st.session_state.mostrar_informe_financiero = False
+
+    if st.button("📑 Ver informe financiero", key="btn_ver_informe_financiero"):
+        st.session_state.mostrar_informe_financiero = not st.session_state.mostrar_informe_financiero
+
+    if st.session_state.get("mostrar_informe_financiero", False):
+        informe_financiero = calcular_totales_negocio_visual(estado)
+        st.markdown("### 📑 Informe financiero")
+        i1, i2, i3, i4 = st.columns(4)
+        i1.metric("Capital inicial", pesos(informe_financiero["capital_inicial"]))
+        i2.metric("Dinero generado cobrado", pesos(informe_financiero["dinero_generado_cobrado"]))
+        i3.metric("Dinero generado pendiente", pesos(informe_financiero["dinero_generado_pendiente"]))
+        i4.metric("Total prestado acumulado", pesos(informe_financiero["total_prestado_acumulado"]))
+
+        i5, i6 = st.columns(2)
+        i5.metric("Capital operativo vigente", pesos(informe_financiero["capital_operativo_vigente"]))
+        i6.metric("Cartera pendiente por recaudar", pesos(saldo_pendiente))
+
+        st.dataframe(pd.DataFrame([{
+            "Capital inicial": pesos(informe_financiero["capital_inicial"]),
+            "Dinero generado cobrado": pesos(informe_financiero["dinero_generado_cobrado"]),
+            "Dinero generado pendiente": pesos(informe_financiero["dinero_generado_pendiente"]),
+            "Capital operativo vigente": pesos(informe_financiero["capital_operativo_vigente"]),
+            "Total prestado acumulado": pesos(informe_financiero["total_prestado_acumulado"]),
+            "Total cobrado acumulado": pesos(total_cobrado),
+            "Cartera pendiente por recaudar": pesos(saldo_pendiente),
+            "Créditos activos": creditos_activos,
+        }]), use_container_width=True, hide_index=True)
     st.divider()
     df = estado.copy()
     for c in ["monto_original","monto_total_credito","total_pagado","saldo","valor_cuota"]:
@@ -1927,6 +2031,14 @@ with tab_detalle:
                 </div>
                 """, unsafe_allow_html=True)
 
+                detalle_visual = calcular_informe_credito_visual(
+                    row["monto_original"],
+                    row["cuotas"],
+                    row["tipo"],
+                    row.get("frecuencia", "Mensual"),
+                    row.get("cuotas_pagadas", 0)
+                )
+
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("💰 Total crédito", pesos(row["monto_total_credito"]))
                 c2.metric("✅ Pagado", pesos(row["total_pagado"]))
@@ -1936,6 +2048,20 @@ with tab_detalle:
                 c5.metric("💳 Cuota actual", pesos(row["valor_cuota"]))
                 c6.metric("📆 N.° cuotas", int(row["cuotas"]))
                 c7.metric("📊 Tasa mensual", f"{float(row['tasa_mensual'] or 0):.4f}")
+
+                if st.button(f"📊 Ver informe del crédito {row['id']}", key=f"btn_informe_credito_{row['id']}"):
+                    st.session_state[f"mostrar_informe_credito_{row['id']}"] = not st.session_state.get(f"mostrar_informe_credito_{row['id']}", False)
+
+                if st.session_state.get(f"mostrar_informe_credito_{row['id']}", False):
+                    v1, v2, v3, v4 = st.columns(4)
+                    v1.metric("Interés total del crédito", pesos(detalle_visual["interes_total"]))
+                    v2.metric("Pagado a intereses", pesos(detalle_visual["pagado_interes"]))
+                    v3.metric("Pagado a capital", pesos(detalle_visual["pagado_capital"]))
+                    v4.metric("Interés pendiente", pesos(detalle_visual["interes_pendiente"]))
+                    v5, v6, v7 = st.columns(3)
+                    v5.metric("Capital pendiente visual", pesos(detalle_visual["capital_pendiente"]))
+                    v6.metric("Capital por cuota", pesos(detalle_visual["capital_por_cuota"]))
+                    v7.metric("Interés por cuota", pesos(detalle_visual["interes_por_cuota"]))
 
                 with get_conn() as conn:
                     cuotas_credito = pd.read_sql(text("""
@@ -1956,11 +2082,17 @@ with tab_detalle:
                     if cuotas_credito.empty:
                         st.info("Sin cuotas registradas para este crédito.")
                     else:
+                        cuotas_credito["a_interes_visual"] = detalle_visual["interes_por_cuota"]
+                        cuotas_credito["a_capital_visual"] = detalle_visual["capital_por_cuota"]
                         cuotas_credito["valor_cuota"] = cuotas_credito["valor_cuota"].apply(pesos)
+                        cuotas_credito["a_interes_visual"] = cuotas_credito["a_interes_visual"].apply(pesos)
+                        cuotas_credito["a_capital_visual"] = cuotas_credito["a_capital_visual"].apply(pesos)
                         cuotas_credito = cuotas_credito.rename(columns={
                             "nro_cuota": "Cuota",
                             "fecha_vencimiento": "Fecha de vencimiento",
                             "valor_cuota": "Valor cuota",
+                            "a_interes_visual": "A interés (visual)",
+                            "a_capital_visual": "A capital (visual)",
                             "estado": "Estado"
                         })
                         st.dataframe(cuotas_credito, use_container_width=True, hide_index=True)
@@ -1968,6 +2100,10 @@ with tab_detalle:
                     if pagos_credito.empty:
                         st.info("Sin movimientos registrados para este crédito.")
                     else:
+                        st.caption(
+                            f"Resumen visual del crédito: {pesos(detalle_visual['pagado_interes'])} pagados a intereses y "
+                            f"{pesos(detalle_visual['pagado_capital'])} pagados a capital."
+                        )
                         pagos_credito["valor"] = pagos_credito["valor"].apply(pesos)
                         pagos_credito = pagos_credito.rename(columns={
                             "fecha_pago": "Fecha movimiento",
@@ -2163,8 +2299,5 @@ with tab_sim:
                 f"💰 Total a pagar estimado: **{pesos(cuota * cuotas_express)}**\n\n"
                 f"📈 Tasa aplicada: **{calcular_tasa_express(frecuencia)*100:.2f}%**"
             )
-
-
-
 
 

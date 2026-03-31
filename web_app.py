@@ -150,6 +150,7 @@ BREVO_API_KEY = get_config("BREVO_API_KEY")
 BREVO_FROM_EMAIL = get_config("BREVO_FROM_EMAIL")
 BREVO_FROM_NAME = get_config("BREVO_FROM_NAME", "CREDDT CRNTECH APPLICATION")
 APP_BASE_URL = get_config("APP_BASE_URL").rstrip("/")
+CAPITAL_INICIAL_NEGOCIO = 20_700_000
 def asegurar_estructura_base():
     with get_conn() as conn:
         conn.execute(text("""
@@ -209,6 +210,11 @@ def asegurar_estructura_base():
                 estado TEXT,
                 tipo_movimiento TEXT,
                 detalle TEXT,
+                interes_pagado NUMERIC(18,2),
+                capital_pagado NUMERIC(18,2),
+                saldo_capital_anterior NUMERIC(18,2),
+                saldo_capital_nuevo NUMERIC(18,2),
+                cuota_numero INTEGER,
                 FOREIGN KEY(prestamo_id) REFERENCES prestamos(id)
             )
         """))
@@ -241,6 +247,11 @@ def asegurar_estructura_base():
             "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS fecha_inicio TEXT",
             "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS tipo_movimiento TEXT",
             "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS detalle TEXT",
+            "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS interes_pagado NUMERIC(18,2)",
+            "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS capital_pagado NUMERIC(18,2)",
+            "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS saldo_capital_anterior NUMERIC(18,2)",
+            "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS saldo_capital_nuevo NUMERIC(18,2)",
+            "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS cuota_numero INTEGER",
             "ALTER TABLE pagos_cuotas ADD COLUMN IF NOT EXISTS valor_aplicado NUMERIC(18,2)",
             "ALTER TABLE reminders_sent ADD COLUMN IF NOT EXISTS tipo_recordatorio TEXT"
         ]:
@@ -271,6 +282,11 @@ def asegurar_estructura_financiera():
             "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS tasa_mensual NUMERIC(12,6)",
             "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS tipo_movimiento TEXT",
             "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS detalle TEXT",
+            "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS interes_pagado NUMERIC(18,2)",
+            "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS capital_pagado NUMERIC(18,2)",
+            "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS saldo_capital_anterior NUMERIC(18,2)",
+            "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS saldo_capital_nuevo NUMERIC(18,2)",
+            "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS cuota_numero INTEGER",
             "ALTER TABLE pagos_cuotas ADD COLUMN IF NOT EXISTS valor_aplicado NUMERIC(18,2)"
         ]
         for sentencia in sentencias:
@@ -283,6 +299,95 @@ def asegurar_estructura_financiera():
         """))
         conn.commit()
 asegurar_estructura_financiera()
+
+def recalcular_desglose_pagos():
+    with get_conn() as conn:
+        prestamos_rows = conn.execute(text("""
+            SELECT id, monto_original, COALESCE(tasa_mensual, 0) AS tasa_mensual
+            FROM prestamos
+            ORDER BY id
+        """)).mappings().all()
+
+        for prestamo in prestamos_rows:
+            saldo_capital = normalizar_decimal(prestamo["monto_original"])
+            tasa_mensual = Decimal(str(prestamo["tasa_mensual"] or 0))
+
+            pagos_rows = conn.execute(text("""
+                SELECT id_pago, valor, tipo_movimiento
+                FROM pagos
+                WHERE prestamo_id = :id
+                ORDER BY fecha_pago ASC, id_pago ASC
+            """), {"id": prestamo["id"]}).mappings().all()
+
+            for pago in pagos_rows:
+                valor_pago = normalizar_decimal(pago["valor"])
+                saldo_anterior = saldo_capital
+
+                if pago["tipo_movimiento"] == "ABONO_CAPITAL":
+                    interes_pagado = Decimal("0.00")
+                    capital_pagado = valor_pago if valor_pago <= saldo_capital else saldo_capital
+                    saldo_capital = saldo_capital - capital_pagado
+                else:
+                    interes_pagado = (saldo_capital * tasa_mensual).quantize(Decimal("0.01")) if tasa_mensual > 0 else Decimal("0.00")
+                    if interes_pagado > valor_pago:
+                        interes_pagado = valor_pago
+                    capital_pagado = valor_pago - interes_pagado
+                    if capital_pagado > saldo_capital:
+                        capital_pagado = saldo_capital
+                    saldo_capital = saldo_capital - capital_pagado
+
+                if saldo_capital < 0:
+                    saldo_capital = Decimal("0.00")
+
+                conn.execute(text("""
+                    UPDATE pagos
+                    SET interes_pagado = :interes_pagado,
+                        capital_pagado = :capital_pagado,
+                        saldo_capital_anterior = :saldo_capital_anterior,
+                        saldo_capital_nuevo = :saldo_capital_nuevo
+                    WHERE id_pago = :id_pago
+                """), {
+                    "interes_pagado": interes_pagado,
+                    "capital_pagado": capital_pagado,
+                    "saldo_capital_anterior": saldo_anterior,
+                    "saldo_capital_nuevo": saldo_capital,
+                    "id_pago": pago["id_pago"]
+                })
+
+        conn.commit()
+
+
+def obtener_metricas_negocio(df_estado):
+    total_colocado = float(df_estado["monto_original"].sum()) if not df_estado.empty else 0.0
+    total_cobrado = float(df_estado["total_pagado"].sum()) if not df_estado.empty else 0.0
+    saldo_pendiente = float(df_estado["saldo"].sum()) if not df_estado.empty else 0.0
+    saldo_capital_total = float(df_estado["saldo_capital"].sum()) if not df_estado.empty else 0.0
+
+    with get_conn() as conn:
+        pagos_metricas = conn.execute(text("""
+            SELECT
+                COALESCE(SUM(interes_pagado), 0) AS intereses_cobrados,
+                COALESCE(SUM(capital_pagado), 0) AS capital_pagado
+            FROM pagos
+        """)).mappings().first()
+
+    intereses_cobrados = float(pagos_metricas["intereses_cobrados"] or 0)
+    capital_pagado = float(pagos_metricas["capital_pagado"] or 0)
+    intereses_pendientes = max(saldo_pendiente - saldo_capital_total, 0)
+
+    return {
+        "capital_inicial": float(CAPITAL_INICIAL_NEGOCIO),
+        "total_colocado": total_colocado,
+        "total_cobrado": total_cobrado,
+        "saldo_pendiente": saldo_pendiente,
+        "saldo_capital_total": saldo_capital_total,
+        "intereses_cobrados": intereses_cobrados,
+        "capital_pagado": capital_pagado,
+        "intereses_pendientes": intereses_pendientes,
+    }
+
+
+recalcular_desglose_pagos()
 
 # ==========================
 # MENSAJES DE CONFIRMACIÓN
@@ -964,14 +1069,25 @@ def registrar_pago_cuota(prestamo_id, fecha_pago):
         if nuevo_saldo_capital < 0:
             nuevo_saldo_capital = Decimal("0.00")
         result_pago = conn.execute(text("""
-            INSERT INTO pagos (prestamo_id, fecha_pago, valor, estado, tipo_movimiento, detalle)
-            VALUES (:id, :fecha, :valor, 'Pagado', 'CUOTA', :detalle)
+            INSERT INTO pagos (
+                prestamo_id, fecha_pago, valor, estado, tipo_movimiento, detalle,
+                interes_pagado, capital_pagado, saldo_capital_anterior, saldo_capital_nuevo, cuota_numero
+            )
+            VALUES (
+                :id, :fecha, :valor, 'Pagado', 'CUOTA', :detalle,
+                :interes_pagado, :capital_pagado, :saldo_capital_anterior, :saldo_capital_nuevo, :cuota_numero
+            )
             RETURNING id_pago
         """), {
             "id": prestamo_id,
             "fecha": fecha_pago.isoformat(),
             "valor": valor_pago,
-            "detalle": f"Pago cuota #{nro_cuota}"
+            "detalle": f"Pago cuota #{nro_cuota}",
+            "interes_pagado": interes_periodo,
+            "capital_pagado": capital_pagado,
+            "saldo_capital_anterior": saldo_capital_actual,
+            "saldo_capital_nuevo": nuevo_saldo_capital,
+            "cuota_numero": nro_cuota
         })
         id_pago = result_pago.fetchone()[0]
         conn.execute(text("""
@@ -1029,7 +1145,11 @@ def registrar_pago_cuota(prestamo_id, fecha_pago):
         "valor": valor_pago,
         "correo": correo_ok,
         "tiene_correo": bool(correo_cliente),
-        "correo_error": correo_error
+        "correo_error": correo_error,
+        "capital_pagado": capital_pagado,
+        "interes_pagado": interes_periodo,
+        "saldo_capital_anterior": saldo_capital_actual,
+        "saldo_capital_nuevo": nuevo_saldo_capital
     }
 def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
     valor_abono = normalizar_decimal(valor_abono)
@@ -1060,14 +1180,23 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
         cuotas_restantes = len(cuotas_pendientes)
         nueva_cuota = Decimal(str(calcular_cuota_amortizada(nuevo_saldo_capital, prestamo_db["tasa_mensual"], cuotas_restantes))).quantize(Decimal("0.01"))
         result_pago = conn.execute(text("""
-            INSERT INTO pagos (prestamo_id, fecha_pago, valor, estado, tipo_movimiento, detalle)
-            VALUES (:id, :fecha, :valor, 'Pagado', 'ABONO_CAPITAL', :detalle)
+            INSERT INTO pagos (
+                prestamo_id, fecha_pago, valor, estado, tipo_movimiento, detalle,
+                interes_pagado, capital_pagado, saldo_capital_anterior, saldo_capital_nuevo, cuota_numero
+            )
+            VALUES (
+                :id, :fecha, :valor, 'Pagado', 'ABONO_CAPITAL', :detalle,
+                0, :capital_pagado, :saldo_capital_anterior, :saldo_capital_nuevo, NULL
+            )
             RETURNING id_pago
         """), {
             "id": prestamo_id,
             "fecha": fecha_pago.isoformat(),
             "valor": valor_abono,
-            "detalle": f"Abono a capital por {valor_abono}"
+            "detalle": f"Abono a capital por {valor_abono}",
+            "capital_pagado": valor_abono,
+            "saldo_capital_anterior": saldo_capital_actual,
+            "saldo_capital_nuevo": nuevo_saldo_capital
         })
         id_pago = result_pago.fetchone()[0]
         conn.execute(text("UPDATE prestamos SET saldo_capital = :saldo_capital, valor_cuota = :valor_cuota WHERE id = :id"), {
@@ -1122,7 +1251,11 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
         "nueva_cuota": nueva_cuota,
         "correo": correo_ok,
         "tiene_correo": bool(correo_cliente),
-        "correo_error": correo_error
+        "correo_error": correo_error,
+        "capital_pagado": valor_abono,
+        "interes_pagado": Decimal("0.00"),
+        "saldo_capital_anterior": saldo_capital_actual,
+        "saldo_capital_nuevo": nuevo_saldo_capital
     }
 # =========================
 # ENVÍO DE CORREO
@@ -1385,29 +1518,51 @@ with tab_resumen:
     if st.session_state.get("recordatorios_auto", 0):
         enviados_auto = st.session_state.get("recordatorios_auto", 0)
         st.success(f"✅ Recordatorios automáticos enviados en esta sesión: {enviados_auto}")
-    total_colocado = estado["monto_original"].sum()
-    total_cobrado = estado["total_pagado"].sum()
-    saldo_pendiente = estado["saldo"].sum()
+
+    metricas_negocio = obtener_metricas_negocio(estado)
+    total_colocado = metricas_negocio["total_colocado"]
+    total_cobrado = metricas_negocio["total_cobrado"]
+    saldo_pendiente = metricas_negocio["saldo_pendiente"]
+    saldo_capital_total = metricas_negocio["saldo_capital_total"]
+    intereses_cobrados = metricas_negocio["intereses_cobrados"]
+    intereses_pendientes = metricas_negocio["intereses_pendientes"]
     creditos_activos = estado[estado["estado"] != "Cancelado"].shape[0]
     exposicion_mora_total = 0 if saldo_pendiente <= 0 else (monto_mora / saldo_pendiente) * 100
+
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("💰 Total colocado", pesos(total_colocado))
     k2.metric("✅ Total cobrado", pesos(total_cobrado))
     k3.metric("⏳ Saldo pendiente", pesos(saldo_pendiente))
     k4.metric("📄 Créditos activos", creditos_activos)
+
+    st.markdown("### 📌 Estructura financiera del negocio")
+    e1, e2, e3, e4 = st.columns(4)
+    e1.metric("🏦 Capital inicial", pesos(metricas_negocio["capital_inicial"]))
+    e2.metric("💸 Dinero generado cobrado", pesos(intereses_cobrados))
+    e3.metric("📈 Dinero generado pendiente", pesos(intereses_pendientes))
+    e4.metric("🔄 Capital operativo vigente", pesos(saldo_capital_total))
+
+    st.info(
+        f"Capital inicial del negocio: {pesos(metricas_negocio['capital_inicial'])}. "
+        f"Dinero generado ya cobrado por intereses: {pesos(intereses_cobrados)}. "
+        f"Dinero que se generaría en las cuotas pendientes: {pesos(intereses_pendientes)}. "
+        f"Total prestado acumulado por la operación: {pesos(total_colocado)}. "
+        f"Actualmente el modelo sigue en reinversión; no se está retirando capital."
+    )
+
     st.divider()
     df = estado.copy()
-    for c in ["monto_original","monto_total_credito","total_pagado","saldo","valor_cuota"]:
+    for c in ["monto_original","monto_total_credito","total_pagado","saldo_capital","saldo","valor_cuota"]:
         df[c] = df[c].apply(pesos)
     tabla_resumen = df[
-        ["id","cliente","monto_original","monto_total_credito",
-         "total_pagado","saldo","valor_cuota","cuotas","tipo","estado"]
+        ["id","cliente","monto_original","monto_total_credito","total_pagado","saldo_capital","saldo","valor_cuota","cuotas","tipo","estado"]
     ].rename(columns={
         "id": "Crédito",
         "cliente": "Cliente",
         "monto_original": "Capital",
         "monto_total_credito": "Total del crédito",
         "total_pagado": "Pagado",
+        "saldo_capital": "Saldo capital",
         "saldo": "Saldo pendiente",
         "valor_cuota": "Cuota",
         "cuotas": "N.° cuotas",
@@ -1470,11 +1625,7 @@ with tab_resumen:
                 "exposicion_en_mora": "Exposición en mora"
             })
             st.markdown(f"### {titulo_mora}")
-            st.dataframe(
-                detalle_mora_show,
-                use_container_width=True,
-                hide_index=True
-            )
+            st.dataframe(detalle_mora_show, use_container_width=True, hide_index=True)
     # ==========================
     # 🔎 CONSULTA MENSUAL
     # ==========================
@@ -1763,7 +1914,6 @@ with tab_creditos:
                     try:
                         ok_c, err_c, prestamo_creado = crear_credito_db(cliente_normal, monto_normal_new, cuotas_normal_new, frecuencia_normal_new, "Normal", fecha_inicio_normal)
                         if ok_c:
-                            st.session_state["cliente_normal_credito"] = None
                             if not err_c:
                                 set_flash("credito_msg", "success", f"✅ Crédito {prestamo_creado['id']} creado y contrato enviado correctamente")
                             else:
@@ -1797,7 +1947,6 @@ with tab_creditos:
                     try:
                         ok_c, err_c, prestamo_creado = crear_credito_db(cliente_express, monto_express_new, cuotas_express_new, frecuencia_express_new, "Express", fecha_inicio_express)
                         if ok_c:
-                            st.session_state["cliente_express_credito"] = None
                             if not err_c:
                                 set_flash("credito_msg", "success", f"✅ Crédito {prestamo_creado['id']} creado y contrato enviado correctamente")
                             else:
@@ -1945,11 +2094,21 @@ with tab_detalle:
                         ORDER BY nro_cuota ASC
                     """), conn, params={"id": row["id"]})
                     pagos_credito = pd.read_sql(text("""
-                        SELECT fecha_pago, valor, tipo_movimiento, detalle
+                        SELECT fecha_pago, valor, tipo_movimiento, detalle,
+                               interes_pagado, capital_pagado, saldo_capital_anterior, saldo_capital_nuevo, cuota_numero
                         FROM pagos
                         WHERE prestamo_id = :id
                         ORDER BY id_pago DESC
                     """), conn, params={"id": row["id"]})
+
+                capital_pagado_total = pd.to_numeric(pagos_credito.get("capital_pagado"), errors="coerce").fillna(0).sum() if not pagos_credito.empty else 0
+                intereses_pagados_total = pd.to_numeric(pagos_credito.get("interes_pagado"), errors="coerce").fillna(0).sum() if not pagos_credito.empty else 0
+                total_pagado_cliente = pd.to_numeric(pagos_credito.get("valor"), errors="coerce").fillna(0).sum() if not pagos_credito.empty else 0
+
+                s1, s2, s3 = st.columns(3)
+                s1.metric("💵 Pagado por el cliente", pesos(total_pagado_cliente))
+                s2.metric("📈 Pagado a intereses", pesos(intereses_pagados_total))
+                s3.metric("🏦 Pagado a capital", pesos(capital_pagado_total))
 
                 t1, t2 = st.tabs(["📅 Cuotas del crédito", "💸 Movimientos registrados"])
                 with t1:
@@ -1968,10 +2127,17 @@ with tab_detalle:
                     if pagos_credito.empty:
                         st.info("Sin movimientos registrados para este crédito.")
                     else:
-                        pagos_credito["valor"] = pagos_credito["valor"].apply(pesos)
+                        for col_pago in ["valor", "interes_pagado", "capital_pagado", "saldo_capital_anterior", "saldo_capital_nuevo"]:
+                            if col_pago in pagos_credito.columns:
+                                pagos_credito[col_pago] = pd.to_numeric(pagos_credito[col_pago], errors="coerce").fillna(0).apply(pesos)
                         pagos_credito = pagos_credito.rename(columns={
                             "fecha_pago": "Fecha movimiento",
-                            "valor": "Valor",
+                            "cuota_numero": "Cuota",
+                            "valor": "Valor pagado",
+                            "interes_pagado": "A intereses",
+                            "capital_pagado": "A capital",
+                            "saldo_capital_anterior": "Saldo capital antes",
+                            "saldo_capital_nuevo": "Saldo capital después",
                             "tipo_movimiento": "Tipo",
                             "detalle": "Detalle"
                         })
@@ -2082,22 +2248,34 @@ with tab_pagos:
         m = st.session_state.pago_msg
         if m["tipo"] == "CUOTA":
             if m.get("tiene_correo") and m.get("correo"):
-                st.success(f"✅ Pago de cuota registrado y correo enviado - Crédito {m['credito']} | Cuota #{m['cuota']}")
+                st.success(
+                    f"✅ Pago de cuota registrado y correo enviado - Crédito {m['credito']} | Cuota #{m['cuota']}\n\n"
+                    f"A intereses: {pesos(m.get('interes_pagado', 0))} | A capital: {pesos(m.get('capital_pagado', 0))}"
+                )
             elif m.get("tiene_correo") and not m.get("correo"):
                 st.warning(f"⚠️ Pago de cuota registrado, pero el correo no se pudo enviar - Crédito {m['credito']}")
                 if m.get("correo_error"):
                     st.error(f"Detalle correo: {m['correo_error']}")
             else:
-                st.success(f"✅ Pago de cuota registrado - Crédito {m['credito']}")
+                st.success(
+                    f"✅ Pago de cuota registrado - Crédito {m['credito']}\n\n"
+                    f"A intereses: {pesos(m.get('interes_pagado', 0))} | A capital: {pesos(m.get('capital_pagado', 0))}"
+                )
         if m["tipo"] == "ABONO_CAPITAL":
             if m.get("tiene_correo") and m.get("correo"):
-                st.success(f"✅ Abono a capital registrado y correo enviado - Crédito {m['credito']} | Nueva cuota: {pesos(m['nueva_cuota'])}")
+                st.success(
+                    f"✅ Abono a capital registrado y correo enviado - Crédito {m['credito']} | Nueva cuota: {pesos(m['nueva_cuota'])}\n\n"
+                    f"Capital aplicado: {pesos(m.get('capital_pagado', 0))}"
+                )
             elif m.get("tiene_correo") and not m.get("correo"):
                 st.warning(f"⚠️ Abono a capital registrado, pero el correo no se pudo enviar - Crédito {m['credito']}")
                 if m.get("correo_error"):
                     st.error(f"Detalle correo: {m['correo_error']}")
             else:
-                st.success(f"✅ Abono a capital registrado - Crédito {m['credito']}")
+                st.success(
+                    f"✅ Abono a capital registrado - Crédito {m['credito']}\n\n"
+                    f"Capital aplicado: {pesos(m.get('capital_pagado', 0))}"
+                )
         st.session_state.pago_msg = None
 # ==========================
 # 🧮 SIMULADOR

@@ -133,12 +133,15 @@ if not st.session_state.auth and not token_aceptar:
 # ==========================
 # HEADER - TITULO
 # ==========================
-col1, col2, col3 = st.columns([1,4,1])
-with col2:
-    st.image("logo_creddt.png", width=90)
+col_logo, col_texto = st.columns([1.4, 5.6])
+with col_logo:
+    st.image("logo_creddt.png", width=190)
+with col_texto:
     st.markdown("""
-    <h1 style='text-align:center;margin-bottom:0;'>CREDDT | CRNTECH</h1>
-    <p style='text-align:center;color:#666;'>Plataforma inteligente de gestión de créditos</p>
+    <div style='padding-top:18px;'>
+        <h1 style='margin-bottom:0;'>CREDDT | CRNTECH</h1>
+        <p style='color:#666;margin-top:6px;'>Plataforma inteligente de gestión de créditos</p>
+    </div>
     """, unsafe_allow_html=True)
 st.divider()
 if st.session_state.get("app_busy") and st.session_state.get("app_busy_label"):
@@ -2163,6 +2166,5 @@ with tab_sim:
                 f"💰 Total a pagar estimado: **{pesos(cuota * cuotas_express)}**\n\n"
                 f"📈 Tasa aplicada: **{calcular_tasa_express(frecuencia)*100:.2f}%**"
             )
-
 
 

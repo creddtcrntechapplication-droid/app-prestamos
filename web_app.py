@@ -1705,7 +1705,8 @@ with tab_clientes:
     client_tab_objs = st.tabs([label for _, label in client_tabs])
     client_tab_map = {key: obj for (key, _), obj in zip(client_tabs, client_tab_objs)}
 
-    with cli_tab1:
+    if "registrar" in client_tab_map:
+        with client_tab_map["registrar"]:
         with st.form("form_nuevo_cliente", clear_on_submit=True):
             cedula_new = st.text_input("Cédula *")
             nombres_new = st.text_input("Nombres *")
@@ -1749,7 +1750,8 @@ with tab_clientes:
                     finally:
                         stop_busy()
 
-    with cli_tab2:
+    if "gestion" in client_tab_map:
+        with client_tab_map["gestion"]:
         if clientes_df.empty:
             st.info("No hay clientes registrados.")
         else:
@@ -1830,7 +1832,8 @@ with tab_clientes:
                                 finally:
                                     stop_busy()
 
-    with cli_tab3:
+    if "bd" in client_tab_map:
+        with client_tab_map["bd"]:
         if not clientes_df.empty:
             st.dataframe(clientes_df.rename(columns={
                 "cedula": "Cédula",
@@ -2316,6 +2319,9 @@ with tab_sim:
                 f"💰 Total a pagar estimado: **{pesos(cuota * cuotas_express)}**\n\n"
                 f"📈 Tasa aplicada: **{calcular_tasa_express(frecuencia)*100:.2f}%**"
             )
+
+
+
 
 
 

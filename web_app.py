@@ -149,7 +149,7 @@ PUEDE_BORRAR_CLIENTES = tiene_rol("ADMIN")
 PUEDE_CREAR_CREDITOS = tiene_rol("ADMIN", "ASESOR")
 PUEDE_VER_CONTRATOS_PENDIENTES = tiene_rol("ADMIN", "ASESOR")
 PUEDE_VER_DETALLE = tiene_rol("ADMIN", "ASESOR", "CONSULTA")
-PUEDE_REGISTRAR_PAGOS = tiene_rol("ADMIN")
+PUEDE_REGISTRAR_PAGOS = tiene_rol("ADMIN", "ASESOR")
 PUEDE_USAR_SIMULADOR = tiene_rol("ADMIN", "ASESOR", "CONSULTA")
 
 # ==========================
@@ -2246,8 +2246,6 @@ if tab_sim is not None:
                         f"💰 Total a pagar estimado: **{pesos(cuota * cuotas_express)}**\n\n"
                         f"📈 Tasa aplicada: **{calcular_tasa_express(frecuencia)*100:.2f}%**"
                     )
-
-
 
 
 

@@ -30,6 +30,32 @@ from io import BytesIO
 # CONFIGURACIÓN
 # ==========================
 st.set_page_config(page_title="CREDDT | CRNTECH", layout="wide")
+
+RESPONSIVE_CSS = """
+<style>
+html, body, [data-testid="stAppViewContainer"] {overflow-x:hidden;}
+.block-container {padding-top: 1rem; padding-bottom: 2rem;}
+[data-testid="stMetricValue"] {font-size: 1.35rem;}
+@media (min-width: 769px) and (max-width: 1100px) {
+  .block-container {padding-left: 1rem !important; padding-right: 1rem !important;}
+  [data-testid="column"] {width: 100% !important; flex: 1 1 100% !important;}
+}
+@media (max-width: 768px) {
+  .block-container {padding-left: .75rem !important; padding-right: .75rem !important; padding-top: .6rem !important;}
+  h1 {font-size: 1.55rem !important;}
+  h2 {font-size: 1.25rem !important;}
+  h3 {font-size: 1.05rem !important;}
+  [data-testid="column"] {width: 100% !important; flex: 1 1 100% !important; min-width: 100% !important;}
+  [data-testid="stHorizontalBlock"] {gap: .45rem !important;}
+  [data-testid="stMetric"] {padding: .55rem .7rem; border: 1px solid #e5e7eb; border-radius: 12px; background: #fff;}
+  [data-testid="stMetricValue"] {font-size: 1.12rem !important;}
+  .stButton > button, .stDownloadButton > button {width: 100%;}
+  div[data-testid="stDataFrame"] {overflow-x: auto;}
+}
+</style>
+"""
+st.markdown(RESPONSIVE_CSS, unsafe_allow_html=True)
+
 # ==========================
 # CONEXIÓN A SUPABASE
 # ==========================
@@ -130,10 +156,40 @@ if not st.session_state.auth and not token_aceptar:
         else:
             st.error("❌ Usuario o contraseña incorrectos")
     st.stop()
+
+# ==========================
+# ROLES Y PERMISOS
+# ==========================
+ROLE_PERMISSIONS = {
+    "ADMIN": {
+        "resumen_ver", "clientes_ver", "clientes_registrar", "clientes_editar", "clientes_borrar",
+        "bd_clientes_ver", "creditos_ver", "creditos_registrar", "contratos_pendientes_ver",
+        "contratos_manual", "detalle_ver", "pagos_ver", "pagos_registrar", "abono_capital",
+        "simulador_ver"
+    },
+    "ASESOR": {
+        "resumen_ver", "clientes_ver", "clientes_registrar", "clientes_editar",
+        "bd_clientes_ver", "creditos_ver", "creditos_registrar", "contratos_pendientes_ver",
+        "detalle_ver", "simulador_ver"
+    },
+    "CONSULTA": {
+        "resumen_ver", "clientes_ver", "bd_clientes_ver", "detalle_ver", "simulador_ver"
+    },
+}
+
+def get_perms():
+    rol = (st.session_state.get("rol") or "").upper()
+    if rol == "ADMIN":
+        return ROLE_PERMISSIONS["ADMIN"]
+    return ROLE_PERMISSIONS.get(rol, set())
+
+def has_perm(perm: str) -> bool:
+    return perm in get_perms()
+
 # ==========================
 # HEADER - TITULO
 # ==========================
-col_logo, col_centro, col_derecha = st.columns([1.2, 4.8, 1])
+col_logo, col_centro, col_derecha = st.columns([1.2, 4.2, 1.6])
 with col_logo:
     st.image("logo_creddt.png", width=170)
 with col_centro:
@@ -141,9 +197,19 @@ with col_centro:
     <h1 style='text-align:center;margin-bottom:0;'>CREDDT | CRNTECH</h1>
     <p style='text-align:center;color:#666;'>Plataforma inteligente de gestión de créditos</p>
     """, unsafe_allow_html=True)
+with col_derecha:
+    st.markdown(f"""
+    <div style='text-align:right;padding-top:10px;'>
+        <div style='font-size:12px;color:#64748b;'>Usuario</div>
+        <div style='font-weight:700;color:#0f172a;'>{st.session_state.get('usuario','')}</div>
+        <div style='font-size:12px;color:#64748b;'>Rol: {st.session_state.get('rol','')}</div>
+    </div>
+    """, unsafe_allow_html=True)
 st.divider()
 if st.session_state.get("app_busy") and st.session_state.get("app_busy_label"):
     st.info(f"⏳ {st.session_state.get('app_busy_label')}")
+if st.session_state.get("rol") and st.session_state.get("rol").upper() != "ADMIN":
+    st.caption("Tu acceso está limitado según tu rol. Algunas acciones operativas pueden estar deshabilitadas.")
 # ==========================
 # VARIABLES SEGURAS
 # ==========================
@@ -1561,6 +1627,8 @@ with tab_resumen:
 # ==========================
 with tab_clientes:
     st.subheader("👥 Gestión de clientes")
+    if not has_perm("clientes_ver"):
+        st.info("Tu rol no tiene permisos de gestión de clientes. Solo puedes consultar donde aplique.")
     show_flash("clientes_msg")
 
     with get_conn() as conn:
@@ -1576,6 +1644,8 @@ with tab_clientes:
     cli_tab1, cli_tab2, cli_tab3 = st.tabs(["📝 Registrar cliente", "🛠️ Gestión de clientes", "📋 BD clientes"])
 
     with cli_tab1:
+        if not has_perm("clientes_registrar"):
+            st.info("Tu rol no puede registrar clientes.")
         with st.form("form_nuevo_cliente", clear_on_submit=True):
             cedula_new = st.text_input("Cédula *")
             nombres_new = st.text_input("Nombres *")
@@ -1593,7 +1663,7 @@ with tab_clientes:
                 format="YYYY-MM-DD"
             )
             cargo_new = st.text_input("Cargo")
-            guardar_cliente = st.form_submit_button("Guardar cliente", type="primary", disabled=st.session_state.get("app_busy", False))
+            guardar_cliente = st.form_submit_button("Guardar cliente", type="primary", disabled=st.session_state.get("app_busy", False) or not has_perm("clientes_registrar"))
             if guardar_cliente:
                 if not cedula_new.strip() or not nombres_new.strip() or not apellidos_new.strip():
                     st.error("❌ Cédula, nombres y apellidos son obligatorios")
@@ -1660,7 +1730,7 @@ with tab_clientes:
                                 key="fecha_nacimiento_edit"
                             )
                             cargo_edit = st.text_input("Cargo", value=fila["cargo"])
-                            actualizar = st.form_submit_button("Guardar cambios", type="primary", disabled=st.session_state.get("app_busy", False))
+                            actualizar = st.form_submit_button("Guardar cambios", type="primary", disabled=st.session_state.get("app_busy", False) or not has_perm("clientes_editar"))
                             if actualizar:
                                 start_busy("Actualizando cliente...")
                                 try:
@@ -1686,7 +1756,7 @@ with tab_clientes:
                 with col_g2:
                     with st.expander("🗑️ Borrar cliente", expanded=False):
                         st.warning("Esta acción eliminará el cliente solo si no tiene créditos asociados.")
-                        if st.button("Borrar cliente seleccionado", key="btn_borrar_cliente", type="secondary", disabled=st.session_state.get("app_busy", False)):
+                        if st.button("Borrar cliente seleccionado", key="btn_borrar_cliente", type="secondary", disabled=st.session_state.get("app_busy", False) or not has_perm("clientes_borrar")):
                             start_busy("Eliminando cliente...")
                             try:
                                 ok_del, err_del = eliminar_cliente_db(cliente_sel)
@@ -1700,7 +1770,9 @@ with tab_clientes:
                                 stop_busy()
 
     with cli_tab3:
-        if not clientes_df.empty:
+        if not has_perm("bd_clientes_ver"):
+            st.info("Tu rol no puede consultar la base completa de clientes.")
+        elif not clientes_df.empty:
             st.dataframe(clientes_df.rename(columns={
                 "cedula": "Cédula",
                 "nombres": "Nombres",
@@ -1720,6 +1792,8 @@ with tab_clientes:
 # ==========================
 with tab_creditos:
     st.subheader("🆕 Registrar nuevo crédito")
+    if not has_perm("creditos_ver"):
+        st.info("Tu rol no tiene permisos sobre créditos.")
     show_flash("credito_msg")
     show_flash("contrato_msg")
 
@@ -1742,6 +1816,8 @@ with tab_creditos:
         nombre_cliente = lambda x: "Selecciona un cliente" if x is None else f"{x} — {clientes_credito_df.loc[clientes_credito_df['cedula']==x, 'nombres'].iloc[0]} {clientes_credito_df.loc[clientes_credito_df['cedula']==x, 'apellidos'].iloc[0]}"
 
         with cred_tab1:
+            if not has_perm("creditos_registrar"):
+                st.info("Tu rol no puede registrar créditos.")
             with st.form("form_credito_normal", clear_on_submit=True):
                 cliente_normal = st.selectbox(
                     "Cliente",
@@ -1755,7 +1831,7 @@ with tab_creditos:
                 frecuencia_normal_new = st.selectbox("Frecuencia", ["Mensual", "Quincenal"], key="nuevo_frec_normal")
                 fecha_inicio_normal = st.date_input("Fecha de inicio", value=date.today(), key="fecha_inicio_normal")
                 st.caption("La simulación final se procesa al registrar el crédito.")
-                submit_normal = st.form_submit_button("Registrar crédito normal", type="primary", disabled=st.session_state.get("app_busy", False))
+                submit_normal = st.form_submit_button("Registrar crédito normal", type="primary", disabled=st.session_state.get("app_busy", False) or not has_perm("creditos_registrar"))
             if submit_normal:
                 if cliente_normal is None:
                     st.warning("ℹ️ Selecciona un cliente para registrar un crédito normal.")
@@ -1776,6 +1852,8 @@ with tab_creditos:
                         stop_busy()
 
         with cred_tab2:
+            if not has_perm("creditos_registrar"):
+                st.info("Tu rol no puede registrar créditos.")
             with st.form("form_credito_express", clear_on_submit=True):
                 cliente_express = st.selectbox(
                     "Cliente",
@@ -1789,7 +1867,7 @@ with tab_creditos:
                 cuotas_express_new = 5 if frecuencia_express_new == "Mensual" else 6
                 fecha_inicio_express = st.date_input("Fecha de inicio", value=date.today(), key="fecha_inicio_express")
                 st.caption(f"Crédito express a {cuotas_express_new} cuotas de frecuencia {frecuencia_express_new.lower()}.")
-                submit_express = st.form_submit_button("Registrar crédito express", type="primary", disabled=st.session_state.get("app_busy", False))
+                submit_express = st.form_submit_button("Registrar crédito express", type="primary", disabled=st.session_state.get("app_busy", False) or not has_perm("creditos_registrar"))
             if submit_express:
                 if cliente_express is None:
                     st.warning("ℹ️ Selecciona un cliente para registrar un crédito express.")
@@ -1810,6 +1888,8 @@ with tab_creditos:
                         stop_busy()
 
         with cred_tab3:
+            if not has_perm("contratos_pendientes_ver"):
+                st.info("Tu rol no puede consultar contratos pendientes.")
             pendientes_df = estado[estado["estado"] == "Pendiente"].copy()
 
             if pendientes_df.empty:
@@ -1868,7 +1948,7 @@ with tab_creditos:
                     else:
                         st.success("✅ El flujo del contrato y desembolso ya quedó completado para este crédito.")
 
-                    if st.button("📨 Enviar contrato manual", type="primary", key="btn_enviar_contrato_manual", disabled=st.session_state.get("app_busy", False)):
+                    if st.button("📨 Enviar contrato manual", type="primary", key="btn_enviar_contrato_manual", disabled=st.session_state.get("app_busy", False) or not has_perm("contratos_manual")):
                         start_busy("Enviando contrato manual...")
                         try:
                             ok_send, err_send = enviar_contrato_credito(fila_p)
@@ -1905,6 +1985,8 @@ with tab_creditos:
 # ==========================
 with tab_detalle:
     st.subheader("📄 Detalle por crédito")
+    if not has_perm("detalle_ver"):
+        st.info("Tu rol no puede consultar el detalle de créditos.")
     st.caption("Consulta la ficha del crédito, su plan de cuotas y sus movimientos. Los créditos cerrados se conservan en historial para consulta.")
     show_flash("detalle_msg")
 
@@ -1991,6 +2073,8 @@ if "reset_select_prestamo_pago" not in st.session_state:
     st.session_state.reset_select_prestamo_pago = False
 with tab_pagos:
     st.subheader("💰 Pagos del crédito")
+    if not has_perm("pagos_ver"):
+        st.info("Tu rol no puede registrar pagos ni abonos a capital.")
     st.caption("Aquí solo se muestran créditos activos con saldo pendiente. Los créditos cerrados siguen visibles en Resumen e Historial, pero no interfieren en la operación diaria.")
     activos = estado[(estado["estado"] != "Cancelado") & (pd.to_numeric(estado["saldo"], errors="coerce").fillna(0) > 0)].copy()
     if activos.empty:
@@ -2037,7 +2121,7 @@ with tab_pagos:
                     """, unsafe_allow_html=True)
                     with st.form("form_pago_cuota", clear_on_submit=True):
                         fecha_pago = st.date_input("📅 Fecha de movimiento", value=date.today(), key="fecha_movimiento_pago")
-                        submit_pago_cuota = st.form_submit_button("Registrar pago de cuota", type="primary", disabled=st.session_state.get("app_busy", False))
+                        submit_pago_cuota = st.form_submit_button("Registrar pago de cuota", type="primary", disabled=st.session_state.get("app_busy", False) or not has_perm("pagos_registrar"))
                     if submit_pago_cuota:
                         start_busy("Aplicando pago de cuota...")
                         try:
@@ -2064,7 +2148,7 @@ with tab_pagos:
                         value=0.0,
                         key="abono_capital"
                     )
-                    submit_abono_capital = st.form_submit_button("Aplicar abono a capital", disabled=st.session_state.get("app_busy", False))
+                    submit_abono_capital = st.form_submit_button("Aplicar abono a capital", disabled=st.session_state.get("app_busy", False) or not has_perm("abono_capital"))
                 if submit_abono_capital:
                     start_busy("Aplicando abono a capital...")
                     try:
@@ -2105,6 +2189,8 @@ with tab_pagos:
 # ==========================
 with tab_sim:
     st.subheader("🧮 Simulador de crédito")
+    if not has_perm("simulador_ver"):
+        st.info("Tu rol no puede usar el simulador.")
     t1, t2 = st.tabs([
         "💳 Crédito normal",
         "⚡ Crédito express"

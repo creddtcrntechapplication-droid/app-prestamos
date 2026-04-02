@@ -167,15 +167,16 @@ if not st.session_state.auth and not token_aceptar:
         background: linear-gradient(90deg, #081a44 0%, #1d3b73 55%, #2563eb 100%);
     }
     .login-body{
-        padding: 28px;
+        padding: 24px 28px 28px 28px;
         background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%);
     }
-    .login-form-card{
+    .login-form-wrap{
+        margin-top: 18px;
+        padding: 22px 20px 16px 20px;
         background:#ffffff;
         border:1px solid #e6edf7;
-        border-radius: 22px;
-        padding: 26px 24px 20px 24px;
-        box-shadow: 0 14px 34px rgba(15,23,42,.07);
+        border-radius: 18px;
+        box-shadow: 0 10px 24px rgba(15,23,42,.05);
     }
     .login-kicker{
         display:inline-block;
@@ -202,27 +203,6 @@ if not st.session_state.auth and not token_aceptar:
         color:#64748b;
         margin:0 0 20px 0;
     }
-    .login-help-grid{
-        display:grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 10px;
-        margin: 16px 0 0 0;
-    }
-    .login-help-item{
-        background:#f8fafc;
-        border:1px solid #e5e7eb;
-        border-radius:14px;
-        padding:12px 14px;
-        font-size:13px;
-        line-height:1.45;
-        color:#334155;
-    }
-    .login-help-item strong{
-        display:block;
-        color:#0f172a;
-        margin-bottom:4px;
-        font-size:13px;
-    }
     .login-note{
         text-align:center;
         color:#94a3b8;
@@ -237,7 +217,6 @@ if not st.session_state.auth and not token_aceptar:
         .login-title-wrap{padding-right:0;text-align:left;}
         .login-title-wrap h1{font-size:26px;}
         .login-title{font-size:30px;}
-        .login-help-grid{grid-template-columns:1fr;}
     }
     </style>
     """, unsafe_allow_html=True)
@@ -256,15 +235,17 @@ if not st.session_state.auth and not token_aceptar:
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("<div class='login-blue-bar'></div>", unsafe_allow_html=True)
-    st.markdown("<div class='login-body'><div class='login-form-card'>", unsafe_allow_html=True)
+    st.markdown("<div class='login-body'>", unsafe_allow_html=True)
     st.markdown("<div class='login-kicker'>ACCESO SEGURO</div>", unsafe_allow_html=True)
     st.markdown("<div class='login-title'>Bienvenido al sistema</div>", unsafe_allow_html=True)
     st.markdown("<div class='login-sub'>Ingresa tus credenciales para administrar clientes, créditos, pagos y seguimiento operativo desde un solo panel.</div>", unsafe_allow_html=True)
 
+    st.markdown("<div class='login-form-wrap'>", unsafe_allow_html=True)
     with st.form("login_form", clear_on_submit=False):
         usuario = st.text_input("Usuario", placeholder="Ingresa tu usuario")
         clave = st.text_input("Contraseña", type="password", placeholder="Ingresa tu contraseña")
         ingresar = st.form_submit_button("Ingresar", use_container_width=True, type="primary")
+    st.markdown("</div>", unsafe_allow_html=True)
 
     if ingresar:
         with get_conn() as conn:
@@ -284,16 +265,8 @@ if not st.session_state.auth and not token_aceptar:
         else:
             st.error("❌ Usuario o contraseña incorrectos")
 
-    st.markdown("""
-    <div class='login-help-grid'>
-        <div class='login-help-item'><strong>Clientes</strong>Control centralizado de registros y datos clave.</div>
-        <div class='login-help-item'><strong>Créditos</strong>Seguimiento claro del flujo, cuotas y estados.</div>
-        <div class='login-help-item'><strong>Operación</strong>Pagos, cartera y trazabilidad desde un solo panel.</div>
-    </div>
-    """, unsafe_allow_html=True)
-
     st.markdown("<div class='login-note'>Acceso privado • Plataforma de operación interna</div>", unsafe_allow_html=True)
-    st.markdown("</div></div></div></div>", unsafe_allow_html=True)
+    st.markdown("</div></div>", unsafe_allow_html=True)
     st.stop()
 # ==========================
 # ROLES Y PERMISOS

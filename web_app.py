@@ -112,23 +112,27 @@ if not st.session_state.auth and not token_aceptar:
     st.markdown("""
     <style>
     .block-container{
-        padding-top: 1.1rem !important;
+        padding-top: 0.55rem !important;
+        padding-bottom: 0.8rem !important;
     }
     .login-shell{
-        max-width: 1180px;
+        max-width: 1240px;
         margin: 0 auto;
-        padding: 0.2rem 0 0.5rem 0;
+        padding: 0.1rem 0 0.2rem 0;
     }
-    .login-topbrand{
+    .login-top-row{
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        gap: 18px;
+        margin: 0 0 1.05rem 0;
+    }
+    .login-brand-center{
         text-align:center;
-        margin: 0 0 1.4rem 0;
-    }
-    .login-topbrand img{
-        margin-bottom:.45rem;
     }
     .login-top-title{
         font-size: 34px;
-        line-height:1.05;
+        line-height:1.04;
         font-weight: 800;
         color:#0f172a;
         margin: 0;
@@ -140,17 +144,16 @@ if not st.session_state.auth and not token_aceptar:
         color:#64748b;
         margin-top:8px;
     }
-    .login-card{
-        background: transparent;
-        padding: 0;
-    }
     .brand-box{
         background: linear-gradient(135deg, #081a44 0%, #1d3b73 100%);
         border-radius: 26px;
-        padding: 34px 34px;
-        min-height: 100%;
+        padding: 34px 36px;
+        min-height: 380px;
         color: #fff;
         box-shadow: 0 20px 45px rgba(15,23,42,.14);
+        display:flex;
+        flex-direction:column;
+        justify-content:center;
     }
     .brand-eyebrow{
         font-size:12px;
@@ -171,7 +174,7 @@ if not st.session_state.auth and not token_aceptar:
         font-size:16px;
         line-height:1.7;
         color:#d6e2ff;
-        margin:0 0 22px 0;
+        margin:0 0 24px 0;
     }
     .brand-list{
         margin:0;
@@ -186,6 +189,10 @@ if not st.session_state.auth and not token_aceptar:
         border-radius: 24px;
         box-shadow: 0 18px 44px rgba(15,23,42,.08);
         padding: 30px 28px 22px 28px;
+        min-height: 380px;
+        display:flex;
+        flex-direction:column;
+        justify-content:center;
     }
     .login-kicker{
         display:inline-block;
@@ -222,20 +229,23 @@ if not st.session_state.auth and not token_aceptar:
         .login-top-title{font-size:28px;}
         .login-title{font-size:34px;}
         .brand-title{font-size:28px;}
+        .brand-box,.form-box{min-height:auto;}
     }
     </style>
     """, unsafe_allow_html=True)
 
     st.markdown("<div class='login-shell'>", unsafe_allow_html=True)
 
-    top_l, top_c, top_r = st.columns([1.2, 2.6, 1.2])
-    with top_c:
-        st.image("logo_creddt.png", width=110)
-        st.markdown("<div class='login-topbrand'><div class='login-top-title'>CREDDT | CRNTECH</div><div class='login-top-sub'>Plataforma inteligente de gestión de créditos</div></div>", unsafe_allow_html=True)
+    top_logo, top_center = st.columns([1.1, 4.2], gap="small")
+    with top_logo:
+        st.image("logo_creddt.png", width=150)
+    with top_center:
+        st.markdown(
+            "<div class='login-brand-center'><div class='login-top-title'>CREDDT | CRNTECH</div><div class='login-top-sub'>Plataforma inteligente de gestión de créditos</div></div>",
+            unsafe_allow_html=True
+        )
 
-    st.markdown("<div class='login-card'>", unsafe_allow_html=True)
-
-    col_brand, col_form = st.columns([1.02, 0.98], gap="large")
+    col_brand, col_form = st.columns([1.08, 1.0], gap="large")
 
     with col_brand:
         st.markdown("""
@@ -284,7 +294,6 @@ if not st.session_state.auth and not token_aceptar:
         st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("</div>", unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
 # ==========================
 # ROLES Y PERMISOS
@@ -330,6 +339,7 @@ st.markdown("""
     font-size:12px;
     font-weight:700;
     margin-left:8px;
+    margin-top:6px;
 }
 .app-subtitle{
     color:#cbd5e1;
@@ -339,17 +349,21 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+usuario_hdr = st.session_state.get("usuario", "-")
+rol_hdr = st.session_state.get("rol", "-")
+
 st.markdown("<div class='app-header'>", unsafe_allow_html=True)
-col_logo, col_centro, col_derecha = st.columns([1.1, 4.8, 1.7])
+col_logo, col_centro, col_derecha = st.columns([1.15, 4.8, 2.0])
 with col_logo:
-    st.image("logo_creddt.png", width=115)
+    st.image("logo_creddt.png", width=132)
 with col_centro:
     st.markdown("<h1 style='margin:0;color:#ffffff;font-size:38px;line-height:1.05;'>CREDDT | CRNTECH</h1>", unsafe_allow_html=True)
     st.markdown("<div class='app-subtitle'>Plataforma inteligente de gestión de créditos</div>", unsafe_allow_html=True)
 with col_derecha:
-    usuario_hdr = st.session_state.get("usuario", "-")
-    rol_hdr = st.session_state.get("rol", "-")
-    st.markdown(f"<div style='text-align:right;padding-top:8px;'><span class='app-chip'>Usuario: <strong>{usuario_hdr}</strong></span><span class='app-chip'>Rol: <strong>{rol_hdr}</strong></span></div>", unsafe_allow_html=True)
+    st.markdown(
+        f"<div style='text-align:right;padding-top:6px;'><span class='app-chip'>Usuario: <strong>{usuario_hdr}</strong></span><br><span class='app-chip'>Rol: <strong>{rol_hdr}</strong></span></div>",
+        unsafe_allow_html=True
+    )
 st.markdown("</div>", unsafe_allow_html=True)
 st.divider()
 if st.session_state.get("app_busy") and st.session_state.get("app_busy_label"):

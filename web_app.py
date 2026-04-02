@@ -330,48 +330,101 @@ PUEDE_USAR_SIMULADOR = tiene_rol("ADMIN", "ASESOR", "CONSULTA")
 # ==========================
 st.markdown("""
 <style>
-.home-hero-wrap{
-    padding-top: .15rem;
-    padding-bottom: .2rem;
+.app-header{
+    background: linear-gradient(135deg, #081a44 0%, #1d3b73 100%);
+    border-radius: 24px;
+    padding: 20px 24px;
+    margin: 0.2rem 0 1rem 0;
+    box-shadow: 0 18px 44px rgba(15,23,42,.14);
 }
-.home-title{
-    margin: 0 !important;
-    color:#0f172a;
-    font-size:42px;
-    line-height:1.04;
-    font-weight:900;
-    letter-spacing:-.03em;
-    text-align:center;
-}
-.home-subtitle{
-    margin-top:8px;
-    color:#64748b;
-    font-size:16px;
-    line-height:1.55;
-    text-align:center;
-    font-weight:500;
-}
-.home-chip{
+.app-chip{
     display:inline-block;
-    background:#eff6ff;
-    color:#1d4ed8;
-    border:1px solid #dbeafe;
+    background: rgba(255,255,255,.10);
+    color:#e2e8f0;
+    border:1px solid rgba(255,255,255,.12);
     border-radius:999px;
-    padding:8px 12px;
+    padding:7px 12px;
     font-size:12px;
-    font-weight:800;
+    font-weight:700;
     margin-left:8px;
     margin-top:6px;
-    white-space:nowrap;
 }
-.home-blue-line{
-    height: 10px;
-    width: 100%;
-    border-radius: 999px;
-    background: linear-gradient(90deg, #081a44 0%, #173266 48%, #2563eb 100%);
-    box-shadow: 0 10px 22px rgba(15,23,42,.12);
-    margin: 14px 0 10px 0;
+.app-subtitle{
+    color:#cbd5e1;
+    margin-top:4px;
+    font-size:14px;
 }
+.premium-divider{
+    position:relative;
+    height:18px;
+    margin: 0.65rem 0 1rem 0;
+}
+.premium-divider::before{
+    content:"";
+    position:absolute;
+    left:0;
+    right:0;
+    top:8px;
+    height:1px;
+    background:#dbe3ef;
+}
+.premium-divider::after{
+    content:"";
+    position:absolute;
+    left:0;
+    top:5px;
+    width:170px;
+    height:6px;
+    border-radius:999px;
+    background: linear-gradient(90deg, #081a44 0%, #173266 55%, #2563eb 100%);
+    box-shadow: 0 8px 18px rgba(37,99,235,.16);
+}
+.premium-divider.soft{
+    margin: 0.45rem 0 0.9rem 0;
+}
+.premium-divider.soft::after{
+    width:120px;
+    height:4px;
+    top:6px;
+    box-shadow:none;
+}
+.premium-divider.compact{
+    margin: 0.25rem 0 0.65rem 0;
+    height:14px;
+}
+.premium-divider.compact::before{
+    top:6px;
+}
+.premium-divider.compact::after{
+    width:92px;
+    height:4px;
+    top:4px;
+    box-shadow:none;
+}
+</style>
+""", unsafe_allow_html=True)
+
+usuario_hdr = st.session_state.get("usuario", "-")
+rol_hdr = st.session_state.get("rol", "-")
+
+st.markdown("<div class='app-header'>", unsafe_allow_html=True)
+col_logo, col_centro, col_derecha = st.columns([1.15, 4.8, 2.0])
+with col_logo:
+    st.image("logo_creddt.png", width=132)
+with col_centro:
+    st.markdown("<h1 style='margin:0;color:#ffffff;font-size:38px;line-height:1.05;'>CREDDT | CRNTECH</h1>", unsafe_allow_html=True)
+    st.markdown("<div class='app-subtitle'>Plataforma inteligente de gestión de créditos</div>", unsafe_allow_html=True)
+with col_derecha:
+    st.markdown(
+        f"<div style='text-align:right;padding-top:6px;'><span class='app-chip'>Usuario: <strong>{usuario_hdr}</strong></span><br><span class='app-chip'>Rol: <strong>{rol_hdr}</strong></span></div>",
+        unsafe_allow_html=True
+    )
+st.markdown("</div>", unsafe_allow_html=True)
+render_section_divider("compact")
+if st.session_state.get("app_busy") and st.session_state.get("app_busy_label"):
+    st.info(f"⏳ {st.session_state.get('app_busy_label')}")
+st.markdown("""
+<style>
 @media (max-width: 1024px) {
   div[data-testid="stHorizontalBlock"] {
     gap: .75rem !important;
@@ -379,18 +432,6 @@ st.markdown("""
   }
 }
 @media (max-width: 768px) {
-  .home-title{
-    font-size:30px !important;
-    text-align:left !important;
-  }
-  .home-subtitle{
-    font-size:14px !important;
-    text-align:left !important;
-  }
-  .home-chip{
-    margin-left:0 !important;
-    margin-right:8px !important;
-  }
   div[data-testid="column"] {
     width: 100% !important;
     flex: 1 1 100% !important;
@@ -409,31 +450,6 @@ st.markdown("""
 }
 </style>
 """, unsafe_allow_html=True)
-
-usuario_hdr = st.session_state.get("usuario", "-")
-rol_hdr = st.session_state.get("rol", "-")
-
-with st.container():
-    st.markdown("<div class='home-hero-wrap'></div>", unsafe_allow_html=True)
-    col_logo, col_centro, col_derecha = st.columns([1.15, 4.4, 2.2], gap="small")
-    with col_logo:
-        st.image("logo_creddt.png", width=138)
-    with col_centro:
-        st.markdown("<div class='home-title'>CREDDT | CRNTECH</div>", unsafe_allow_html=True)
-        st.markdown("<div class='home-subtitle'>Plataforma inteligente de gestión de créditos</div>", unsafe_allow_html=True)
-    with col_derecha:
-        st.markdown(
-            f"<div style='text-align:right; padding-top:12px;'>"
-            f"<span class='home-chip'>Usuario: <strong>{usuario_hdr}</strong></span>"
-            f"<span class='home-chip'>Rol: <strong>{rol_hdr}</strong></span>"
-            f"</div>",
-            unsafe_allow_html=True
-        )
-
-st.markdown("<div class='home-blue-line'></div>", unsafe_allow_html=True)
-
-if st.session_state.get("app_busy") and st.session_state.get("app_busy_label"):
-    st.info(f"⏳ {st.session_state.get('app_busy_label')}")
 # ==========================
 # VARIABLES SEGURAS
 # ==========================
@@ -613,6 +629,14 @@ def start_busy(label="Procesando..."):
 def stop_busy():
     st.session_state.app_busy = False
     st.session_state.app_busy_label = None
+
+def render_section_divider(variant="default"):
+    variant = (variant or "default").strip().lower()
+    if variant not in {"default", "soft", "compact"}:
+        variant = "default"
+    css_class = "premium-divider" if variant == "default" else f"premium-divider {variant}"
+    st.markdown(f"<div class='{css_class}'></div>", unsafe_allow_html=True)
+
 # ==========================
 # UTILIDADES
 # ==========================
@@ -1699,7 +1723,7 @@ with tab_resumen:
     k2.metric("✅ Total cobrado", pesos(total_cobrado))
     k3.metric("⏳ Saldo pendiente", pesos(saldo_pendiente))
     k4.metric("📄 Créditos activos", creditos_activos)
-    st.divider()
+    render_section_divider("soft")
     df = estado.copy()
     for c in ["monto_original","monto_total_credito","total_pagado","saldo","valor_cuota"]:
         df[c] = df[c].apply(pesos)
@@ -1719,7 +1743,7 @@ with tab_resumen:
         "estado": "Estado"
     })
     st.dataframe(tabla_resumen, use_container_width=True, hide_index=True)
-    st.divider()
+    render_section_divider()
     st.subheader("⚠️ Alertas de cartera")
     st.caption("Haz clic en el indicador para ver el detalle de clientes con cuotas vencidas.")
     a1, a2, a3 = st.columns(3)
@@ -1782,7 +1806,7 @@ with tab_resumen:
     # ==========================
     # 🔎 CONSULTA MENSUAL
     # ==========================
-    st.divider()
+    render_section_divider()
     st.subheader("🔎 Consulta mensual (corte 02 → 02)")
     meses_disponibles = pd.date_range("2025-12-01", "2030-12-01", freq="MS").strftime("%Y-%m").tolist()
     mes_actual = date.today().strftime("%Y-%m")
@@ -1831,7 +1855,7 @@ with tab_resumen:
             st.session_state.detalle = "pendiente"
         st.metric("", pesos(pendiente_periodo))
     if "detalle" in st.session_state and not cuotas_df.empty:
-        st.divider()
+        render_section_divider("soft")
         if st.session_state.detalle=="total":
             df_detalle=cuotas_df
             titulo="📋 Todas las cuotas"
@@ -2343,7 +2367,7 @@ if tab_pagos is not None:
                     info2.metric("🏦 Saldo capital", pesos(prestamo.saldo_capital))
                     info3.metric("⏳ Saldo cuotas", pesos(prestamo.saldo))
                     info4.metric("📊 Tasa mensual", f"{float(prestamo.tasa_mensual or 0):.4f}")
-                    st.divider()
+                    render_section_divider("soft")
                     tab_pago_cuota, tab_abono_capital = st.tabs(["✅ Pago de cuota", "🏦 Abono a capital"])
 
                     with tab_pago_cuota:

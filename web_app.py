@@ -111,17 +111,81 @@ if "auth" not in st.session_state:
 if not st.session_state.auth and not token_aceptar:
     st.markdown("""
     <style>
+    .block-container{
+        padding-top: 1.1rem !important;
+    }
     .login-shell{
-        max-width: 980px;
-        margin: 2.2rem auto 0 auto;
-        padding: 0.5rem 0 0.5rem 0;
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 0.2rem 0 0.5rem 0;
+    }
+    .login-topbrand{
+        text-align:center;
+        margin: 0 0 1.4rem 0;
+    }
+    .login-topbrand img{
+        margin-bottom:.45rem;
+    }
+    .login-top-title{
+        font-size: 34px;
+        line-height:1.05;
+        font-weight: 800;
+        color:#0f172a;
+        margin: 0;
+        letter-spacing:-.02em;
+    }
+    .login-top-sub{
+        font-size: 14px;
+        line-height:1.6;
+        color:#64748b;
+        margin-top:8px;
     }
     .login-card{
-        background: linear-gradient(135deg, #ffffff 0%, #f8fbff 100%);
-        border: 1px solid #e6edf7;
+        background: transparent;
+        padding: 0;
+    }
+    .brand-box{
+        background: linear-gradient(135deg, #081a44 0%, #1d3b73 100%);
         border-radius: 26px;
-        box-shadow: 0 24px 60px rgba(15,23,42,.10);
-        padding: 34px 34px 26px 34px;
+        padding: 34px 34px;
+        min-height: 100%;
+        color: #fff;
+        box-shadow: 0 20px 45px rgba(15,23,42,.14);
+    }
+    .brand-eyebrow{
+        font-size:12px;
+        letter-spacing:.16em;
+        font-weight:800;
+        color:#c7d8ff;
+        margin-bottom:18px;
+        text-transform:uppercase;
+    }
+    .brand-title{
+        font-size:34px;
+        line-height:1.08;
+        font-weight:800;
+        margin:0 0 18px 0;
+        color:#fff;
+    }
+    .brand-sub{
+        font-size:16px;
+        line-height:1.7;
+        color:#d6e2ff;
+        margin:0 0 22px 0;
+    }
+    .brand-list{
+        margin:0;
+        padding-left:24px;
+        color:#e8efff;
+        line-height:2.0;
+        font-size:15px;
+    }
+    .form-box{
+        background:#ffffff;
+        border:1px solid #e6edf7;
+        border-radius: 24px;
+        box-shadow: 0 18px 44px rgba(15,23,42,.08);
+        padding: 30px 28px 22px 28px;
     }
     .login-kicker{
         display:inline-block;
@@ -140,48 +204,13 @@ if not st.session_state.auth and not token_aceptar:
         font-weight:800;
         color:#0f172a;
         margin:0 0 10px 0;
+        letter-spacing:-.03em;
     }
     .login-sub{
         font-size:16px;
         line-height:1.7;
         color:#64748b;
         margin:0 0 24px 0;
-    }
-    .brand-box{
-        background: linear-gradient(135deg, #081a44 0%, #1d3b73 100%);
-        border-radius: 22px;
-        padding: 30px 28px;
-        min-height: 100%;
-        color: #fff;
-        box-shadow: inset 0 1px 0 rgba(255,255,255,.06);
-    }
-    .brand-eyebrow{
-        font-size:12px;
-        letter-spacing:.16em;
-        font-weight:800;
-        color:#c7d8ff;
-        margin-bottom:16px;
-        text-transform:uppercase;
-    }
-    .brand-title{
-        font-size:34px;
-        line-height:1.08;
-        font-weight:800;
-        margin:0 0 16px 0;
-        color:#fff;
-    }
-    .brand-sub{
-        font-size:16px;
-        line-height:1.7;
-        color:#d6e2ff;
-        margin:0 0 22px 0;
-    }
-    .brand-list{
-        margin:0;
-        padding-left:18px;
-        color:#e8efff;
-        line-height:1.9;
-        font-size:15px;
     }
     .login-note{
         text-align:center;
@@ -190,6 +219,7 @@ if not st.session_state.auth and not token_aceptar:
         margin-top:12px;
     }
     @media (max-width: 900px){
+        .login-top-title{font-size:28px;}
         .login-title{font-size:34px;}
         .brand-title{font-size:28px;}
     }
@@ -197,9 +227,15 @@ if not st.session_state.auth and not token_aceptar:
     """, unsafe_allow_html=True)
 
     st.markdown("<div class='login-shell'>", unsafe_allow_html=True)
+
+    top_l, top_c, top_r = st.columns([1.2, 2.6, 1.2])
+    with top_c:
+        st.image("logo_creddt.png", width=110)
+        st.markdown("<div class='login-topbrand'><div class='login-top-title'>CREDDT | CRNTECH</div><div class='login-top-sub'>Plataforma inteligente de gestión de créditos</div></div>", unsafe_allow_html=True)
+
     st.markdown("<div class='login-card'>", unsafe_allow_html=True)
 
-    col_brand, col_form = st.columns([1.05, 0.95], gap="large")
+    col_brand, col_form = st.columns([1.02, 0.98], gap="large")
 
     with col_brand:
         st.markdown("""
@@ -214,9 +250,9 @@ if not st.session_state.auth and not token_aceptar:
             </ul>
         </div>
         """, unsafe_allow_html=True)
-        st.image("logo_creddt.png", width=110)
 
     with col_form:
+        st.markdown("<div class='form-box'>", unsafe_allow_html=True)
         st.markdown("<div class='login-kicker'>ACCESO SEGURO</div>", unsafe_allow_html=True)
         st.markdown("<div class='login-title'>Bienvenido al sistema</div>", unsafe_allow_html=True)
         st.markdown("<div class='login-sub'>Ingresa tus credenciales para administrar clientes, créditos, pagos y seguimiento operativo desde un solo panel.</div>", unsafe_allow_html=True)
@@ -245,6 +281,7 @@ if not st.session_state.auth and not token_aceptar:
                 st.error("❌ Usuario o contraseña incorrectos")
 
         st.markdown("<div class='login-note'>Acceso privado • Plataforma de operación interna</div>", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)

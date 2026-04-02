@@ -112,196 +112,216 @@ if not st.session_state.auth and not token_aceptar:
     st.markdown("""
     <style>
     .block-container{
-        padding-top: 0.25rem !important;
-        padding-bottom: 1rem !important;
-        max-width: 100% !important;
+        padding-top: 0.6rem !important;
+        padding-bottom: 0.8rem !important;
     }
     .login-shell{
-        max-width: 860px;
+        max-width: 1240px;
         margin: 0 auto;
-        padding: 0.15rem 0 1rem 0;
+        padding: 0.05rem 0 0.5rem 0;
     }
-    .login-stage{
-        position: relative;
-        background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
-        border: 1px solid #e2e8f0;
-        border-radius: 30px;
-        overflow: hidden;
-        box-shadow: 0 26px 70px rgba(15,23,42,.10);
+    .login-topbar{
+        display:grid;
+        grid-template-columns: 180px 1fr 180px;
+        align-items:center;
+        gap: 12px;
+        margin: 0 0 1rem 0;
     }
-    .login-stage::before{
-        content: "";
-        position: absolute;
-        inset: 0;
-        background: radial-gradient(circle at top right, rgba(37,99,235,.08), transparent 30%);
-        pointer-events: none;
+    .login-brand-left{
+        display:flex;
+        justify-content:flex-start;
+        align-items:center;
     }
-    .login-head{
-        padding: 20px 28px 14px 28px;
-        background:#ffffff;
-        position: relative;
-        z-index: 1;
-    }
-    .login-title-wrap{
+    .login-brand-center{
         text-align:center;
-        padding-right: 46px;
-        padding-top: 8px;
     }
-    .login-title-wrap h1{
-        margin:0;
-        font-size:50px;
-        line-height:1.02;
-        font-weight:900;
-        letter-spacing:-.035em;
+    .login-brand-title{
+        font-size: 38px;
+        line-height:1.03;
+        font-weight: 800;
         color:#0f172a;
+        margin: 0;
+        letter-spacing:-.03em;
     }
-    .login-title-wrap p{
-        margin:10px 0 0 0;
-        font-size:20px;
-        line-height:1.55;
+    .login-brand-sub{
+        font-size: 14px;
+        line-height:1.6;
         color:#64748b;
-        font-weight:500;
+        margin-top:6px;
     }
-    .login-blue-bar{
-        height: 5px;
-        background: linear-gradient(90deg, #081a44 0%, #173266 48%, #2563eb 100%);
-        position: relative;
-        z-index: 1;
+    .login-panels{
+        display:grid;
+        grid-template-columns: 1.05fr 0.95fr;
+        gap: 26px;
+        align-items:start;
     }
-    .login-body{
-        padding: 24px 30px 24px 30px;
-        position: relative;
-        z-index: 1;
+    .brand-box{
+        background: linear-gradient(135deg, #081a44 0%, #1d3b73 100%);
+        border-radius: 28px;
+        padding: 36px 36px;
+        color: #fff;
+        box-shadow: 0 20px 45px rgba(15,23,42,.14);
+        min-height: 390px;
+    }
+    .brand-eyebrow{
+        font-size:12px;
+        letter-spacing:.16em;
+        font-weight:800;
+        color:#c7d8ff;
+        margin-bottom:18px;
+        text-transform:uppercase;
+    }
+    .brand-title{
+        font-size:34px;
+        line-height:1.08;
+        font-weight:800;
+        margin:0 0 18px 0;
+        color:#fff;
+    }
+    .brand-sub{
+        font-size:17px;
+        line-height:1.7;
+        color:#d6e2ff;
+        margin:0 0 22px 0;
+    }
+    .brand-list{
+        margin:0;
+        padding-left:24px;
+        color:#e8efff;
+        line-height:2.0;
+        font-size:15px;
+    }
+    .form-box{
+        background:#ffffff;
+        border:1px solid #e6edf7;
+        border-radius: 28px;
+        box-shadow: 0 18px 44px rgba(15,23,42,.08);
+        padding: 30px 28px 22px 28px;
+        min-height: 390px;
     }
     .login-kicker{
         display:inline-block;
         font-size:12px;
         font-weight:800;
-        letter-spacing:.16em;
+        letter-spacing:.12em;
         color:#2563eb;
         background:#eff6ff;
-        border:1px solid #dbeafe;
         border-radius:999px;
-        padding:8px 13px;
-        margin-bottom:16px;
-        text-transform: uppercase;
+        padding:7px 12px;
+        margin-bottom:14px;
     }
     .login-title{
         font-size:44px;
-        line-height:1.04;
-        font-weight:900;
+        line-height:1.02;
+        font-weight:800;
         color:#0f172a;
-        margin:0 0 12px 0;
-        letter-spacing:-.035em;
+        margin:0 0 10px 0;
+        letter-spacing:-.03em;
     }
     .login-sub{
-        font-size:17px;
-        line-height:1.72;
+        font-size:16px;
+        line-height:1.7;
         color:#64748b;
-        margin:0 0 16px 0;
+        margin:0 0 24px 0;
     }
     .login-note{
         text-align:center;
         color:#94a3b8;
-        font-size:12.5px;
-        margin-top:16px;
+        font-size:13px;
+        margin-top:12px;
     }
-    div[data-testid="stForm"]{
-        border: 1px solid #dfe7f2 !important;
-        border-radius: 22px !important;
-        padding: 18px 18px 16px 18px !important;
-        background: rgba(255,255,255,.94) !important;
-        box-shadow: 0 12px 30px rgba(15,23,42,.06) !important;
-        backdrop-filter: blur(6px);
-        margin-top: 0 !important;
+    .login-msg-space{
+        min-height: 0px;
     }
-    div[data-testid="stForm"] > div{
-        border: 0 !important;
-        padding: 0 !important;
-        background: transparent !important;
-    }
-    .stTextInput > div > div > input{
-        border-radius: 14px !important;
-        border:1px solid #dbe3ef !important;
-        background:#f8fafc !important;
-        min-height: 52px !important;
-        font-size:16px !important;
-        padding-left: 14px !important;
-    }
-    .stTextInput > label{
-        font-weight:700 !important;
-        color:#334155 !important;
-    }
-    div.stButton > button, div[data-testid="stFormSubmitButton"] > button{
-        border-radius: 14px !important;
-        min-height: 54px !important;
-        font-size: 17px !important;
-        font-weight: 800 !important;
-        border: 0 !important;
-        background: linear-gradient(135deg, #0b1633 0%, #173266 42%, #2563eb 100%) !important;
-        box-shadow: 0 12px 24px rgba(37,99,235,.20) !important;
-        transition: all .18s ease !important;
-    }
-    div.stButton > button:hover, div[data-testid="stFormSubmitButton"] > button:hover{
-        transform: translateY(-1px);
-        box-shadow: 0 16px 30px rgba(37,99,235,.24) !important;
-    }
-    @media (max-width: 768px){
-        .login-shell{max-width: 100%;}
-        .login-head{padding:16px 18px 14px 18px;}
-        .login-body{padding:18px;}
-        .login-title-wrap{padding-right:0;padding-top:0;text-align:left;}
-        .login-title-wrap h1{font-size:36px;}
-        .login-title-wrap p{font-size:16px;}
-        .login-title{font-size:32px;}
-        .login-sub{font-size:15px;}
+    @media (max-width: 980px){
+        .login-topbar{
+            grid-template-columns: 1fr;
+            justify-items:center;
+            text-align:center;
+            margin-bottom: .8rem;
+        }
+        .login-brand-left{
+            justify-content:center;
+        }
+        .login-panels{
+            grid-template-columns: 1fr;
+            gap: 18px;
+        }
+        .login-brand-title{font-size:30px;}
+        .login-title{font-size:34px;}
+        .brand-title{font-size:28px;}
+        .brand-box,.form-box{min-height:auto;}
     }
     </style>
     """, unsafe_allow_html=True)
 
-    st.markdown("<div class='login-shell'><div class='login-stage'>", unsafe_allow_html=True)
+    st.markdown("<div class='login-shell'>", unsafe_allow_html=True)
+    st.markdown("<div class='login-topbar'>", unsafe_allow_html=True)
 
-    st.markdown("<div class='login-head'>", unsafe_allow_html=True)
-    logo_col, title_col = st.columns([1.0, 4.5], gap="small")
-    with logo_col:
-        st.image("logo_creddt.png", width=132)
-    with title_col:
-        st.markdown(
-            "<div class='login-title-wrap'><h1>CREDDT | CRNTECH</h1><p>Plataforma inteligente de gestión de créditos</p></div>",
-            unsafe_allow_html=True
-        )
+    top_l, top_c, top_r = st.columns([1.2, 3.8, 1.2])
+    with top_l:
+        st.markdown("<div class='login-brand-left'>", unsafe_allow_html=True)
+        st.image("logo_creddt.png", width=126)
+        st.markdown("</div>", unsafe_allow_html=True)
+    with top_c:
+        st.markdown("<div class='login-brand-center'><div class='login-brand-title'>CREDDT | CRNTECH</div><div class='login-brand-sub'>Plataforma inteligente de gestión de créditos</div></div>", unsafe_allow_html=True)
+    with top_r:
+        st.markdown("&nbsp;", unsafe_allow_html=True)
+
     st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown("<div class='login-blue-bar'></div>", unsafe_allow_html=True)
-    st.markdown("<div class='login-body'>", unsafe_allow_html=True)
-    st.markdown("<div class='login-kicker'>Acceso seguro</div>", unsafe_allow_html=True)
-    st.markdown("<div class='login-title'>Bienvenido al sistema</div>", unsafe_allow_html=True)
-    st.markdown("<div class='login-sub'>Ingresa tus credenciales para administrar clientes, créditos, pagos y seguimiento operativo desde un solo panel.</div>", unsafe_allow_html=True)
-    with st.form("login_form", clear_on_submit=False):
-        usuario = st.text_input("Usuario", placeholder="Ingresa tu usuario")
-        clave = st.text_input("Contraseña", type="password", placeholder="Ingresa tu contraseña")
-        ingresar = st.form_submit_button("Ingresar", use_container_width=True, type="primary")
+    col_brand, col_form = st.columns([1.05, 0.95], gap="large")
 
-    if ingresar:
-        with get_conn() as conn:
-            user = conn.execute(
-                text("""
-                    SELECT usuario, rol 
-                    FROM usuarios 
-                    WHERE usuario=:usuario AND password=:password
-                """),
-                {"usuario": usuario, "password": clave}
-            ).fetchone()
-        if user:
-            st.session_state.auth = True
-            st.session_state.usuario = user[0]
-            st.session_state.rol = user[1]
-            st.rerun()
-        else:
-            st.error("❌ Usuario o contraseña incorrectos")
+    with col_brand:
+        st.markdown("""
+        <div class="brand-box">
+            <div class="brand-eyebrow">Plataforma financiera</div>
+            <div class="brand-title">CREDDT | CRNTECH</div>
+            <div class="brand-sub">Gestiona clientes, créditos, pagos, contratos y cartera desde una sola operación clara, sólida y profesional.</div>
+            <ul class="brand-list">
+                <li>Gestión centralizada de clientes</li>
+                <li>Control de créditos, cuotas y pagos</li>
+                <li>Seguimiento operativo y de cartera</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
 
-    st.markdown("<div class='login-note'>Acceso privado • Plataforma de operación interna</div>", unsafe_allow_html=True)
-    st.markdown("</div></div></div>", unsafe_allow_html=True)
+    with col_form:
+        st.markdown("<div class='form-box'>", unsafe_allow_html=True)
+        st.markdown("<div class='login-kicker'>ACCESO SEGURO</div>", unsafe_allow_html=True)
+        st.markdown("<div class='login-title'>Bienvenido al sistema</div>", unsafe_allow_html=True)
+        st.markdown("<div class='login-sub'>Ingresa tus credenciales para administrar clientes, créditos, pagos y seguimiento operativo desde un solo panel.</div>", unsafe_allow_html=True)
+
+        login_feedback = st.empty()
+
+        with st.form("login_form", clear_on_submit=False):
+            usuario = st.text_input("Usuario", placeholder="Ingresa tu usuario")
+            clave = st.text_input("Contraseña", type="password", placeholder="Ingresa tu contraseña")
+            ingresar = st.form_submit_button("Ingresar", use_container_width=True, type="primary")
+
+        if ingresar:
+            with get_conn() as conn:
+                user = conn.execute(
+                    text("""
+                        SELECT usuario, rol 
+                        FROM usuarios 
+                        WHERE usuario=:usuario AND password=:password
+                    """),
+                    {"usuario": usuario, "password": clave}
+                ).fetchone()
+            if user:
+                login_feedback.empty()
+                st.session_state.auth = True
+                st.session_state.usuario = user[0]
+                st.session_state.rol = user[1]
+                st.rerun()
+            else:
+                login_feedback.error("❌ Usuario o contraseña incorrectos")
+
+        st.markdown("<div class='login-note'>Acceso privado • Plataforma de operación interna</div>", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
 # ==========================
 # ROLES Y PERMISOS
@@ -330,29 +350,66 @@ PUEDE_USAR_SIMULADOR = tiene_rol("ADMIN", "ASESOR", "CONSULTA")
 # ==========================
 st.markdown("""
 <style>
-.app-header{
-    background: linear-gradient(135deg, #081a44 0%, #1d3b73 100%);
-    border-radius: 24px;
-    padding: 20px 24px;
-    margin: 0.2rem 0 1rem 0;
-    box-shadow: 0 18px 44px rgba(15,23,42,.14);
+.block-container{
+    padding-top: 0.7rem !important;
+}
+.app-shell{
+    margin: 0.1rem 0 0.8rem 0;
+}
+.app-header-row{
+    display:grid;
+    grid-template-columns: 170px 1fr 280px;
+    align-items:center;
+    gap: 18px;
+}
+.app-header-center{
+    text-align:center;
+}
+.app-header-title{
+    margin:0;
+    color:#0f172a;
+    font-size:34px;
+    line-height:1.05;
+    font-weight:800;
+    letter-spacing:-.03em;
+}
+.app-header-subtitle{
+    color:#64748b;
+    margin-top:6px;
+    font-size:14px;
+    line-height:1.5;
+}
+.app-chip-wrap{
+    display:flex;
+    justify-content:flex-end;
+    gap:8px;
+    flex-wrap:wrap;
 }
 .app-chip{
-    display:inline-block;
-    background: rgba(255,255,255,.10);
-    color:#e2e8f0;
-    border:1px solid rgba(255,255,255,.12);
+    display:inline-flex;
+    align-items:center;
+    background:#eff6ff;
+    color:#1e3a8a;
+    border:1px solid #dbeafe;
     border-radius:999px;
     padding:7px 12px;
     font-size:12px;
     font-weight:700;
-    margin-left:8px;
-    margin-top:6px;
 }
-.app-subtitle{
-    color:#cbd5e1;
-    margin-top:4px;
-    font-size:14px;
+.app-divider{
+    height: 12px;
+    border-radius: 999px;
+    background: linear-gradient(135deg, #081a44 0%, #1d3b73 100%);
+    margin-top: 14px;
+}
+@media (max-width: 980px){
+    .app-header-row{
+        grid-template-columns: 1fr;
+        text-align:center;
+    }
+    .app-chip-wrap{
+        justify-content:center;
+    }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -360,20 +417,17 @@ st.markdown("""
 usuario_hdr = st.session_state.get("usuario", "-")
 rol_hdr = st.session_state.get("rol", "-")
 
-st.markdown("<div class='app-header'>", unsafe_allow_html=True)
-col_logo, col_centro, col_derecha = st.columns([1.15, 4.8, 2.0])
-with col_logo:
-    st.image("logo_creddt.png", width=132)
-with col_centro:
-    st.markdown("<h1 style='margin:0;color:#ffffff;font-size:38px;line-height:1.05;'>CREDDT | CRNTECH</h1>", unsafe_allow_html=True)
-    st.markdown("<div class='app-subtitle'>Plataforma inteligente de gestión de créditos</div>", unsafe_allow_html=True)
-with col_derecha:
-    st.markdown(
-        f"<div style='text-align:right;padding-top:6px;'><span class='app-chip'>Usuario: <strong>{usuario_hdr}</strong></span><br><span class='app-chip'>Rol: <strong>{rol_hdr}</strong></span></div>",
-        unsafe_allow_html=True
-    )
+st.markdown("<div class='app-shell'>", unsafe_allow_html=True)
+col_logo_hdr, col_center_hdr, col_right_hdr = st.columns([1.2, 3.8, 2.0], gap="medium")
+with col_logo_hdr:
+    st.image("logo_creddt.png", width=118)
+with col_center_hdr:
+    st.markdown("<div class='app-header-center'><div class='app-header-title'>CREDDT | CRNTECH</div><div class='app-header-subtitle'>Plataforma inteligente de gestión de créditos</div></div>", unsafe_allow_html=True)
+with col_right_hdr:
+    st.markdown(f"<div class='app-chip-wrap'><span class='app-chip'>Usuario: <strong>&nbsp;{usuario_hdr}</strong></span><span class='app-chip'>Rol: <strong>&nbsp;{rol_hdr}</strong></span></div>", unsafe_allow_html=True)
+st.markdown("<div class='app-divider'></div>", unsafe_allow_html=True)
 st.markdown("</div>", unsafe_allow_html=True)
-st.divider()
+
 if st.session_state.get("app_busy") and st.session_state.get("app_busy_label"):
     st.info(f"⏳ {st.session_state.get('app_busy_label')}")
 st.markdown("""

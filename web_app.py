@@ -117,9 +117,9 @@ if not st.session_state.auth and not token_aceptar:
         max-width: 100% !important;
     }
     .login-shell{
-        max-width: 840px;
+        max-width: 860px;
         margin: 0 auto;
-        padding: 0.2rem 0 1rem 0;
+        padding: 0.15rem 0 1rem 0;
     }
     .login-stage{
         position: relative;
@@ -137,18 +137,19 @@ if not st.session_state.auth and not token_aceptar:
         pointer-events: none;
     }
     .login-head{
-        padding: 24px 28px 18px 28px;
+        padding: 20px 28px 14px 28px;
         background:#ffffff;
         position: relative;
         z-index: 1;
     }
     .login-title-wrap{
         text-align:center;
-        padding-right: 70px;
+        padding-right: 46px;
+        padding-top: 8px;
     }
     .login-title-wrap h1{
         margin:0;
-        font-size:48px;
+        font-size:50px;
         line-height:1.02;
         font-weight:900;
         letter-spacing:-.035em;
@@ -156,19 +157,19 @@ if not st.session_state.auth and not token_aceptar:
     }
     .login-title-wrap p{
         margin:10px 0 0 0;
-        font-size:19px;
+        font-size:20px;
         line-height:1.55;
         color:#64748b;
         font-weight:500;
     }
     .login-blue-bar{
-        height: 7px;
+        height: 5px;
         background: linear-gradient(90deg, #081a44 0%, #173266 48%, #2563eb 100%);
         position: relative;
         z-index: 1;
     }
     .login-body{
-        padding: 30px 30px 26px 30px;
+        padding: 24px 30px 24px 30px;
         position: relative;
         z-index: 1;
     }
@@ -186,7 +187,7 @@ if not st.session_state.auth and not token_aceptar:
         text-transform: uppercase;
     }
     .login-title{
-        font-size:42px;
+        font-size:44px;
         line-height:1.04;
         font-weight:900;
         color:#0f172a;
@@ -197,15 +198,7 @@ if not st.session_state.auth and not token_aceptar:
         font-size:17px;
         line-height:1.72;
         color:#64748b;
-        margin:0 0 22px 0;
-    }
-    .login-form-card{
-        background: rgba(255,255,255,.92);
-        border:1px solid #e2e8f0;
-        border-radius:22px;
-        padding: 12px 14px 16px 14px;
-        box-shadow: 0 10px 30px rgba(15,23,42,.05);
-        backdrop-filter: blur(6px);
+        margin:0 0 16px 0;
     }
     .login-note{
         text-align:center;
@@ -214,13 +207,18 @@ if not st.session_state.auth and not token_aceptar:
         margin-top:16px;
     }
     div[data-testid="stForm"]{
-        border: 0 !important;
-        padding: 0 !important;
-        background: transparent !important;
-        box-shadow: none !important;
+        border: 1px solid #dfe7f2 !important;
+        border-radius: 22px !important;
+        padding: 18px 18px 16px 18px !important;
+        background: rgba(255,255,255,.94) !important;
+        box-shadow: 0 12px 30px rgba(15,23,42,.06) !important;
+        backdrop-filter: blur(6px);
+        margin-top: 0 !important;
     }
     div[data-testid="stForm"] > div{
         border: 0 !important;
+        padding: 0 !important;
+        background: transparent !important;
     }
     .stTextInput > div > div > input{
         border-radius: 14px !important;
@@ -240,19 +238,19 @@ if not st.session_state.auth and not token_aceptar:
         font-size: 17px !important;
         font-weight: 800 !important;
         border: 0 !important;
-        background: linear-gradient(135deg, #0f172a 0%, #173266 45%, #2563eb 100%) !important;
-        box-shadow: 0 14px 28px rgba(37,99,235,.24) !important;
+        background: linear-gradient(135deg, #0b1633 0%, #173266 42%, #2563eb 100%) !important;
+        box-shadow: 0 12px 24px rgba(37,99,235,.20) !important;
         transition: all .18s ease !important;
     }
     div.stButton > button:hover, div[data-testid="stFormSubmitButton"] > button:hover{
         transform: translateY(-1px);
-        box-shadow: 0 18px 34px rgba(37,99,235,.30) !important;
+        box-shadow: 0 16px 30px rgba(37,99,235,.24) !important;
     }
     @media (max-width: 768px){
         .login-shell{max-width: 100%;}
-        .login-head{padding:18px 18px 16px 18px;}
+        .login-head{padding:16px 18px 14px 18px;}
         .login-body{padding:18px;}
-        .login-title-wrap{padding-right:0;text-align:left;}
+        .login-title-wrap{padding-right:0;padding-top:0;text-align:left;}
         .login-title-wrap h1{font-size:36px;}
         .login-title-wrap p{font-size:16px;}
         .login-title{font-size:32px;}
@@ -266,7 +264,7 @@ if not st.session_state.auth and not token_aceptar:
     st.markdown("<div class='login-head'>", unsafe_allow_html=True)
     logo_col, title_col = st.columns([1.0, 4.5], gap="small")
     with logo_col:
-        st.image("logo_creddt.png", width=120)
+        st.image("logo_creddt.png", width=132)
     with title_col:
         st.markdown(
             "<div class='login-title-wrap'><h1>CREDDT | CRNTECH</h1><p>Plataforma inteligente de gestión de créditos</p></div>",
@@ -279,8 +277,6 @@ if not st.session_state.auth and not token_aceptar:
     st.markdown("<div class='login-kicker'>Acceso seguro</div>", unsafe_allow_html=True)
     st.markdown("<div class='login-title'>Bienvenido al sistema</div>", unsafe_allow_html=True)
     st.markdown("<div class='login-sub'>Ingresa tus credenciales para administrar clientes, créditos, pagos y seguimiento operativo desde un solo panel.</div>", unsafe_allow_html=True)
-    st.markdown("<div class='login-form-card'>", unsafe_allow_html=True)
-
     with st.form("login_form", clear_on_submit=False):
         usuario = st.text_input("Usuario", placeholder="Ingresa tu usuario")
         clave = st.text_input("Contraseña", type="password", placeholder="Ingresa tu contraseña")
@@ -304,7 +300,6 @@ if not st.session_state.auth and not token_aceptar:
         else:
             st.error("❌ Usuario o contraseña incorrectos")
 
-    st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("<div class='login-note'>Acceso privado • Plataforma de operación interna</div>", unsafe_allow_html=True)
     st.markdown("</div></div></div>", unsafe_allow_html=True)
     st.stop()

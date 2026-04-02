@@ -112,87 +112,70 @@ if not st.session_state.auth and not token_aceptar:
     st.markdown("""
     <style>
     .block-container{
-        padding-top: 0.55rem !important;
-        padding-bottom: 0.8rem !important;
+        padding-top: 0.35rem !important;
+        padding-bottom: 1rem !important;
+        max-width: 100% !important;
     }
     .login-shell{
-        max-width: 1240px;
+        max-width: 760px;
         margin: 0 auto;
-        padding: 0.1rem 0 0.2rem 0;
+        padding: 0.2rem 0 0.8rem 0;
     }
-    .login-top-row{
+    .login-stage{
+        background:#ffffff;
+        border:1px solid #e5e7eb;
+        border-radius: 28px;
+        overflow:hidden;
+        box-shadow: 0 22px 54px rgba(15,23,42,.10);
+    }
+    .login-head{
+        padding: 22px 28px 18px 28px;
+        background:#ffffff;
+    }
+    .login-head-inner{
+        display:flex;
+        align-items:center;
+        gap:18px;
+    }
+    .login-logo-wrap{
+        flex: 0 0 auto;
         display:flex;
         align-items:center;
         justify-content:center;
-        gap: 18px;
-        margin: 0 0 1.05rem 0;
     }
-    .login-brand-center{
+    .login-title-wrap{
+        flex:1;
         text-align:center;
+        padding-right: 76px;
     }
-    .login-top-title{
-        font-size: 34px;
+    .login-title-wrap h1{
+        margin:0;
+        font-size:34px;
         line-height:1.04;
-        font-weight: 800;
-        color:#0f172a;
-        margin: 0;
+        font-weight:800;
         letter-spacing:-.02em;
+        color:#0f172a;
     }
-    .login-top-sub{
-        font-size: 14px;
+    .login-title-wrap p{
+        margin:8px 0 0 0;
+        font-size:14px;
         line-height:1.6;
         color:#64748b;
-        margin-top:8px;
     }
-    .brand-box{
-        background: linear-gradient(135deg, #081a44 0%, #1d3b73 100%);
-        border-radius: 26px;
-        padding: 34px 36px;
-        min-height: 380px;
-        color: #fff;
-        box-shadow: 0 20px 45px rgba(15,23,42,.14);
-        display:flex;
-        flex-direction:column;
-        justify-content:center;
+    .login-blue-bar{
+        height: 8px;
+        background: linear-gradient(90deg, #081a44 0%, #1d3b73 55%, #2563eb 100%);
     }
-    .brand-eyebrow{
-        font-size:12px;
-        letter-spacing:.16em;
-        font-weight:800;
-        color:#c7d8ff;
-        margin-bottom:18px;
-        text-transform:uppercase;
+    .login-body{
+        padding: 28px;
+        background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%);
     }
-    .brand-title{
-        font-size:34px;
-        line-height:1.08;
-        font-weight:800;
-        margin:0 0 18px 0;
-        color:#fff;
-    }
-    .brand-sub{
-        font-size:16px;
-        line-height:1.7;
-        color:#d6e2ff;
-        margin:0 0 24px 0;
-    }
-    .brand-list{
-        margin:0;
-        padding-left:24px;
-        color:#e8efff;
-        line-height:2.0;
-        font-size:15px;
-    }
-    .form-box{
+    .login-form-card{
         background:#ffffff;
         border:1px solid #e6edf7;
-        border-radius: 24px;
-        box-shadow: 0 18px 44px rgba(15,23,42,.08);
-        padding: 30px 28px 22px 28px;
-        min-height: 380px;
-        display:flex;
-        flex-direction:column;
-        justify-content:center;
+        border-radius: 22px;
+        padding: 26px 24px 20px 24px;
+        box-shadow: 0 14px 34px rgba(15,23,42,.07);
     }
     .login-kicker{
         display:inline-block;
@@ -206,94 +189,111 @@ if not st.session_state.auth and not token_aceptar:
         margin-bottom:14px;
     }
     .login-title{
-        font-size:44px;
-        line-height:1.02;
+        font-size:36px;
+        line-height:1.08;
         font-weight:800;
         color:#0f172a;
         margin:0 0 10px 0;
         letter-spacing:-.03em;
     }
     .login-sub{
-        font-size:16px;
+        font-size:15px;
         line-height:1.7;
         color:#64748b;
-        margin:0 0 24px 0;
+        margin:0 0 20px 0;
+    }
+    .login-help-grid{
+        display:grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        margin: 16px 0 0 0;
+    }
+    .login-help-item{
+        background:#f8fafc;
+        border:1px solid #e5e7eb;
+        border-radius:14px;
+        padding:12px 14px;
+        font-size:13px;
+        line-height:1.45;
+        color:#334155;
+    }
+    .login-help-item strong{
+        display:block;
+        color:#0f172a;
+        margin-bottom:4px;
+        font-size:13px;
     }
     .login-note{
         text-align:center;
         color:#94a3b8;
-        font-size:13px;
-        margin-top:12px;
+        font-size:12.5px;
+        margin-top:16px;
     }
-    @media (max-width: 900px){
-        .login-top-title{font-size:28px;}
-        .login-title{font-size:34px;}
-        .brand-title{font-size:28px;}
-        .brand-box,.form-box{min-height:auto;}
+    @media (max-width: 768px){
+        .login-shell{max-width: 100%;}
+        .login-head{padding:18px 18px 16px 18px;}
+        .login-body{padding:18px;}
+        .login-head-inner{gap:12px;}
+        .login-title-wrap{padding-right:0;text-align:left;}
+        .login-title-wrap h1{font-size:26px;}
+        .login-title{font-size:30px;}
+        .login-help-grid{grid-template-columns:1fr;}
     }
     </style>
     """, unsafe_allow_html=True)
 
-    st.markdown("<div class='login-shell'>", unsafe_allow_html=True)
+    st.markdown("<div class='login-shell'><div class='login-stage'>", unsafe_allow_html=True)
 
-    top_logo, top_center = st.columns([1.1, 4.2], gap="small")
-    with top_logo:
-        st.image("logo_creddt.png", width=150)
-    with top_center:
+    st.markdown("<div class='login-head'>", unsafe_allow_html=True)
+    logo_col, title_col = st.columns([1.05, 4.2], gap="small")
+    with logo_col:
+        st.image("logo_creddt.png", width=118)
+    with title_col:
         st.markdown(
-            "<div class='login-brand-center'><div class='login-top-title'>CREDDT | CRNTECH</div><div class='login-top-sub'>Plataforma inteligente de gestión de créditos</div></div>",
+            "<div class='login-title-wrap'><h1>CREDDT | CRNTECH</h1><p>Plataforma inteligente de gestión de créditos</p></div>",
             unsafe_allow_html=True
         )
-
-    col_brand, col_form = st.columns([1.08, 1.0], gap="large")
-
-    with col_brand:
-        st.markdown("""
-        <div class="brand-box">
-            <div class="brand-eyebrow">Plataforma financiera</div>
-            <div class="brand-title">CREDDT | CRNTECH</div>
-            <div class="brand-sub">Gestiona clientes, créditos, pagos, contratos y cartera desde una sola operación clara, sólida y profesional.</div>
-            <ul class="brand-list">
-                <li>Gestión centralizada de clientes</li>
-                <li>Control de créditos, cuotas y pagos</li>
-                <li>Seguimiento operativo y de cartera</li>
-            </ul>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with col_form:
-        st.markdown("<div class='form-box'>", unsafe_allow_html=True)
-        st.markdown("<div class='login-kicker'>ACCESO SEGURO</div>", unsafe_allow_html=True)
-        st.markdown("<div class='login-title'>Bienvenido al sistema</div>", unsafe_allow_html=True)
-        st.markdown("<div class='login-sub'>Ingresa tus credenciales para administrar clientes, créditos, pagos y seguimiento operativo desde un solo panel.</div>", unsafe_allow_html=True)
-
-        with st.form("login_form", clear_on_submit=False):
-            usuario = st.text_input("Usuario", placeholder="Ingresa tu usuario")
-            clave = st.text_input("Contraseña", type="password", placeholder="Ingresa tu contraseña")
-            ingresar = st.form_submit_button("Ingresar", use_container_width=True, type="primary")
-
-        if ingresar:
-            with get_conn() as conn:
-                user = conn.execute(
-                    text("""
-                        SELECT usuario, rol 
-                        FROM usuarios 
-                        WHERE usuario=:usuario AND password=:password
-                    """),
-                    {"usuario": usuario, "password": clave}
-                ).fetchone()
-            if user:
-                st.session_state.auth = True
-                st.session_state.usuario = user[0]
-                st.session_state.rol = user[1]
-                st.rerun()
-            else:
-                st.error("❌ Usuario o contraseña incorrectos")
-
-        st.markdown("<div class='login-note'>Acceso privado • Plataforma de operación interna</div>", unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
     st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown("<div class='login-blue-bar'></div>", unsafe_allow_html=True)
+    st.markdown("<div class='login-body'><div class='login-form-card'>", unsafe_allow_html=True)
+    st.markdown("<div class='login-kicker'>ACCESO SEGURO</div>", unsafe_allow_html=True)
+    st.markdown("<div class='login-title'>Bienvenido al sistema</div>", unsafe_allow_html=True)
+    st.markdown("<div class='login-sub'>Ingresa tus credenciales para administrar clientes, créditos, pagos y seguimiento operativo desde un solo panel.</div>", unsafe_allow_html=True)
+
+    with st.form("login_form", clear_on_submit=False):
+        usuario = st.text_input("Usuario", placeholder="Ingresa tu usuario")
+        clave = st.text_input("Contraseña", type="password", placeholder="Ingresa tu contraseña")
+        ingresar = st.form_submit_button("Ingresar", use_container_width=True, type="primary")
+
+    if ingresar:
+        with get_conn() as conn:
+            user = conn.execute(
+                text("""
+                    SELECT usuario, rol 
+                    FROM usuarios 
+                    WHERE usuario=:usuario AND password=:password
+                """),
+                {"usuario": usuario, "password": clave}
+            ).fetchone()
+        if user:
+            st.session_state.auth = True
+            st.session_state.usuario = user[0]
+            st.session_state.rol = user[1]
+            st.rerun()
+        else:
+            st.error("❌ Usuario o contraseña incorrectos")
+
+    st.markdown("""
+    <div class='login-help-grid'>
+        <div class='login-help-item'><strong>Clientes</strong>Control centralizado de registros y datos clave.</div>
+        <div class='login-help-item'><strong>Créditos</strong>Seguimiento claro del flujo, cuotas y estados.</div>
+        <div class='login-help-item'><strong>Operación</strong>Pagos, cartera y trazabilidad desde un solo panel.</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("<div class='login-note'>Acceso privado • Plataforma de operación interna</div>", unsafe_allow_html=True)
+    st.markdown("</div></div></div></div>", unsafe_allow_html=True)
     st.stop()
 # ==========================
 # ROLES Y PERMISOS

@@ -331,17 +331,34 @@ PUEDE_USAR_SIMULADOR = tiene_rol("ADMIN", "ASESOR", "CONSULTA")
 st.markdown("""
 <style>
 .app-header{
-    background: linear-gradient(135deg, #081a44 0%, #1d3b73 100%);
-    border-radius: 24px;
-    padding: 22px 26px;
-    margin: 0.2rem 0 0.8rem 0;
-    box-shadow: 0 18px 44px rgba(15,23,42,.14);
+    background: #ffffff;
+    border-radius: 22px;
+    padding: 12px 6px 6px 6px;
+    margin: 0.15rem 0 0.55rem 0;
+}
+.app-title-wrap{
+    text-align:center;
+    padding-top:8px;
+}
+.app-title{
+    margin:0;
+    color:#0f172a;
+    font-size:42px;
+    line-height:1.04;
+    font-weight:900;
+    letter-spacing:-.03em;
+}
+.app-subtitle{
+    color:#64748b;
+    margin-top:6px;
+    font-size:16px;
+    font-weight:500;
 }
 .app-chip{
     display:inline-block;
-    background: rgba(255,255,255,.10);
-    color:#e2e8f0;
-    border:1px solid rgba(255,255,255,.12);
+    background:#eff6ff;
+    color:#1d4ed8;
+    border:1px solid #dbeafe;
     border-radius:999px;
     padding:7px 12px;
     font-size:12px;
@@ -349,69 +366,73 @@ st.markdown("""
     margin-left:8px;
     margin-top:6px;
 }
-.app-subtitle{
-    color:#cbd5e1;
-    margin-top:6px;
-    font-size:16px;
+.app-main-line{
+    height: 4px;
+    width: 100%;
+    border-radius: 999px;
+    margin: 12px 0 8px 0;
+    background: linear-gradient(90deg, #081a44 0%, #1d4ed8 55%, #081a44 100%);
+    box-shadow: 0 8px 18px rgba(29,78,216,.14);
 }
-.premium-divider{
+.section-divider{
+    margin: 18px 0 16px 0;
+}
+.section-divider.compact{
+    margin: 10px 0 12px 0;
+}
+.section-divider-line{
     position: relative;
-    height: 16px;
-    margin: 0.55rem 0 1.05rem 0;
+    width: 100%;
+    height: 10px;
+    border-radius: 999px;
+    background: #f8fbff;
+    border: 1px solid #d8e3f2;
+    overflow: hidden;
 }
-.premium-divider::before{
-    content:"";
-    position:absolute;
-    left:0;
-    right:0;
-    top:7px;
-    height:1px;
-    background:#dbe3ef;
+.section-divider-line::before{
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 38%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #081a44 0%, #1d4ed8 100%);
 }
-.premium-divider::after{
-    content:"";
-    position:absolute;
-    left:0;
-    top:5px;
-    width:180px;
-    height:5px;
-    border-radius:999px;
-    background: linear-gradient(90deg, #081a44 0%, #173266 55%, #2563eb 100%);
-    box-shadow:0 8px 16px rgba(37,99,235,.16);
-}
-.section-card{
-    background:#ffffff;
-    border:1px solid #e6edf7;
-    border-radius:22px;
-    padding:22px 22px 18px 22px;
-    box-shadow:0 16px 36px rgba(15,23,42,.05);
-    margin: 0.15rem 0 0.35rem 0;
-}
-.section-card .stMarkdown h3,
-.section-card .stMarkdown h2,
-.section-card .stMarkdown p{
-    margin-top:0 !important;
+@media (max-width: 900px){
+    .app-title{font-size:34px;}
+    .app-subtitle{font-size:15px;}
 }
 </style>
 """, unsafe_allow_html=True)
+
+def render_section_divider(variant="default"):
+    css_class = "section-divider compact" if variant == "compact" else "section-divider"
+    st.markdown(
+        f"<div class='{css_class}'><div class='section-divider-line'></div></div>",
+        unsafe_allow_html=True
+    )
 
 usuario_hdr = st.session_state.get("usuario", "-")
 rol_hdr = st.session_state.get("rol", "-")
 
 st.markdown("<div class='app-header'>", unsafe_allow_html=True)
-col_logo, col_centro, col_derecha = st.columns([1.25, 4.7, 2.0])
+col_logo, col_centro, col_derecha = st.columns([1.0, 4.8, 2.0], gap="small")
 with col_logo:
-    st.image("logo_creddt.png", width=146)
+    st.image("logo_creddt.png", width=98)
 with col_centro:
-    st.markdown("<h1 style='margin:0;color:#ffffff;font-size:42px;line-height:1.02;'>CREDDT | CRNTECH</h1>", unsafe_allow_html=True)
-    st.markdown("<div class='app-subtitle'>Plataforma inteligente de gestión de créditos</div>", unsafe_allow_html=True)
-with col_derecha:
     st.markdown(
-        f"<div style='text-align:right;padding-top:8px;'><span class='app-chip'>Usuario: <strong>{usuario_hdr}</strong></span><br><span class='app-chip'>Rol: <strong>{rol_hdr}</strong></span></div>",
+        "<div class='app-title-wrap'><div class='app-title'>CREDDT | CRNTECH</div><div class='app-subtitle'>Plataforma inteligente de gestión de créditos</div></div>",
         unsafe_allow_html=True
     )
+with col_derecha:
+    st.markdown(
+        f"<div style='text-align:right;padding-top:10px;'><span class='app-chip'>Usuario: <strong>{usuario_hdr}</strong></span><br><span class='app-chip'>Rol: <strong>{rol_hdr}</strong></span></div>",
+        unsafe_allow_html=True
+    )
+st.markdown("<div class='app-main-line'></div>", unsafe_allow_html=True)
 st.markdown("</div>", unsafe_allow_html=True)
-st.markdown("<div class='premium-divider'></div>", unsafe_allow_html=True)
+
 if st.session_state.get("app_busy") and st.session_state.get("app_busy_label"):
     st.info(f"⏳ {st.session_state.get('app_busy_label')}")
 st.markdown("""
@@ -620,15 +641,6 @@ def start_busy(label="Procesando..."):
 def stop_busy():
     st.session_state.app_busy = False
     st.session_state.app_busy_label = None
-
-def render_section_divider():
-    st.markdown("<div class='premium-divider'></div>", unsafe_allow_html=True)
-
-def open_section_card():
-    st.markdown("<div class='section-card'>", unsafe_allow_html=True)
-
-def close_section_card():
-    st.markdown("</div>", unsafe_allow_html=True)
 # ==========================
 # UTILIDADES
 # ==========================
@@ -1715,7 +1727,7 @@ with tab_resumen:
     k2.metric("✅ Total cobrado", pesos(total_cobrado))
     k3.metric("⏳ Saldo pendiente", pesos(saldo_pendiente))
     k4.metric("📄 Créditos activos", creditos_activos)
-    render_section_divider()
+    render_section_divider("compact")
     df = estado.copy()
     for c in ["monto_original","monto_total_credito","total_pagado","saldo","valor_cuota"]:
         df[c] = df[c].apply(pesos)
@@ -1736,7 +1748,6 @@ with tab_resumen:
     })
     st.dataframe(tabla_resumen, use_container_width=True, hide_index=True)
     render_section_divider()
-    open_section_card()
     st.subheader("⚠️ Alertas de cartera")
     st.caption("Haz clic en el indicador para ver el detalle de clientes con cuotas vencidas.")
     a1, a2, a3 = st.columns(3)
@@ -1796,12 +1807,10 @@ with tab_resumen:
                 use_container_width=True,
                 hide_index=True
             )
-    close_section_card()
     # ==========================
     # 🔎 CONSULTA MENSUAL
     # ==========================
     render_section_divider()
-    open_section_card()
     st.subheader("🔎 Consulta mensual (corte 02 → 02)")
     meses_disponibles = pd.date_range("2025-12-01", "2030-12-01", freq="MS").strftime("%Y-%m").tolist()
     mes_actual = date.today().strftime("%Y-%m")
@@ -1878,7 +1887,6 @@ with tab_resumen:
                     <div style="font-size:13px;margin-top:4px;">{estado_color}</div>
                 </div>
                 """, unsafe_allow_html=True)
-    close_section_card()
 # ==========================
 # 👥 CLIENTES
 # ==========================

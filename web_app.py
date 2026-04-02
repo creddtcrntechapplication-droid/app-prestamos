@@ -111,171 +111,122 @@ if "auth" not in st.session_state:
 if not st.session_state.auth and not token_aceptar:
     st.markdown("""
     <style>
-    .stApp {
-        background: linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
+    .login-shell{
+        max-width: 980px;
+        margin: 2.2rem auto 0 auto;
+        padding: 0.5rem 0 0.5rem 0;
     }
-    .block-container {
-        padding-top: 2.2rem !important;
-        padding-bottom: 2rem !important;
-        max-width: 1180px !important;
+    .login-card{
+        background: linear-gradient(135deg, #ffffff 0%, #f8fbff 100%);
+        border: 1px solid #e6edf7;
+        border-radius: 26px;
+        box-shadow: 0 24px 60px rgba(15,23,42,.10);
+        padding: 34px 34px 26px 34px;
     }
-    div[data-testid="stHorizontalBlock"]:has(.login-shell-marker) > div[data-testid="column"]:first-child {
-        background: linear-gradient(135deg, #0b1736 0%, #19325f 100%);
-        border-radius: 28px;
-        padding: 2.4rem 2.2rem;
-        min-height: 620px;
-        box-shadow: 0 24px 60px rgba(15, 23, 42, .18);
-    }
-    div[data-testid="stHorizontalBlock"]:has(.login-shell-marker) > div[data-testid="column"]:nth-child(2) {
-        background: #ffffff;
-        border-radius: 28px;
-        padding: 2.2rem 2rem;
-        min-height: 620px;
-        box-shadow: 0 24px 60px rgba(15, 23, 42, .10);
-        border: 1px solid rgba(148, 163, 184, .18);
-    }
-    .login-brand-chip {
+    .login-kicker{
         display:inline-block;
-        padding: 6px 12px;
-        border-radius: 999px;
-        background: rgba(255,255,255,.08);
-        color: #dbeafe;
-        font-size: 12px;
-        font-weight: 700;
-        letter-spacing: .08em;
-        text-transform: uppercase;
-        margin-bottom: 24px;
+        font-size:12px;
+        font-weight:800;
+        letter-spacing:.12em;
+        color:#2563eb;
+        background:#eff6ff;
+        border-radius:999px;
+        padding:7px 12px;
+        margin-bottom:14px;
     }
-    .login-brand-title {
-        color:#ffffff;
-        font-size: 42px;
-        line-height: 1.05;
-        font-weight: 800;
-        margin: 18px 0 14px 0;
-    }
-    .login-brand-sub {
-        color:#cbd5e1;
-        font-size: 16px;
-        line-height: 1.7;
-        max-width: 520px;
-        margin-bottom: 30px;
-    }
-    .login-feature {
-        background: rgba(255,255,255,.06);
-        border: 1px solid rgba(255,255,255,.09);
-        border-radius: 18px;
-        padding: 16px 18px;
-        margin-bottom: 12px;
-    }
-    .login-feature strong {
-        display:block;
-        color:#ffffff;
-        font-size:15px;
-        margin-bottom: 4px;
-    }
-    .login-feature span {
-        color:#cbd5e1;
-        font-size: 13px;
-        line-height: 1.55;
-    }
-    .login-footer {
-        color:#93a4bf;
-        font-size: 12px;
-        margin-top: 26px;
-    }
-    .login-access-chip {
-        display:inline-block;
-        padding: 6px 11px;
-        border-radius: 999px;
-        background: #eff6ff;
-        color: #2563eb;
-        font-size: 12px;
-        font-weight: 800;
-        letter-spacing: .08em;
-        text-transform: uppercase;
-        margin-bottom: 16px;
-    }
-    .login-access-title {
+    .login-title{
+        font-size:44px;
+        line-height:1.02;
+        font-weight:800;
         color:#0f172a;
-        font-size: 40px;
-        line-height: 1.08;
-        font-weight: 800;
-        margin: 0 0 10px 0;
+        margin:0 0 10px 0;
     }
-    .login-access-sub {
+    .login-sub{
+        font-size:16px;
+        line-height:1.7;
         color:#64748b;
-        font-size: 15px;
-        line-height: 1.65;
-        margin-bottom: 24px;
+        margin:0 0 24px 0;
     }
-    div[data-testid="stForm"] {
-        border: none !important;
-        padding: 0 !important;
-        background: transparent !important;
+    .brand-box{
+        background: linear-gradient(135deg, #081a44 0%, #1d3b73 100%);
+        border-radius: 22px;
+        padding: 30px 28px;
+        min-height: 100%;
+        color: #fff;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.06);
     }
-    div[data-testid="stForm"] label p {
-        color:#0f172a !important;
-        font-weight: 600 !important;
+    .brand-eyebrow{
+        font-size:12px;
+        letter-spacing:.16em;
+        font-weight:800;
+        color:#c7d8ff;
+        margin-bottom:16px;
+        text-transform:uppercase;
     }
-    div[data-testid="stTextInputRootElement"] input {
-        border-radius: 14px !important;
-        min-height: 48px !important;
-        border: 1px solid #dbe3ee !important;
-        background: #f8fafc !important;
+    .brand-title{
+        font-size:34px;
+        line-height:1.08;
+        font-weight:800;
+        margin:0 0 16px 0;
+        color:#fff;
     }
-    div.stButton > button[kind="primary"], div.stForm button[kind="primary"] {
-        min-height: 50px !important;
-        border-radius: 14px !important;
-        font-weight: 700 !important;
+    .brand-sub{
+        font-size:16px;
+        line-height:1.7;
+        color:#d6e2ff;
+        margin:0 0 22px 0;
     }
-    .login-note {
-        color:#94a3b8;
-        font-size: 12px;
-        margin-top: 14px;
+    .brand-list{
+        margin:0;
+        padding-left:18px;
+        color:#e8efff;
+        line-height:1.9;
+        font-size:15px;
+    }
+    .login-note{
         text-align:center;
+        color:#94a3b8;
+        font-size:13px;
+        margin-top:12px;
     }
-    @media (max-width: 900px) {
-        div[data-testid="stHorizontalBlock"]:has(.login-shell-marker) > div[data-testid="column"]:first-child,
-        div[data-testid="stHorizontalBlock"]:has(.login-shell-marker) > div[data-testid="column"]:nth-child(2) {
-            min-height: auto;
-            padding: 1.6rem 1.25rem;
-        }
-        .login-brand-title, .login-access-title { font-size: 30px; }
+    @media (max-width: 900px){
+        .login-title{font-size:34px;}
+        .brand-title{font-size:28px;}
     }
     </style>
     """, unsafe_allow_html=True)
 
-    col_brand, col_access = st.columns([1.12, 0.95], gap="large")
+    st.markdown("<div class='login-shell'>", unsafe_allow_html=True)
+    st.markdown("<div class='login-card'>", unsafe_allow_html=True)
+
+    col_brand, col_form = st.columns([1.05, 0.95], gap="large")
 
     with col_brand:
-        st.markdown('<div class="login-shell-marker"></div>', unsafe_allow_html=True)
-        logo_html = """
-        <div style="width:86px;height:86px;border-radius:22px;background:rgba(255,255,255,.08);display:flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.10);overflow:hidden;">
-            <img src="data:image/png;base64," style="width:74px;height:74px;object-fit:contain;" />
-        </div>
-        """ if "" else ""
-        st.markdown(f"""
-        <div class="login-brand-chip">Plataforma financiera</div>
-        {logo_html}
-        <div class="login-brand-title">CREDDT | CRNTECH</div>
-        <div class="login-brand-sub">Gestiona clientes, créditos, pagos, contratos y cartera desde un solo lugar, con una experiencia más clara, sólida y profesional para operar.</div>
-        <div class="login-feature"><strong>Gestión de clientes</strong><span>Centraliza el registro, edición y consulta de clientes con acceso rápido a su información base.</span></div>
-        <div class="login-feature"><strong>Control de créditos y pagos</strong><span>Administra créditos normales y express, pagos de cuota, abonos a capital y trazabilidad operativa.</span></div>
-        <div class="login-feature"><strong>Seguimiento de cartera</strong><span>Visualiza vencimientos, recordatorios, saldos pendientes y alertas de mora para una gestión más ordenada.</span></div>
-        <div class="login-footer">Plataforma interna de operación financiera</div>
-        """, unsafe_allow_html=True)
-
-    with col_access:
         st.markdown("""
-        <div class="login-access-chip">Acceso seguro</div>
-        <div class="login-access-title">Bienvenido al sistema</div>
-        <div class="login-access-sub">Ingresa tus credenciales para administrar clientes, créditos, pagos y seguimiento operativo desde un solo panel.</div>
+        <div class="brand-box">
+            <div class="brand-eyebrow">Plataforma financiera</div>
+            <div class="brand-title">CREDDT | CRNTECH</div>
+            <div class="brand-sub">Gestiona clientes, créditos, pagos, contratos y cartera desde una sola operación clara, sólida y profesional.</div>
+            <ul class="brand-list">
+                <li>Gestión centralizada de clientes</li>
+                <li>Control de créditos, cuotas y pagos</li>
+                <li>Seguimiento operativo y de cartera</li>
+            </ul>
+        </div>
         """, unsafe_allow_html=True)
-        with st.form("login_form"):
+        st.image("logo_creddt.png", width=110)
+
+    with col_form:
+        st.markdown("<div class='login-kicker'>ACCESO SEGURO</div>", unsafe_allow_html=True)
+        st.markdown("<div class='login-title'>Bienvenido al sistema</div>", unsafe_allow_html=True)
+        st.markdown("<div class='login-sub'>Ingresa tus credenciales para administrar clientes, créditos, pagos y seguimiento operativo desde un solo panel.</div>", unsafe_allow_html=True)
+
+        with st.form("login_form", clear_on_submit=False):
             usuario = st.text_input("Usuario", placeholder="Ingresa tu usuario")
             clave = st.text_input("Contraseña", type="password", placeholder="Ingresa tu contraseña")
-            submit_login = st.form_submit_button("Ingresar", type="primary", use_container_width=True)
-        if submit_login:
+            ingresar = st.form_submit_button("Ingresar", use_container_width=True, type="primary")
+
+        if ingresar:
             with get_conn() as conn:
                 user = conn.execute(
                     text("""
@@ -292,7 +243,11 @@ if not st.session_state.auth and not token_aceptar:
                 st.rerun()
             else:
                 st.error("❌ Usuario o contraseña incorrectos")
-        st.markdown('<div class="login-note">Acceso privado • Plataforma de operación interna</div>', unsafe_allow_html=True)
+
+        st.markdown("<div class='login-note'>Acceso privado • Plataforma de operación interna</div>", unsafe_allow_html=True)
+
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
 # ==========================
 # ROLES Y PERMISOS
@@ -321,65 +276,49 @@ PUEDE_USAR_SIMULADOR = tiene_rol("ADMIN", "ASESOR", "CONSULTA")
 # ==========================
 st.markdown("""
 <style>
-.app-shell-header {
-    display:flex;
-    align-items:center;
-    justify-content:space-between;
-    gap:18px;
-    padding:18px 22px;
-    border-radius:24px;
-    background: linear-gradient(135deg, #0b1736 0%, #1e3763 100%);
-    box-shadow: 0 18px 42px rgba(15, 23, 42, .16);
-    margin-bottom: 14px;
+.app-header{
+    background: linear-gradient(135deg, #081a44 0%, #1d3b73 100%);
+    border-radius: 24px;
+    padding: 20px 24px;
+    margin: 0.2rem 0 1rem 0;
+    box-shadow: 0 18px 44px rgba(15,23,42,.14);
 }
-.app-shell-left {
-    display:flex;
-    align-items:center;
-    gap:16px;
-}
-.app-shell-logo {
-    width:72px;
-    height:72px;
-    border-radius:18px;
+.app-chip{
+    display:inline-block;
     background: rgba(255,255,255,.10);
-    display:flex;
-    align-items:center;
-    justify-content:center;
+    color:#e2e8f0;
     border:1px solid rgba(255,255,255,.12);
-    overflow:hidden;
-    flex-shrink:0;
-}
-.app-shell-title {
-    color:#ffffff;
-    font-size:30px;
-    font-weight:800;
-    line-height:1.05;
-    margin:0;
-}
-.app-shell-sub {
-    color:#cbd5e1;
-    font-size:14px;
-    margin-top:6px;
-}
-.app-shell-pill-wrap {
-    display:flex;
-    gap:10px;
-    flex-wrap:wrap;
-    justify-content:flex-end;
-}
-.app-shell-pill {
-    padding:9px 14px;
     border-radius:999px;
-    background: rgba(255,255,255,.10);
-    color:#ffffff;
-    font-size:13px;
-    border:1px solid rgba(255,255,255,.10);
+    padding:7px 12px;
+    font-size:12px;
+    font-weight:700;
+    margin-left:8px;
 }
-@media (max-width: 768px) {
-    .app-shell-header {flex-direction:column; align-items:flex-start;}
-    .app-shell-pill-wrap {justify-content:flex-start;}
-    .app-shell-title {font-size:24px;}
+.app-subtitle{
+    color:#cbd5e1;
+    margin-top:4px;
+    font-size:14px;
 }
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("<div class='app-header'>", unsafe_allow_html=True)
+col_logo, col_centro, col_derecha = st.columns([1.1, 4.8, 1.7])
+with col_logo:
+    st.image("logo_creddt.png", width=115)
+with col_centro:
+    st.markdown("<h1 style='margin:0;color:#ffffff;font-size:38px;line-height:1.05;'>CREDDT | CRNTECH</h1>", unsafe_allow_html=True)
+    st.markdown("<div class='app-subtitle'>Plataforma inteligente de gestión de créditos</div>", unsafe_allow_html=True)
+with col_derecha:
+    usuario_hdr = st.session_state.get("usuario", "-")
+    rol_hdr = st.session_state.get("rol", "-")
+    st.markdown(f"<div style='text-align:right;padding-top:8px;'><span class='app-chip'>Usuario: <strong>{usuario_hdr}</strong></span><span class='app-chip'>Rol: <strong>{rol_hdr}</strong></span></div>", unsafe_allow_html=True)
+st.markdown("</div>", unsafe_allow_html=True)
+st.divider()
+if st.session_state.get("app_busy") and st.session_state.get("app_busy_label"):
+    st.info(f"⏳ {st.session_state.get('app_busy_label')}")
+st.markdown("""
+<style>
 @media (max-width: 1024px) {
   div[data-testid="stHorizontalBlock"] {
     gap: .75rem !important;
@@ -405,26 +344,6 @@ st.markdown("""
 }
 </style>
 """, unsafe_allow_html=True)
-_logo_header = """
-<div class="app-shell-logo"><img src="data:image/png;base64," style="width:60px;height:60px;object-fit:contain;" /></div>
-""" if "" else ""
-st.markdown(f"""
-<div class="app-shell-header">
-    <div class="app-shell-left">
-        {_logo_header}
-        <div>
-            <div class="app-shell-title">CREDDT | CRNTECH</div>
-            <div class="app-shell-sub">Plataforma inteligente de gestión de créditos</div>
-        </div>
-    </div>
-    <div class="app-shell-pill-wrap">
-        <div class="app-shell-pill">Usuario: <strong>{st.session_state.get('usuario','-')}</strong></div>
-        <div class="app-shell-pill">Rol: <strong>{str(st.session_state.get('rol','-')).upper()}</strong></div>
-    </div>
-</div>
-""", unsafe_allow_html=True)
-if st.session_state.get("app_busy") and st.session_state.get("app_busy_label"):
-    st.info(f"⏳ {st.session_state.get('app_busy_label')}")
 # ==========================
 # VARIABLES SEGURAS
 # ==========================

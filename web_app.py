@@ -112,109 +112,100 @@ if not st.session_state.auth and not token_aceptar:
     st.markdown("""
     <style>
     .block-container{
-        padding-top: 0.35rem !important;
+        padding-top: 0.25rem !important;
         padding-bottom: 1rem !important;
         max-width: 100% !important;
     }
     .login-shell{
-        max-width: 760px;
+        max-width: 840px;
         margin: 0 auto;
-        padding: 0.2rem 0 0.8rem 0;
+        padding: 0.2rem 0 1rem 0;
     }
     .login-stage{
-        background:#ffffff;
-        border:1px solid #e5e7eb;
-        border-radius: 28px;
-        overflow:hidden;
-        box-shadow: 0 22px 54px rgba(15,23,42,.10);
+        position: relative;
+        background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
+        border: 1px solid #e2e8f0;
+        border-radius: 30px;
+        overflow: hidden;
+        box-shadow: 0 26px 70px rgba(15,23,42,.10);
+    }
+    .login-stage::before{
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(circle at top right, rgba(37,99,235,.08), transparent 30%);
+        pointer-events: none;
     }
     .login-head{
-        padding: 22px 28px 18px 28px;
+        padding: 24px 28px 18px 28px;
         background:#ffffff;
-    }
-    .login-head-inner{
-        display:flex;
-        align-items:center;
-        gap:18px;
-    }
-    .login-logo-wrap{
-        flex: 0 0 auto;
-        display:flex;
-        align-items:center;
-        justify-content:center;
+        position: relative;
+        z-index: 1;
     }
     .login-title-wrap{
-        flex:1;
         text-align:center;
-        padding-right: 76px;
+        padding-right: 70px;
     }
     .login-title-wrap h1{
         margin:0;
-        font-size:42px;
-        line-height:1.04;
-        font-weight:800;
-        letter-spacing:-.02em;
+        font-size:48px;
+        line-height:1.02;
+        font-weight:900;
+        letter-spacing:-.035em;
         color:#0f172a;
     }
     .login-title-wrap p{
         margin:10px 0 0 0;
-        font-size:18px;
-        line-height:1.6;
+        font-size:19px;
+        line-height:1.55;
         color:#64748b;
+        font-weight:500;
     }
     .login-blue-bar{
-        height: 8px;
-        background: linear-gradient(90deg, #081a44 0%, #1d3b73 55%, #2563eb 100%);
+        height: 7px;
+        background: linear-gradient(90deg, #081a44 0%, #173266 48%, #2563eb 100%);
+        position: relative;
+        z-index: 1;
     }
     .login-body{
-        padding: 28px;
-        background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%);
+        padding: 30px 30px 26px 30px;
+        position: relative;
+        z-index: 1;
     }
     .login-kicker{
         display:inline-block;
         font-size:12px;
         font-weight:800;
-        letter-spacing:.12em;
+        letter-spacing:.16em;
         color:#2563eb;
         background:#eff6ff;
+        border:1px solid #dbeafe;
         border-radius:999px;
-        padding:7px 12px;
-        margin-bottom:14px;
+        padding:8px 13px;
+        margin-bottom:16px;
+        text-transform: uppercase;
     }
     .login-title{
-        font-size:36px;
-        line-height:1.08;
-        font-weight:800;
+        font-size:42px;
+        line-height:1.04;
+        font-weight:900;
         color:#0f172a;
-        margin:0 0 10px 0;
-        letter-spacing:-.03em;
+        margin:0 0 12px 0;
+        letter-spacing:-.035em;
     }
     .login-sub{
-        font-size:15px;
-        line-height:1.7;
+        font-size:17px;
+        line-height:1.72;
         color:#64748b;
-        margin:0 0 20px 0;
+        margin:0 0 22px 0;
     }
-    .login-help-grid{
-        display:grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 10px;
-        margin: 16px 0 0 0;
-    }
-    .login-help-item{
-        background:#f8fafc;
-        border:1px solid #e5e7eb;
-        border-radius:14px;
-        padding:12px 14px;
-        font-size:13px;
-        line-height:1.45;
-        color:#334155;
-    }
-    .login-help-item strong{
-        display:block;
-        color:#0f172a;
-        margin-bottom:4px;
-        font-size:13px;
+    .login-form-card{
+        background: rgba(255,255,255,.92);
+        border:1px solid #e2e8f0;
+        border-radius:22px;
+        padding: 12px 14px 16px 14px;
+        box-shadow: 0 10px 30px rgba(15,23,42,.05);
+        backdrop-filter: blur(6px);
     }
     .login-note{
         text-align:center;
@@ -222,15 +213,50 @@ if not st.session_state.auth and not token_aceptar:
         font-size:12.5px;
         margin-top:16px;
     }
+    div[data-testid="stForm"]{
+        border: 0 !important;
+        padding: 0 !important;
+        background: transparent !important;
+        box-shadow: none !important;
+    }
+    div[data-testid="stForm"] > div{
+        border: 0 !important;
+    }
+    .stTextInput > div > div > input{
+        border-radius: 14px !important;
+        border:1px solid #dbe3ef !important;
+        background:#f8fafc !important;
+        min-height: 52px !important;
+        font-size:16px !important;
+        padding-left: 14px !important;
+    }
+    .stTextInput > label{
+        font-weight:700 !important;
+        color:#334155 !important;
+    }
+    div.stButton > button, div[data-testid="stFormSubmitButton"] > button{
+        border-radius: 14px !important;
+        min-height: 54px !important;
+        font-size: 17px !important;
+        font-weight: 800 !important;
+        border: 0 !important;
+        background: linear-gradient(135deg, #0f172a 0%, #173266 45%, #2563eb 100%) !important;
+        box-shadow: 0 14px 28px rgba(37,99,235,.24) !important;
+        transition: all .18s ease !important;
+    }
+    div.stButton > button:hover, div[data-testid="stFormSubmitButton"] > button:hover{
+        transform: translateY(-1px);
+        box-shadow: 0 18px 34px rgba(37,99,235,.30) !important;
+    }
     @media (max-width: 768px){
         .login-shell{max-width: 100%;}
         .login-head{padding:18px 18px 16px 18px;}
         .login-body{padding:18px;}
-        .login-head-inner{gap:12px;}
         .login-title-wrap{padding-right:0;text-align:left;}
-        .login-title-wrap h1{font-size:32px;}
-        .login-title{font-size:30px;}
-        .login-help-grid{grid-template-columns:1fr;}
+        .login-title-wrap h1{font-size:36px;}
+        .login-title-wrap p{font-size:16px;}
+        .login-title{font-size:32px;}
+        .login-sub{font-size:15px;}
     }
     </style>
     """, unsafe_allow_html=True)
@@ -238,9 +264,9 @@ if not st.session_state.auth and not token_aceptar:
     st.markdown("<div class='login-shell'><div class='login-stage'>", unsafe_allow_html=True)
 
     st.markdown("<div class='login-head'>", unsafe_allow_html=True)
-    logo_col, title_col = st.columns([1.05, 4.2], gap="small")
+    logo_col, title_col = st.columns([1.0, 4.5], gap="small")
     with logo_col:
-        st.image("logo_creddt.png", width=118)
+        st.image("logo_creddt.png", width=120)
     with title_col:
         st.markdown(
             "<div class='login-title-wrap'><h1>CREDDT | CRNTECH</h1><p>Plataforma inteligente de gestión de créditos</p></div>",
@@ -250,9 +276,10 @@ if not st.session_state.auth and not token_aceptar:
 
     st.markdown("<div class='login-blue-bar'></div>", unsafe_allow_html=True)
     st.markdown("<div class='login-body'>", unsafe_allow_html=True)
-    st.markdown("<div class='login-kicker'>ACCESO SEGURO</div>", unsafe_allow_html=True)
+    st.markdown("<div class='login-kicker'>Acceso seguro</div>", unsafe_allow_html=True)
     st.markdown("<div class='login-title'>Bienvenido al sistema</div>", unsafe_allow_html=True)
     st.markdown("<div class='login-sub'>Ingresa tus credenciales para administrar clientes, créditos, pagos y seguimiento operativo desde un solo panel.</div>", unsafe_allow_html=True)
+    st.markdown("<div class='login-form-card'>", unsafe_allow_html=True)
 
     with st.form("login_form", clear_on_submit=False):
         usuario = st.text_input("Usuario", placeholder="Ingresa tu usuario")
@@ -277,16 +304,9 @@ if not st.session_state.auth and not token_aceptar:
         else:
             st.error("❌ Usuario o contraseña incorrectos")
 
-    st.markdown("""
-    <div class='login-help-grid'>
-        <div class='login-help-item'><strong>Clientes</strong>Control centralizado de registros y datos clave.</div>
-        <div class='login-help-item'><strong>Créditos</strong>Seguimiento claro del flujo, cuotas y estados.</div>
-        <div class='login-help-item'><strong>Operación</strong>Pagos, cartera y trazabilidad desde un solo panel.</div>
-    </div>
-    """, unsafe_allow_html=True)
-
+    st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("<div class='login-note'>Acceso privado • Plataforma de operación interna</div>", unsafe_allow_html=True)
-    st.markdown("</div></div></div></div>", unsafe_allow_html=True)
+    st.markdown("</div></div></div>", unsafe_allow_html=True)
     st.stop()
 # ==========================
 # ROLES Y PERMISOS

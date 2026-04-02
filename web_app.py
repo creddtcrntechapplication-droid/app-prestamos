@@ -30,14 +30,6 @@ from io import BytesIO
 # CONFIGURACIÓN
 # ==========================
 st.set_page_config(page_title="CREDDT | CRNTECH", layout="wide")
-
-# Mejora visual ligera en transición login → home
-st.markdown("""
-<style>
-/* Reduce la sensación de residuo visual al rerenderizar */
-div[data-testid="stForm"]{contain: content;}
-</style>
-""", unsafe_allow_html=True)
 # ==========================
 # CONEXIÓN A SUPABASE
 # ==========================
@@ -171,7 +163,7 @@ if not st.session_state.auth and not token_aceptar:
         font-weight:500;
     }
     .login-blue-bar{
-        height: 2px;
+        height: 5px;
         background: linear-gradient(90deg, #081a44 0%, #173266 48%, #2563eb 100%);
         position: relative;
         z-index: 1;
@@ -375,7 +367,7 @@ st.markdown("""
     margin-top:6px;
 }
 .app-main-line{
-    height: 2px;
+    height: 4px;
     width: 100%;
     border-radius: 999px;
     margin: 12px 0 8px 0;

@@ -367,7 +367,7 @@ st.markdown("""
     margin-top:6px;
 }
 .app-main-line{
-    height: 4px;
+    height: 6px;
     width: 100%;
     border-radius: 999px;
     margin: 12px 0 8px 0;
@@ -375,18 +375,18 @@ st.markdown("""
     box-shadow: 0 8px 18px rgba(29,78,216,.14);
 }
 .section-divider{
-    margin: 18px 0 16px 0;
+    margin: 16px 0 14px 0;
 }
 .section-divider.compact{
-    margin: 10px 0 12px 0;
+    margin: 8px 0 10px 0;
 }
 .section-divider-line{
     position: relative;
     width: 100%;
-    height: 10px;
+    height: 2px;
     border-radius: 999px;
-    background: #f8fbff;
-    border: 1px solid #d8e3f2;
+    background: #e5edf7;
+    border: 0;
     overflow: hidden;
 }
 .section-divider-line::before{
@@ -395,7 +395,7 @@ st.markdown("""
     left: 0;
     top: 0;
     bottom: 0;
-    width: 38%;
+    width: 100%;
     border-radius: 999px;
     background: linear-gradient(90deg, #081a44 0%, #1d4ed8 100%);
 }

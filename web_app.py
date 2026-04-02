@@ -669,18 +669,10 @@ def render_section_header(icono, titulo, subtitulo=""):
     """, unsafe_allow_html=True)
 
 def render_soft_card_start():
-    st.markdown("""
-    <div style="
-        background: linear-gradient(180deg, #ffffff 0%, #fcfdff 100%);
-        border: 1px solid #e7eef8;
-        border-radius: 18px;
-        padding: 14px 16px 8px 16px;
-        box-shadow: 0 10px 24px rgba(15,23,42,.04);
-        margin: 0 0 10px 0;">
-    """, unsafe_allow_html=True)
+    return
 
 def render_soft_card_end():
-    st.markdown("</div>", unsafe_allow_html=True)
+    return
 # ==========================
 # UTILIDADES
 # ==========================
@@ -1753,7 +1745,7 @@ tab_sim = _tabs_map.get("🧮 Simulador")
 # 📊 RESUMEN
 # ==========================
 with tab_resumen:
-    st.subheader("📊 Resumen general")
+    render_section_header("📊", "Resumen general", "Vista consolidada de colocación, recaudo, saldo pendiente y créditos activos.")
     if st.session_state.get("recordatorios_auto", 0):
         enviados_auto = st.session_state.get("recordatorios_auto", 0)
         st.success(f"✅ Recordatorios automáticos enviados en esta sesión: {enviados_auto}")
@@ -1789,7 +1781,6 @@ with tab_resumen:
     st.dataframe(tabla_resumen, use_container_width=True, hide_index=True)
     render_section_divider()
     render_section_header("⚠️", "Alertas de cartera", "Visualiza rápidamente clientes con cuotas vencidas, monto en mora y nivel de exposición.")
-    render_soft_card_start()
     a1, a2, a3 = st.columns(3)
     with a1:
         if st.button("👥 Clientes en mora", key="btn_alerta_clientes_mora"):
@@ -1853,7 +1844,6 @@ with tab_resumen:
     # ==========================
     render_section_divider()
     render_section_header("🔎", "Consulta mensual", "Consulta producción y recaudo del período con corte operativo 02 → 02.")
-    render_soft_card_start()
     meses_disponibles = pd.date_range("2025-12-01", "2030-12-01", freq="MS").strftime("%Y-%m").tolist()
     mes_actual = date.today().strftime("%Y-%m")
     index_actual = meses_disponibles.index(mes_actual) if mes_actual in meses_disponibles else 0

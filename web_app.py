@@ -111,6 +111,16 @@ if "auth" not in st.session_state:
 if not st.session_state.auth and not token_aceptar:
     st.markdown("""
     <style>
+    html, body, [data-testid="stAppViewContainer"], .stApp{
+        background:#f8fafc !important;
+        color-scheme: light !important;
+    }
+    [data-testid="stHeader"]{
+        background:#f8fafc !important;
+    }
+    *{
+        -webkit-text-size-adjust:100%;
+    }
     .block-container{
         padding-top: 0.25rem !important;
         padding-bottom: 1rem !important;
@@ -123,7 +133,7 @@ if not st.session_state.auth and not token_aceptar:
     }
     .login-stage{
         position: relative;
-        background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
+        background: #ffffff !important;
         border: 1px solid #e2e8f0;
         border-radius: 30px;
         overflow: hidden;
@@ -138,7 +148,7 @@ if not st.session_state.auth and not token_aceptar:
     }
     .login-head{
         padding: 20px 28px 14px 28px;
-        background:#ffffff;
+        background:#ffffff !important;
         position: relative;
         z-index: 1;
     }
@@ -153,13 +163,15 @@ if not st.session_state.auth and not token_aceptar:
         line-height:1.02;
         font-weight:900;
         letter-spacing:-.035em;
-        color:#0f172a;
+        color:#0f172a !important;
+        -webkit-text-fill-color:#0f172a !important;
     }
     .login-title-wrap p{
         margin:10px 0 0 0;
         font-size:20px;
         line-height:1.55;
-        color:#64748b;
+        color:#64748b !important;
+        -webkit-text-fill-color:#64748b !important;
         font-weight:500;
     }
     .login-blue-bar{
@@ -190,19 +202,22 @@ if not st.session_state.auth and not token_aceptar:
         font-size:44px;
         line-height:1.04;
         font-weight:900;
-        color:#0f172a;
+        color:#0f172a !important;
+        -webkit-text-fill-color:#0f172a !important;
         margin:0 0 12px 0;
         letter-spacing:-.035em;
     }
     .login-sub{
         font-size:17px;
         line-height:1.72;
-        color:#64748b;
+        color:#64748b !important;
+        -webkit-text-fill-color:#64748b !important;
         margin:0 0 16px 0;
     }
     .login-note{
         text-align:center;
-        color:#94a3b8;
+        color:#94a3b8 !important;
+        -webkit-text-fill-color:#94a3b8 !important;
         font-size:12.5px;
         margin-top:16px;
     }
@@ -210,7 +225,7 @@ if not st.session_state.auth and not token_aceptar:
         border: 1px solid #dfe7f2 !important;
         border-radius: 22px !important;
         padding: 18px 18px 16px 18px !important;
-        background: rgba(255,255,255,.94) !important;
+        background: #ffffff !important;
         box-shadow: 0 12px 30px rgba(15,23,42,.06) !important;
         backdrop-filter: blur(6px);
         margin-top: 0 !important;
@@ -224,6 +239,7 @@ if not st.session_state.auth and not token_aceptar:
         border-radius: 14px !important;
         border:1px solid #dbe3ef !important;
         background:#f8fafc !important;
+        color:#0f172a !important;
         min-height: 52px !important;
         font-size:16px !important;
         padding-left: 14px !important;
@@ -231,6 +247,7 @@ if not st.session_state.auth and not token_aceptar:
     .stTextInput > label{
         font-weight:700 !important;
         color:#334155 !important;
+        -webkit-text-fill-color:#334155 !important;
     }
     div.stButton > button, div[data-testid="stFormSubmitButton"] > button{
         border-radius: 14px !important;
@@ -247,14 +264,31 @@ if not st.session_state.auth and not token_aceptar:
         box-shadow: 0 16px 30px rgba(37,99,235,.24) !important;
     }
     @media (max-width: 768px){
-        .login-shell{max-width: 100%;}
-        .login-head{padding:16px 18px 14px 18px;}
-        .login-body{padding:18px;}
-        .login-title-wrap{padding-right:0;padding-top:0;text-align:left;}
-        .login-title-wrap h1{font-size:36px;}
-        .login-title-wrap p{font-size:16px;}
-        .login-title{font-size:32px;}
-        .login-sub{font-size:15px;}
+        html, body, [data-testid="stAppViewContainer"], .stApp{
+            background:#f8fafc !important;
+            color-scheme: light !important;
+        }
+        .login-shell{max-width: 100% !important; padding:0.1rem 0 0.8rem 0 !important;}
+        .login-head{padding:14px 14px 12px 14px !important;}
+        .login-body{padding:16px 14px 18px 14px !important;}
+        .login-title-wrap{padding-right:0 !important;padding-top:0 !important;text-align:center !important;}
+        .login-title-wrap h1{font-size:30px !important; line-height:1.08 !important; color:#0f172a !important; -webkit-text-fill-color:#0f172a !important;}
+        .login-title-wrap p{font-size:15px !important; line-height:1.5 !important; color:#475569 !important; -webkit-text-fill-color:#475569 !important;}
+        .login-title{font-size:28px !important; line-height:1.08 !important; color:#0f172a !important; -webkit-text-fill-color:#0f172a !important;}
+        .login-sub{font-size:14px !important; line-height:1.6 !important; color:#475569 !important; -webkit-text-fill-color:#475569 !important;}
+        .login-note{font-size:12px !important; color:#64748b !important; -webkit-text-fill-color:#64748b !important;}
+        .login-kicker{font-size:11px !important;}
+        .login-blue-bar{height:4px !important;}
+        .stTextInput > div > div > input{
+            min-height:48px !important;
+            font-size:16px !important;
+            background:#ffffff !important;
+            color:#0f172a !important;
+        }
+        div[data-testid="stFormSubmitButton"] > button{
+            min-height:50px !important;
+            font-size:16px !important;
+        }
     }
     </style>
     """, unsafe_allow_html=True)
@@ -264,7 +298,7 @@ if not st.session_state.auth and not token_aceptar:
     st.markdown("<div class='login-head'>", unsafe_allow_html=True)
     logo_col, title_col = st.columns([1.0, 4.5], gap="small")
     with logo_col:
-        st.image("logo_creddt.png", width=132)
+        st.image("logo_creddt.png", width=110)
     with title_col:
         st.markdown(
             "<div class='login-title-wrap'><h1>CREDDT | CRNTECH</h1><p>Plataforma inteligente de gestión de créditos</p></div>",
@@ -403,6 +437,39 @@ st.markdown("""
     .app-title{font-size:34px;}
     .app-subtitle{font-size:15px;}
 }
+@media (max-width: 768px){
+    .app-header{
+        padding: 10px 4px 6px 4px !important;
+        margin: 0.1rem 0 0.45rem 0 !important;
+        background:#ffffff !important;
+    }
+    .app-title-wrap{
+        text-align:center !important;
+        padding-top:2px !important;
+    }
+    .app-title{
+        font-size:26px !important;
+        line-height:1.08 !important;
+        color:#0f172a !important;
+        -webkit-text-fill-color:#0f172a !important;
+    }
+    .app-subtitle{
+        font-size:13px !important;
+        line-height:1.45 !important;
+        color:#64748b !important;
+        -webkit-text-fill-color:#64748b !important;
+    }
+    .app-chip{
+        font-size:11px !important;
+        padding:6px 10px !important;
+        margin-top:6px !important;
+        margin-left:0 !important;
+    }
+    .app-main-line{
+        height:4px !important;
+        margin:10px 0 6px 0 !important;
+    }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -419,7 +486,7 @@ rol_hdr = st.session_state.get("rol", "-")
 st.markdown("<div class='app-header'>", unsafe_allow_html=True)
 col_logo, col_centro, col_derecha = st.columns([1.0, 4.8, 2.0], gap="small")
 with col_logo:
-    st.image("logo_creddt.png", width=98)
+    st.image("logo_creddt.png", width=90)
 with col_centro:
     st.markdown(
         "<div class='app-title-wrap'><div class='app-title'>CREDDT | CRNTECH</div><div class='app-subtitle'>Plataforma inteligente de gestión de créditos</div></div>",
@@ -444,6 +511,10 @@ st.markdown("""
   }
 }
 @media (max-width: 768px) {
+  html, body, [data-testid="stAppViewContainer"], .stApp{
+    background:#f8fafc !important;
+    color-scheme: light !important;
+  }
   div[data-testid="column"] {
     width: 100% !important;
     flex: 1 1 100% !important;
@@ -458,6 +529,13 @@ st.markdown("""
   div[data-testid="stTabs"] button {
     font-size: .85rem !important;
     padding: .45rem .7rem !important;
+  }
+  [data-testid="stMetricLabel"], [data-testid="stMetricValue"]{
+    color:#0f172a !important;
+    -webkit-text-fill-color:#0f172a !important;
+  }
+  .stMarkdown, .stCaption, p, label, span, div{
+    -webkit-text-fill-color: initial;
   }
 }
 </style>

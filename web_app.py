@@ -330,7 +330,6 @@ if not st.session_state.auth and not token_aceptar:
             st.session_state.auth = True
             st.session_state.usuario = user[0]
             st.session_state.rol = user[1]
-            st.session_state.force_scroll_top = True
             st.rerun()
         else:
             st.error("❌ Usuario o contraseña incorrectos")
@@ -338,18 +337,6 @@ if not st.session_state.auth and not token_aceptar:
     st.markdown("<div class='login-note'>Acceso privado • Plataforma de operación interna</div>", unsafe_allow_html=True)
     st.markdown("</div></div></div>", unsafe_allow_html=True)
     st.stop()
-if st.session_state.get("auth") and st.session_state.pop("force_scroll_top", False):
-    st.markdown(
-        """
-        <script>
-        window.parent.scrollTo(0, 0);
-        document.documentElement.scrollTop = 0;
-        document.body.scrollTop = 0;
-        </script>
-        """,
-        unsafe_allow_html=True
-    )
-
 # ==========================
 # ROLES Y PERMISOS
 # ==========================
@@ -733,123 +720,6 @@ def stop_busy():
     st.session_state.app_busy = False
     st.session_state.app_busy_label = None
 
-@st.cache_data(ttl=60, show_spinner=False)
-def cargar_estado_general():
-    with get_conn() as conn:
-        estado_df = pd.read_sql(
-            text("""
-            SELECT
-                p.id,
-                p.estado,
-                p.monto_original,
-                p.valor_cuota,
-                p.cuotas,
-                COALESCE(p.frecuencia, 'Mensual') AS frecuencia,
-                p.tipo,
-                p.cliente_cedula,
-                COALESCE(p.contrato_aceptado, 0) AS contrato_aceptado,
-                COALESCE(p.contrato_enviado, 0) AS contrato_enviado,
-                COALESCE(p.desembolso_notificado, 0) AS desembolso_notificado,
-                p.fecha_envio_contrato,
-                p.fecha_aceptacion,
-                p.fecha_desembolso,
-                COALESCE(p.saldo_capital, p.monto_original) AS saldo_capital,
-                COALESCE(p.tasa_mensual, 0) AS tasa_mensual,
-                COALESCE(SUM(pg.valor),0) AS total_pagado,
-                COALESCE((
-                    SELECT SUM(cu.valor_cuota)
-                    FROM cuotas cu
-                    WHERE cu.prestamo_id = p.id
-                      AND cu.estado <> 'Pagada'
-                ),0) AS saldo,
-                COALESCE(SUM(pg.valor),0) + COALESCE((
-                    SELECT SUM(cu.valor_cuota)
-                    FROM cuotas cu
-                    WHERE cu.prestamo_id = p.id
-                      AND cu.estado <> 'Pagada'
-                ),0) AS monto_total_credito,
-                c.nombres || ' ' || c.apellidos AS cliente,
-                c.correo
-            FROM prestamos p
-            LEFT JOIN pagos pg
-                ON pg.prestamo_id = p.id
-            LEFT JOIN clientes c
-                ON c.cedula = p.cliente_cedula
-            GROUP BY
-                p.id, p.estado, p.monto_original, p.valor_cuota, p.cuotas, p.frecuencia, p.tipo,
-                p.cliente_cedula, p.contrato_aceptado, p.contrato_enviado, p.desembolso_notificado,
-                p.fecha_envio_contrato, p.fecha_aceptacion, p.fecha_desembolso,
-                p.saldo_capital, p.tasa_mensual, c.nombres, c.apellidos, c.correo
-            ORDER BY p.id DESC
-            """),
-            conn
-        )
-    for col in [
-        'monto_original',
-        'monto_total_credito',
-        'valor_cuota',
-        'total_pagado',
-        'saldo',
-        'saldo_capital',
-        'tasa_mensual'
-    ]:
-        if col in estado_df.columns:
-            estado_df[col] = pd.to_numeric(estado_df[col], errors='coerce').fillna(0)
-    return estado_df
-
-@st.cache_data(ttl=60, show_spinner=False)
-def cargar_alertas_mora():
-    clientes_mora = 0
-    monto_mora = 0.0
-    with get_conn() as conn:
-        mora_df = pd.read_sql(
-            """
-            SELECT
-                COUNT(DISTINCT prestamo_id) as clientes_mora,
-                COALESCE(SUM(valor_cuota),0) as monto_mora
-            FROM cuotas
-            WHERE estado <> 'Pagada'
-            AND fecha_vencimiento::date < CURRENT_DATE
-            """,
-            conn
-        )
-    if not mora_df.empty:
-        clientes_mora = int(mora_df['clientes_mora'][0] or 0)
-        monto_mora = float(mora_df['monto_mora'][0] or 0)
-    return clientes_mora, monto_mora
-
-@st.cache_data(ttl=60, show_spinner=False)
-def cargar_clientes_df():
-    with get_conn() as conn:
-        return pd.read_sql(
-            text("""
-                SELECT cedula, nombres, apellidos, ciudad, telefono, correo, direccion, empresa, fecha_nacimiento, cargo
-                FROM clientes
-                ORDER BY nombres, apellidos
-            """),
-            conn
-        )
-
-@st.cache_data(ttl=60, show_spinner=False)
-def cargar_cuotas_periodo(inicio, fin):
-    with get_conn() as conn:
-        return pd.read_sql(text("""
-            SELECT cu.fecha_vencimiento, cu.valor_cuota, cu.estado, cu.nro_cuota,
-                   c.nombres || ' ' || c.apellidos AS cliente
-            FROM cuotas cu
-            JOIN prestamos p ON p.id = cu.prestamo_id
-            JOIN clientes c ON c.cedula = p.cliente_cedula
-            WHERE cu.fecha_vencimiento::date >= :inicio
-              AND cu.fecha_vencimiento::date <= :fin
-            ORDER BY cu.fecha_vencimiento
-        """), conn, params={'inicio': inicio, 'fin': fin})
-
-def limpiar_caches_datos():
-    cargar_estado_general.clear()
-    cargar_alertas_mora.clear()
-    cargar_clientes_df.clear()
-    cargar_cuotas_periodo.clear()
-
 # ==========================
 # UI HELPERS
 # ==========================
@@ -881,33 +751,6 @@ def render_soft_card_start():
 
 def render_soft_card_end():
     return
-
-st.markdown("""
-<style>
-div[data-testid="stButton"] > button[kind="secondary"].module-toggle-btn,
-button.module-toggle-btn {
-    background: #ffffff !important;
-    color: #0f172a !important;
-    border: 1px solid #dbe5f0 !important;
-    border-radius: 16px !important;
-    min-height: 56px !important;
-    text-align: left !important;
-    justify-content: space-between !important;
-    font-size: 18px !important;
-    font-weight: 800 !important;
-    box-shadow: 0 8px 18px rgba(15,23,42,.05) !important;
-}
-</style>
-""", unsafe_allow_html=True)
-
-def render_toggle_modulo(state_key, titulo):
-    abierto = st.session_state.get(state_key, False)
-    icono = "▾" if abierto else "▸"
-    if st.button(f"{titulo}   {icono}", key=f"btn_{state_key}", use_container_width=True, type="secondary"):
-        st.session_state[state_key] = not abierto
-        st.rerun()
-    return st.session_state.get(state_key, False)
-
 # ==========================
 # UTILIDADES
 # ==========================
@@ -1824,18 +1667,94 @@ if token_aceptar:
     render_aceptacion_contrato(token_aceptar)
     st.stop()
 # ==========================
-# CARGA DIFERIDA DE DATOS
+# CARGAR ESTADO GENERAL
 # ==========================
-estado = cargar_estado_general()
-
+with get_conn() as conn:
+    estado = pd.read_sql(
+        text("""
+        SELECT
+            p.id,
+            p.estado,
+            p.monto_original,
+            p.valor_cuota,
+            p.cuotas,
+            COALESCE(p.frecuencia, 'Mensual') AS frecuencia,
+            p.tipo,
+            p.cliente_cedula,
+            COALESCE(p.contrato_aceptado, 0) AS contrato_aceptado,
+            COALESCE(p.contrato_enviado, 0) AS contrato_enviado,
+            COALESCE(p.desembolso_notificado, 0) AS desembolso_notificado,
+            p.fecha_envio_contrato,
+            p.fecha_aceptacion,
+            p.fecha_desembolso,
+            COALESCE(p.saldo_capital, p.monto_original) AS saldo_capital,
+            COALESCE(p.tasa_mensual, 0) AS tasa_mensual,
+            COALESCE(SUM(pg.valor),0) AS total_pagado,
+            COALESCE((
+                SELECT SUM(cu.valor_cuota)
+                FROM cuotas cu
+                WHERE cu.prestamo_id = p.id
+                  AND cu.estado <> 'Pagada'
+            ),0) AS saldo,
+            COALESCE(SUM(pg.valor),0) + COALESCE((
+                SELECT SUM(cu.valor_cuota)
+                FROM cuotas cu
+                WHERE cu.prestamo_id = p.id
+                  AND cu.estado <> 'Pagada'
+            ),0) AS monto_total_credito,
+            c.nombres || ' ' || c.apellidos AS cliente,
+            c.correo
+        FROM prestamos p
+        LEFT JOIN pagos pg
+            ON pg.prestamo_id = p.id
+        LEFT JOIN clientes c
+            ON c.cedula = p.cliente_cedula
+        GROUP BY
+            p.id, p.estado, p.monto_original, p.valor_cuota, p.cuotas, p.frecuencia, p.tipo,
+            p.cliente_cedula, p.contrato_aceptado, p.contrato_enviado, p.desembolso_notificado,
+            p.fecha_envio_contrato, p.fecha_aceptacion, p.fecha_desembolso,
+            p.saldo_capital, p.tasa_mensual, c.nombres, c.apellidos, c.correo
+        ORDER BY p.id DESC
+        """),
+        conn
+    )
+# asegurar tipos numéricos
+for col in [
+    "monto_original",
+    "monto_total_credito",
+    "valor_cuota",
+    "total_pagado",
+    "saldo",
+    "saldo_capital",
+    "tasa_mensual"
+]:
+    if col in estado.columns:
+        estado[col] = pd.to_numeric(estado[col])
 if "recordatorios_auto" not in st.session_state:
     try:
         st.session_state.recordatorios_auto = procesar_recordatorios_automaticos()
-        limpiar_caches_datos()
-        estado = cargar_estado_general()
     except Exception:
         st.session_state.recordatorios_auto = 0
-
+# ==========================
+# CALCULAR ALERTAS
+# ==========================
+clientes_mora = 0
+monto_mora = 0
+with get_conn() as conn:
+    mora_df = pd.read_sql(
+        """
+        SELECT
+            COUNT(DISTINCT prestamo_id) as clientes_mora,
+            COALESCE(SUM(valor_cuota),0) as monto_mora
+        FROM cuotas
+        WHERE estado <> 'Pagada'
+        AND fecha_vencimiento::date < CURRENT_DATE
+        """,
+        conn
+    )
+    if not mora_df.empty:
+        clientes_mora = int(mora_df["clientes_mora"][0])
+        monto_mora = float(mora_df["monto_mora"][0])
 # ==========================
 # FUNCIONES SIMULADOR
 # ==========================
@@ -1904,178 +1823,182 @@ tab_sim = _tabs_map.get("🧮 Simulador")
 # 📊 RESUMEN
 # ==========================
 with tab_resumen:
+    render_section_header("📊", "Resumen general", "Vista consolidada de colocación, recaudo, saldo pendiente y créditos activos.")
     if st.session_state.get("recordatorios_auto", 0):
         enviados_auto = st.session_state.get("recordatorios_auto", 0)
         st.success(f"✅ Recordatorios automáticos enviados en esta sesión: {enviados_auto}")
-
-    if "resumen_panel_general" not in st.session_state:
-        st.session_state.resumen_panel_general = False
-    if "resumen_panel_alertas" not in st.session_state:
-        st.session_state.resumen_panel_alertas = False
-    if "resumen_panel_consulta" not in st.session_state:
-        st.session_state.resumen_panel_consulta = False
-
-    abierto_general = render_toggle_modulo("resumen_panel_general", "Resumen general")
-    if abierto_general:
-        render_section_header("📊", "Resumen general", "Vista consolidada de colocación, recaudo, saldo pendiente y créditos activos.")
-        total_colocado = estado["monto_original"].sum()
-        total_cobrado = estado["total_pagado"].sum()
-        saldo_pendiente = estado["saldo"].sum()
-        creditos_activos = estado[estado["estado"] != "Cancelado"].shape[0]
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric("💰 Total colocado", pesos(total_colocado))
-        k2.metric("✅ Total cobrado", pesos(total_cobrado))
-        k3.metric("⏳ Saldo pendiente", pesos(saldo_pendiente))
-        k4.metric("📄 Créditos activos", creditos_activos)
-        render_section_divider("compact")
-        df = estado.copy()
-        for c in ["monto_original","monto_total_credito","total_pagado","saldo","valor_cuota"]:
-            df[c] = df[c].apply(pesos)
-        tabla_resumen = df[[
-            "id","cliente","monto_original","monto_total_credito",
-            "total_pagado","saldo","valor_cuota","cuotas","tipo","estado"
-        ]].rename(columns={
-            "id": "Crédito",
-            "cliente": "Cliente",
-            "monto_original": "Capital",
-            "monto_total_credito": "Total del crédito",
-            "total_pagado": "Pagado",
-            "saldo": "Saldo pendiente",
-            "valor_cuota": "Cuota",
-            "cuotas": "N.° cuotas",
-            "tipo": "Tipo de crédito",
-            "estado": "Estado"
-        })
-        st.dataframe(tabla_resumen, use_container_width=True, hide_index=True)
-
-    st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
-    abierto_alertas = render_toggle_modulo("resumen_panel_alertas", "Alerta de cartera")
-    if abierto_alertas:
-        render_section_header("⚠️", "Alertas de cartera", "Visualiza rápidamente clientes con cuotas vencidas, monto en mora y nivel de exposición.")
-        clientes_mora, monto_mora = cargar_alertas_mora()
-        saldo_pendiente = estado["saldo"].sum()
-        exposicion_mora_total = 0 if saldo_pendiente <= 0 else (monto_mora / saldo_pendiente) * 100
-        a1, a2, a3 = st.columns(3)
-        with a1:
-            if st.button("👥 Clientes en mora", key="btn_alerta_clientes_mora"):
-                st.session_state.detalle_mora = "clientes"
-            st.metric("", clientes_mora)
-        with a2:
-            if st.button("💸 Monto en mora", key="btn_alerta_monto_mora"):
-                st.session_state.detalle_mora = "monto"
-            st.metric("", pesos(monto_mora))
-        with a3:
-            if st.button("📌 Exposición en mora", key="btn_alerta_exposicion_mora"):
-                st.session_state.detalle_mora = "exposicion"
-            st.metric("", f"{exposicion_mora_total:.1f}%")
-        if "detalle_mora" in st.session_state:
-            with get_conn() as conn:
-                detalle_mora_df = pd.read_sql(text("""
-                    SELECT
-                        p.id,
-                        c.nombres || ' ' || c.apellidos AS cliente,
-                        COUNT(cu.id_cuota) AS cuotas_en_mora,
-                        COALESCE(SUM(cu.valor_cuota),0) AS monto_en_mora,
-                        COALESCE(MAX(p.saldo_capital),0) AS exposicion_en_mora
-                    FROM cuotas cu
-                    JOIN prestamos p ON p.id = cu.prestamo_id
-                    JOIN clientes c ON c.cedula = p.cliente_cedula
-                    WHERE cu.estado <> 'Pagada'
-                      AND cu.fecha_vencimiento::date < CURRENT_DATE
-                    GROUP BY p.id, c.nombres, c.apellidos
-                """), conn)
-            if detalle_mora_df.empty:
-                st.info("✅ No hay clientes en mora actualmente.")
-            else:
-                if st.session_state.detalle_mora == "monto":
-                    detalle_mora_df = detalle_mora_df.sort_values(["monto_en_mora", "cuotas_en_mora"], ascending=[False, False])
-                    titulo_mora = "💸 Detalle por monto en mora"
-                elif st.session_state.detalle_mora == "exposicion":
-                    detalle_mora_df = detalle_mora_df.sort_values(["exposicion_en_mora", "monto_en_mora"], ascending=[False, False])
-                    titulo_mora = "📌 Detalle por exposición en mora"
-                else:
-                    detalle_mora_df = detalle_mora_df.sort_values(["cuotas_en_mora", "monto_en_mora"], ascending=[False, False])
-                    titulo_mora = "👥 Clientes en mora"
-                detalle_mora_show = detalle_mora_df.copy()
-                detalle_mora_show["monto_en_mora"] = detalle_mora_show["monto_en_mora"].apply(pesos)
-                detalle_mora_show["exposicion_en_mora"] = detalle_mora_show["exposicion_en_mora"].apply(pesos)
-                detalle_mora_show = detalle_mora_show[["id", "cliente", "cuotas_en_mora", "monto_en_mora", "exposicion_en_mora"]].rename(columns={
-                    "id": "Crédito",
-                    "cliente": "Cliente",
-                    "cuotas_en_mora": "Cuotas en mora",
-                    "monto_en_mora": "Monto en mora",
-                    "exposicion_en_mora": "Exposición en mora"
-                })
-                st.markdown(f"### {titulo_mora}")
-                st.dataframe(detalle_mora_show, use_container_width=True, hide_index=True)
-
-    st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
-    abierto_consulta = render_toggle_modulo("resumen_panel_consulta", "Consulta mensual")
-    if abierto_consulta:
-        render_section_header("🔎", "Consulta mensual", "Consulta producción y recaudo del período con corte operativo 02 → 02.")
-        meses_disponibles = pd.date_range("2025-12-01", "2030-12-01", freq="MS").strftime("%Y-%m").tolist()
-        mes_actual = date.today().strftime("%Y-%m")
-        index_actual = meses_disponibles.index(mes_actual) if mes_actual in meses_disponibles else 0
-        mes_consulta = st.selectbox("Selecciona el mes", meses_disponibles, index=index_actual, key="mes_consulta_resumen")
-        year, month = map(int, mes_consulta.split("-"))
-        if year == 2025 and month == 12:
-            inicio = datetime(2025, 12, 15)
-            fin = datetime(2026, 1, 1)
-        elif year == 2026 and month == 1:
-            inicio = datetime(2026, 1, 1)
-            fin = datetime(2026, 2, 2)
+    total_colocado = estado["monto_original"].sum()
+    total_cobrado = estado["total_pagado"].sum()
+    saldo_pendiente = estado["saldo"].sum()
+    creditos_activos = estado[estado["estado"] != "Cancelado"].shape[0]
+    exposicion_mora_total = 0 if saldo_pendiente <= 0 else (monto_mora / saldo_pendiente) * 100
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("💰 Total colocado", pesos(total_colocado))
+    k2.metric("✅ Total cobrado", pesos(total_cobrado))
+    k3.metric("⏳ Saldo pendiente", pesos(saldo_pendiente))
+    k4.metric("📄 Créditos activos", creditos_activos)
+    render_section_divider("compact")
+    df = estado.copy()
+    for c in ["monto_original","monto_total_credito","total_pagado","saldo","valor_cuota"]:
+        df[c] = df[c].apply(pesos)
+    tabla_resumen = df[
+        ["id","cliente","monto_original","monto_total_credito",
+         "total_pagado","saldo","valor_cuota","cuotas","tipo","estado"]
+    ].rename(columns={
+        "id": "Crédito",
+        "cliente": "Cliente",
+        "monto_original": "Capital",
+        "monto_total_credito": "Total del crédito",
+        "total_pagado": "Pagado",
+        "saldo": "Saldo pendiente",
+        "valor_cuota": "Cuota",
+        "cuotas": "N.° cuotas",
+        "tipo": "Tipo de crédito",
+        "estado": "Estado"
+    })
+    st.dataframe(tabla_resumen, use_container_width=True, hide_index=True)
+    render_section_divider()
+    render_section_header("⚠️", "Alertas de cartera", "Visualiza rápidamente clientes con cuotas vencidas, monto en mora y nivel de exposición.")
+    a1, a2, a3 = st.columns(3)
+    with a1:
+        if st.button("👥 Clientes en mora", key="btn_alerta_clientes_mora"):
+            st.session_state.detalle_mora = "clientes"
+        st.metric("", clientes_mora)
+    with a2:
+        if st.button("💸 Monto en mora", key="btn_alerta_monto_mora"):
+            st.session_state.detalle_mora = "monto"
+        st.metric("", pesos(monto_mora))
+    with a3:
+        if st.button("📌 Exposición en mora", key="btn_alerta_exposicion_mora"):
+            st.session_state.detalle_mora = "exposicion"
+        st.metric("", f"{exposicion_mora_total:.1f}%")
+    if "detalle_mora" in st.session_state:
+        with get_conn() as conn:
+            detalle_mora_df = pd.read_sql(text("""
+                SELECT
+                    p.id,
+                    c.nombres || ' ' || c.apellidos AS cliente,
+                    COUNT(cu.id_cuota) AS cuotas_en_mora,
+                    COALESCE(SUM(cu.valor_cuota),0) AS monto_en_mora,
+                    COALESCE(MAX(p.saldo_capital),0) AS exposicion_en_mora
+                FROM cuotas cu
+                JOIN prestamos p ON p.id = cu.prestamo_id
+                JOIN clientes c ON c.cedula = p.cliente_cedula
+                WHERE cu.estado <> 'Pagada'
+                  AND cu.fecha_vencimiento::date < CURRENT_DATE
+                GROUP BY p.id, c.nombres, c.apellidos
+            """), conn)
+        if detalle_mora_df.empty:
+            st.info("✅ No hay clientes en mora actualmente.")
         else:
-            inicio = datetime(year, month, 3)
-            fin = datetime(year + (month == 12), 1 if month == 12 else month + 1, 2)
-        cuotas_df = cargar_cuotas_periodo(inicio, fin)
-        total_periodo = cuotas_df["valor_cuota"].sum() if not cuotas_df.empty else 0
-        pagado_periodo = cuotas_df[cuotas_df["estado"] == "Pagada"]["valor_cuota"].sum() if not cuotas_df.empty else 0
-        pendiente_periodo = cuotas_df[cuotas_df["estado"].isin(["Pendiente", "Parcial"])]["valor_cuota"].sum() if not cuotas_df.empty else 0
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            if st.button("📥 Cuotas del período", key="btn_total_periodo"):
-                st.session_state.detalle = "total"
-            st.metric("", pesos(total_periodo))
-        with c2:
-            if st.button("✅ Pagado en el período", key="btn_pagado_periodo"):
-                st.session_state.detalle = "pagado"
-            st.metric("", pesos(pagado_periodo))
-        with c3:
-            if st.button("⏳ Pendiente del período", key="btn_pendiente_periodo"):
-                st.session_state.detalle = "pendiente"
-            st.metric("", pesos(pendiente_periodo))
-        if "detalle" in st.session_state and not cuotas_df.empty:
-            st.divider()
-            if st.session_state.detalle == "total":
-                df_detalle = cuotas_df
-                titulo = "📋 Todas las cuotas"
-            elif st.session_state.detalle == "pagado":
-                df_detalle = cuotas_df[cuotas_df["estado"] == "Pagada"]
-                titulo = "✅ Pagadas"
+            if st.session_state.detalle_mora == "monto":
+                detalle_mora_df = detalle_mora_df.sort_values(["monto_en_mora", "cuotas_en_mora"], ascending=[False, False])
+                titulo_mora = "💸 Detalle por monto en mora"
+            elif st.session_state.detalle_mora == "exposicion":
+                detalle_mora_df = detalle_mora_df.sort_values(["exposicion_en_mora", "monto_en_mora"], ascending=[False, False])
+                titulo_mora = "📌 Detalle por exposición en mora"
             else:
-                df_detalle = cuotas_df[cuotas_df["estado"].isin(["Pendiente", "Parcial"])]
-                titulo = "⏳ Pendientes"
-            st.markdown(f"### {titulo}")
-            cols = st.columns(3)
-            for i, r in enumerate(df_detalle.itertuples()):
-                with cols[i % 3]:
-                    estado_color = "🟢 Pagada" if r.estado == "Pagada" else "🟡 Parcial" if r.estado == "Parcial" else "🔴 Pendiente"
-                    st.markdown(f"""
-                    <div style="background:#ffffff;color:#111;border-radius:14px;padding:14px;
-                                box-shadow:0 2px 6px rgba(0,0,0,.08);margin-bottom:14px;">
-                        <div style="font-weight:600;font-size:15px;color:#000">{r.cliente}</div>
-                        <div style="font-size:13px;color:#555;margin-top:4px;">
-                            Cuota #{r.nro_cuota} · {r.fecha_vencimiento}
-                        </div>
-                        <div style="font-size:16px;font-weight:700;margin-top:6px;">
-                            {pesos(r.valor_cuota)}
-                        </div>
-                        <div style="font-size:13px;margin-top:4px;">{estado_color}</div>
+                detalle_mora_df = detalle_mora_df.sort_values(["cuotas_en_mora", "monto_en_mora"], ascending=[False, False])
+                titulo_mora = "👥 Clientes en mora"
+            detalle_mora_show = detalle_mora_df.copy()
+            detalle_mora_show["monto_en_mora"] = detalle_mora_show["monto_en_mora"].apply(pesos)
+            detalle_mora_show["exposicion_en_mora"] = detalle_mora_show["exposicion_en_mora"].apply(pesos)
+            detalle_mora_show = detalle_mora_show[["id", "cliente", "cuotas_en_mora", "monto_en_mora", "exposicion_en_mora"]].rename(columns={
+                "id": "Crédito",
+                "cliente": "Cliente",
+                "cuotas_en_mora": "Cuotas en mora",
+                "monto_en_mora": "Monto en mora",
+                "exposicion_en_mora": "Exposición en mora"
+            })
+            st.markdown(f"### {titulo_mora}")
+            st.dataframe(
+                detalle_mora_show,
+                use_container_width=True,
+                hide_index=True
+            )
+    render_soft_card_end()
+    # ==========================
+    # 🔎 CONSULTA MENSUAL
+    # ==========================
+    render_section_divider()
+    render_section_header("🔎", "Consulta mensual", "Consulta producción y recaudo del período con corte operativo 02 → 02.")
+    meses_disponibles = pd.date_range("2025-12-01", "2030-12-01", freq="MS").strftime("%Y-%m").tolist()
+    mes_actual = date.today().strftime("%Y-%m")
+    index_actual = meses_disponibles.index(mes_actual) if mes_actual in meses_disponibles else 0
+
+    mes_consulta = st.selectbox(
+        "Selecciona el mes",
+        meses_disponibles,
+        index=index_actual
+    )
+    year, month = map(int, mes_consulta.split("-"))
+    if year == 2025 and month == 12:
+        inicio = datetime(2025,12,15)
+        fin = datetime(2026,1,1)
+    elif year == 2026 and month == 1:
+        inicio = datetime(2026,1,1)
+        fin = datetime(2026,2,2)
+    else:
+        inicio = datetime(year, month, 3)
+        fin = datetime(year + (month==12), 1 if month==12 else month+1, 2)
+    with get_conn() as conn:
+        cuotas_df = pd.read_sql(text("""
+            SELECT cu.fecha_vencimiento, cu.valor_cuota, cu.estado, cu.nro_cuota,
+                   c.nombres || ' ' || c.apellidos AS cliente
+            FROM cuotas cu
+            JOIN prestamos p ON p.id = cu.prestamo_id
+            JOIN clientes c ON c.cedula = p.cliente_cedula
+            WHERE cu.fecha_vencimiento::date >= :inicio
+            AND cu.fecha_vencimiento::date <= :fin
+            ORDER BY cu.fecha_vencimiento
+        """), conn, params={"inicio": inicio, "fin": fin})
+    total_periodo = cuotas_df["valor_cuota"].sum() if not cuotas_df.empty else 0
+    pagado_periodo = cuotas_df[cuotas_df["estado"]=="Pagada"]["valor_cuota"].sum() if not cuotas_df.empty else 0
+    pendiente_periodo = cuotas_df[cuotas_df["estado"].isin(["Pendiente","Parcial"])]["valor_cuota"].sum() if not cuotas_df.empty else 0
+    c1,c2,c3 = st.columns(3)
+    with c1:
+        if st.button("📥 Cuotas del período", key="btn_total_periodo"):
+            st.session_state.detalle = "total"
+        st.metric("", pesos(total_periodo))
+    with c2:
+        if st.button("✅ Pagado en el período", key="btn_pagado_periodo"):
+            st.session_state.detalle = "pagado"
+        st.metric("", pesos(pagado_periodo))
+    with c3:
+        if st.button("⏳ Pendiente del período", key="btn_pendiente_periodo"):
+            st.session_state.detalle = "pendiente"
+        st.metric("", pesos(pendiente_periodo))
+    if "detalle" in st.session_state and not cuotas_df.empty:
+        st.divider()
+        if st.session_state.detalle=="total":
+            df_detalle=cuotas_df
+            titulo="📋 Todas las cuotas"
+        elif st.session_state.detalle=="pagado":
+            df_detalle=cuotas_df[cuotas_df["estado"]=="Pagada"]
+            titulo="✅ Pagadas"
+        else:
+            df_detalle=cuotas_df[cuotas_df["estado"].isin(["Pendiente","Parcial"])]
+            titulo="⏳ Pendientes"
+        st.markdown(f"### {titulo}")
+        cols = st.columns(3)
+        for i,r in enumerate(df_detalle.itertuples()):
+            with cols[i%3]:
+                estado_color = "🟢 Pagada" if r.estado=="Pagada" else "🟡 Parcial" if r.estado=="Parcial" else "🔴 Pendiente"
+                st.markdown(f"""
+                <div style="background:#ffffff;color:#111;border-radius:14px;padding:14px;
+                            box-shadow:0 2px 6px rgba(0,0,0,.08);margin-bottom:14px;">
+                    <div style="font-weight:600;font-size:15px;color:#000">{r.cliente}</div>
+                    <div style="font-size:13px;color:#555;margin-top:4px;">
+                        Cuota #{r.nro_cuota} · {r.fecha_vencimiento}
                     </div>
-                    """, unsafe_allow_html=True)
+                    <div style="font-size:16px;font-weight:700;margin-top:6px;">
+                        {pesos(r.valor_cuota)}
+                    </div>
+                    <div style="font-size:13px;margin-top:4px;">{estado_color}</div>
+                </div>
+                """, unsafe_allow_html=True)
+    render_soft_card_end()
 # ==========================
-# 👥 CLIENTES
-# ==========================# ==========================
 # 👥 CLIENTES
 # ==========================
 if tab_clientes is not None:
@@ -2083,7 +2006,15 @@ if tab_clientes is not None:
         st.subheader("👥 Gestión de clientes")
         show_flash("clientes_msg")
 
-        clientes_df = cargar_clientes_df()
+        with get_conn() as conn:
+            clientes_df = pd.read_sql(
+                text("""
+                    SELECT cedula, nombres, apellidos, ciudad, telefono, correo, direccion, empresa, fecha_nacimiento, cargo
+                    FROM clientes
+                    ORDER BY nombres, apellidos
+                """),
+                conn
+            )
 
         _cli_labels = []
         if PUEDE_REGISTRAR_CLIENTES:
@@ -2135,7 +2066,6 @@ if tab_clientes is not None:
                                     "fecha_nacimiento": _fecha_cliente_db(fecha_nacimiento_new),
                                     "cargo": cargo_new.strip()
                                 })
-                                limpiar_caches_datos()
                                 set_flash("clientes_msg", "success", "✅ Cliente registrado correctamente")
                                 st.rerun()
                             except Exception as e:
@@ -2201,7 +2131,6 @@ if tab_clientes is not None:
                                                     "fecha_nacimiento": _fecha_cliente_db(fecha_nacimiento_edit),
                                                     "cargo": cargo_edit.strip()
                                                 })
-                                                limpiar_caches_datos()
                                                 set_flash("clientes_msg", "success", "✅ Cliente actualizado correctamente")
                                                 st.session_state["sel_cliente_gestion"] = None
                                                 st.rerun()
@@ -2220,7 +2149,6 @@ if tab_clientes is not None:
                                             ok_del, err_del = eliminar_cliente_db(cliente_sel)
                                             if ok_del:
                                                 st.session_state["sel_cliente_gestion"] = None
-                                                limpiar_caches_datos()
                                                 set_flash("clientes_msg", "success", "✅ Cliente eliminado correctamente")
                                                 st.rerun()
                                             else:
@@ -2295,7 +2223,6 @@ if tab_creditos is not None:
                             try:
                                 ok_c, err_c, prestamo_creado = crear_credito_db(cliente_normal, monto_normal_new, cuotas_normal_new, frecuencia_normal_new, "Normal", fecha_inicio_normal)
                                 if ok_c:
-                                    limpiar_caches_datos()
                                     st.session_state["cliente_normal_credito"] = None
                                     if not err_c:
                                         set_flash("credito_msg", "success", f"✅ Crédito {prestamo_creado['id']} creado y contrato enviado correctamente")
@@ -2330,7 +2257,6 @@ if tab_creditos is not None:
                             try:
                                 ok_c, err_c, prestamo_creado = crear_credito_db(cliente_express, monto_express_new, cuotas_express_new, frecuencia_express_new, "Express", fecha_inicio_express)
                                 if ok_c:
-                                    limpiar_caches_datos()
                                     st.session_state["cliente_express_credito"] = None
                                     if not err_c:
                                         set_flash("credito_msg", "success", f"✅ Crédito {prestamo_creado['id']} creado y contrato enviado correctamente")
@@ -2579,7 +2505,6 @@ if tab_pagos is not None:
                                     with st.spinner("⏳ Aplicando pago, por favor espera..."):
                                         resultado = registrar_pago_cuota(prestamo.id, fecha_pago)
                                         if resultado.get("ok"):
-                                            limpiar_caches_datos()
                                             st.session_state.pago_msg = {"tipo": "CUOTA", **resultado}
                                             st.session_state.reset_select_prestamo_pago = True
                                             time.sleep(0.2)

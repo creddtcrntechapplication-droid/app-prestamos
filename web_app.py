@@ -59,6 +59,130 @@ except Exception as e:
 def get_conn():
     """Devuelve una conexión activa a la base de datos"""
     return engine.connect()
+
+def clear_app_caches():
+    try:
+        load_estado.cache_clear()
+        load_mora.cache_clear()
+        load_cuotas_periodo.cache_clear()
+        load_detalle_mora.cache_clear()
+    except Exception:
+        pass
+
+@st.cache_data(ttl=45, show_spinner=False)
+def load_estado():
+    with get_conn() as conn:
+        df = pd.read_sql(
+            text("""
+            SELECT
+                p.id,
+                p.estado,
+                p.monto_original,
+                p.valor_cuota,
+                p.cuotas,
+                COALESCE(p.frecuencia, 'Mensual') AS frecuencia,
+                p.tipo,
+                p.cliente_cedula,
+                COALESCE(p.contrato_aceptado, 0) AS contrato_aceptado,
+                COALESCE(p.contrato_enviado, 0) AS contrato_enviado,
+                COALESCE(p.desembolso_notificado, 0) AS desembolso_notificado,
+                p.fecha_envio_contrato,
+                p.fecha_aceptacion,
+                p.fecha_desembolso,
+                COALESCE(p.saldo_capital, p.monto_original) AS saldo_capital,
+                COALESCE(p.tasa_mensual, 0) AS tasa_mensual,
+                COALESCE(SUM(pg.valor),0) AS total_pagado,
+                COALESCE((
+                    SELECT SUM(cu.valor_cuota)
+                    FROM cuotas cu
+                    WHERE cu.prestamo_id = p.id
+                      AND cu.estado <> 'Pagada'
+                ),0) AS saldo,
+                COALESCE(SUM(pg.valor),0) + COALESCE((
+                    SELECT SUM(cu.valor_cuota)
+                    FROM cuotas cu
+                    WHERE cu.prestamo_id = p.id
+                      AND cu.estado <> 'Pagada'
+                ),0) AS monto_total_credito,
+                c.nombres || ' ' || c.apellidos AS cliente,
+                c.correo
+            FROM prestamos p
+            LEFT JOIN pagos pg
+                ON pg.prestamo_id = p.id
+            LEFT JOIN clientes c
+                ON c.cedula = p.cliente_cedula
+            GROUP BY
+                p.id, p.estado, p.monto_original, p.valor_cuota, p.cuotas, p.frecuencia, p.tipo,
+                p.cliente_cedula, p.contrato_aceptado, p.contrato_enviado, p.desembolso_notificado,
+                p.fecha_envio_contrato, p.fecha_aceptacion, p.fecha_desembolso,
+                p.saldo_capital, p.tasa_mensual, c.nombres, c.apellidos, c.correo
+            ORDER BY p.id DESC
+            """),
+            conn
+        )
+    for col in [
+        "monto_original",
+        "monto_total_credito",
+        "valor_cuota",
+        "total_pagado",
+        "saldo",
+        "saldo_capital",
+        "tasa_mensual"
+    ]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+    return df
+
+@st.cache_data(ttl=45, show_spinner=False)
+def load_mora():
+    with get_conn() as conn:
+        mora_df = pd.read_sql(
+            """
+            SELECT
+                COUNT(DISTINCT prestamo_id) as clientes_mora,
+                COALESCE(SUM(valor_cuota),0) as monto_mora
+            FROM cuotas
+            WHERE estado <> 'Pagada'
+            AND fecha_vencimiento::date < CURRENT_DATE
+            """,
+            conn
+        )
+    if mora_df.empty:
+        return 0, 0.0
+    return int(mora_df["clientes_mora"][0] or 0), float(mora_df["monto_mora"][0] or 0)
+
+@st.cache_data(ttl=45, show_spinner=False)
+def load_detalle_mora():
+    with get_conn() as conn:
+        return pd.read_sql(text("""
+            SELECT
+                p.id,
+                c.nombres || ' ' || c.apellidos AS cliente,
+                COUNT(cu.id_cuota) AS cuotas_en_mora,
+                COALESCE(SUM(cu.valor_cuota),0) AS monto_en_mora,
+                COALESCE(MAX(p.saldo_capital),0) AS exposicion_en_mora
+            FROM cuotas cu
+            JOIN prestamos p ON p.id = cu.prestamo_id
+            JOIN clientes c ON c.cedula = p.cliente_cedula
+            WHERE cu.estado <> 'Pagada'
+              AND cu.fecha_vencimiento::date < CURRENT_DATE
+            GROUP BY p.id, c.nombres, c.apellidos
+        """), conn)
+
+@st.cache_data(ttl=45, show_spinner=False)
+def load_cuotas_periodo(inicio_iso, fin_iso):
+    with get_conn() as conn:
+        return pd.read_sql(text("""
+            SELECT cu.fecha_vencimiento, cu.valor_cuota, cu.estado, cu.nro_cuota,
+                   c.nombres || ' ' || c.apellidos AS cliente
+            FROM cuotas cu
+            JOIN prestamos p ON p.id = cu.prestamo_id
+            JOIN clientes c ON c.cedula = p.cliente_cedula
+            WHERE cu.fecha_vencimiento::date >= :inicio
+            AND cu.fecha_vencimiento::date <= :fin
+            ORDER BY cu.fecha_vencimiento
+        """), conn, params={"inicio": inicio_iso, "fin": fin_iso})
+
 def ejecutar_sql(query, params=None, fetch=False):
     """
     Ejecuta una consulta SQL.
@@ -94,6 +218,7 @@ def init_usuario_admin():
         """))
  
         conn.commit()
+    clear_app_caches()
   
 init_usuario_admin()
 # ==========================
@@ -111,16 +236,6 @@ if "auth" not in st.session_state:
 if not st.session_state.auth and not token_aceptar:
     st.markdown("""
     <style>
-    html, body, [data-testid="stAppViewContainer"], .stApp{
-        background:#f8fafc !important;
-        color-scheme: light !important;
-    }
-    [data-testid="stHeader"]{
-        background:#f8fafc !important;
-    }
-    *{
-        -webkit-text-size-adjust:100%;
-    }
     .block-container{
         padding-top: 0.25rem !important;
         padding-bottom: 1rem !important;
@@ -133,7 +248,7 @@ if not st.session_state.auth and not token_aceptar:
     }
     .login-stage{
         position: relative;
-        background: #ffffff !important;
+        background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
         border: 1px solid #e2e8f0;
         border-radius: 30px;
         overflow: hidden;
@@ -148,7 +263,7 @@ if not st.session_state.auth and not token_aceptar:
     }
     .login-head{
         padding: 20px 28px 14px 28px;
-        background:#ffffff !important;
+        background:#ffffff;
         position: relative;
         z-index: 1;
     }
@@ -163,15 +278,13 @@ if not st.session_state.auth and not token_aceptar:
         line-height:1.02;
         font-weight:900;
         letter-spacing:-.035em;
-        color:#0f172a !important;
-        -webkit-text-fill-color:#0f172a !important;
+        color:#0f172a;
     }
     .login-title-wrap p{
         margin:10px 0 0 0;
         font-size:20px;
         line-height:1.55;
-        color:#64748b !important;
-        -webkit-text-fill-color:#64748b !important;
+        color:#64748b;
         font-weight:500;
     }
     .login-blue-bar{
@@ -202,22 +315,19 @@ if not st.session_state.auth and not token_aceptar:
         font-size:44px;
         line-height:1.04;
         font-weight:900;
-        color:#0f172a !important;
-        -webkit-text-fill-color:#0f172a !important;
+        color:#0f172a;
         margin:0 0 12px 0;
         letter-spacing:-.035em;
     }
     .login-sub{
         font-size:17px;
         line-height:1.72;
-        color:#64748b !important;
-        -webkit-text-fill-color:#64748b !important;
+        color:#64748b;
         margin:0 0 16px 0;
     }
     .login-note{
         text-align:center;
-        color:#94a3b8 !important;
-        -webkit-text-fill-color:#94a3b8 !important;
+        color:#94a3b8;
         font-size:12.5px;
         margin-top:16px;
     }
@@ -225,7 +335,7 @@ if not st.session_state.auth and not token_aceptar:
         border: 1px solid #dfe7f2 !important;
         border-radius: 22px !important;
         padding: 18px 18px 16px 18px !important;
-        background: #ffffff !important;
+        background: rgba(255,255,255,.94) !important;
         box-shadow: 0 12px 30px rgba(15,23,42,.06) !important;
         backdrop-filter: blur(6px);
         margin-top: 0 !important;
@@ -239,7 +349,6 @@ if not st.session_state.auth and not token_aceptar:
         border-radius: 14px !important;
         border:1px solid #dbe3ef !important;
         background:#f8fafc !important;
-        color:#0f172a !important;
         min-height: 52px !important;
         font-size:16px !important;
         padding-left: 14px !important;
@@ -247,7 +356,6 @@ if not st.session_state.auth and not token_aceptar:
     .stTextInput > label{
         font-weight:700 !important;
         color:#334155 !important;
-        -webkit-text-fill-color:#334155 !important;
     }
     div.stButton > button, div[data-testid="stFormSubmitButton"] > button{
         border-radius: 14px !important;
@@ -264,31 +372,14 @@ if not st.session_state.auth and not token_aceptar:
         box-shadow: 0 16px 30px rgba(37,99,235,.24) !important;
     }
     @media (max-width: 768px){
-        html, body, [data-testid="stAppViewContainer"], .stApp{
-            background:#f8fafc !important;
-            color-scheme: light !important;
-        }
-        .login-shell{max-width: 100% !important; padding:0.1rem 0 0.8rem 0 !important;}
-        .login-head{padding:14px 14px 12px 14px !important;}
-        .login-body{padding:16px 14px 18px 14px !important;}
-        .login-title-wrap{padding-right:0 !important;padding-top:0 !important;text-align:center !important;}
-        .login-title-wrap h1{font-size:30px !important; line-height:1.08 !important; color:#0f172a !important; -webkit-text-fill-color:#0f172a !important;}
-        .login-title-wrap p{font-size:15px !important; line-height:1.5 !important; color:#475569 !important; -webkit-text-fill-color:#475569 !important;}
-        .login-title{font-size:28px !important; line-height:1.08 !important; color:#0f172a !important; -webkit-text-fill-color:#0f172a !important;}
-        .login-sub{font-size:14px !important; line-height:1.6 !important; color:#475569 !important; -webkit-text-fill-color:#475569 !important;}
-        .login-note{font-size:12px !important; color:#64748b !important; -webkit-text-fill-color:#64748b !important;}
-        .login-kicker{font-size:11px !important;}
-        .login-blue-bar{height:4px !important;}
-        .stTextInput > div > div > input{
-            min-height:48px !important;
-            font-size:16px !important;
-            background:#ffffff !important;
-            color:#0f172a !important;
-        }
-        div[data-testid="stFormSubmitButton"] > button{
-            min-height:50px !important;
-            font-size:16px !important;
-        }
+        .login-shell{max-width: 100%;}
+        .login-head{padding:16px 18px 14px 18px;}
+        .login-body{padding:18px;}
+        .login-title-wrap{padding-right:0;padding-top:0;text-align:left;}
+        .login-title-wrap h1{font-size:36px;}
+        .login-title-wrap p{font-size:16px;}
+        .login-title{font-size:32px;}
+        .login-sub{font-size:15px;}
     }
     </style>
     """, unsafe_allow_html=True)
@@ -298,7 +389,7 @@ if not st.session_state.auth and not token_aceptar:
     st.markdown("<div class='login-head'>", unsafe_allow_html=True)
     logo_col, title_col = st.columns([1.0, 4.5], gap="small")
     with logo_col:
-        st.image("logo_creddt.png", width=110)
+        st.image("logo_creddt.png", width=132)
     with title_col:
         st.markdown(
             "<div class='login-title-wrap'><h1>CREDDT | CRNTECH</h1><p>Plataforma inteligente de gestión de créditos</p></div>",
@@ -330,7 +421,6 @@ if not st.session_state.auth and not token_aceptar:
             st.session_state.auth = True
             st.session_state.usuario = user[0]
             st.session_state.rol = user[1]
-            st.session_state.just_logged_in = True
             st.rerun()
         else:
             st.error("❌ Usuario o contraseña incorrectos")
@@ -338,14 +428,6 @@ if not st.session_state.auth and not token_aceptar:
     st.markdown("<div class='login-note'>Acceso privado • Plataforma de operación interna</div>", unsafe_allow_html=True)
     st.markdown("</div></div></div>", unsafe_allow_html=True)
     st.stop()
-if st.session_state.get("just_logged_in"):
-    st.markdown("""
-    <script>
-    window.scrollTo({top: 0, behavior: 'instant'});
-    </script>
-    """, unsafe_allow_html=True)
-    st.session_state.just_logged_in = False
-
 # ==========================
 # ROLES Y PERMISOS
 # ==========================
@@ -373,171 +455,93 @@ PUEDE_USAR_SIMULADOR = tiene_rol("ADMIN", "ASESOR", "CONSULTA")
 # ==========================
 st.markdown("""
 <style>
-.app-header{
-    background: #ffffff;
-    border-radius: 22px;
-    padding: 12px 6px 6px 6px;
-    margin: 0.15rem 0 0.55rem 0;
+:root{
+    --app-bg: #f8fafc;
+    --surface: #ffffff;
+    --surface-soft: #f8fafc;
+    --surface-accent: #eff6ff;
+    --border-color: #e2e8f0;
+    --text-primary: #0f172a;
+    --text-secondary: #64748b;
+    --text-tertiary: #475569;
+    --chip-text: #1d4ed8;
 }
-.app-title-wrap{
-    text-align:center;
-    padding-top:8px;
+@media (prefers-color-scheme: dark){
+    :root{
+        --app-bg: #0b1220;
+        --surface: #111827;
+        --surface-soft: #0f172a;
+        --surface-accent: #172554;
+        --border-color: #334155;
+        --text-primary: #f8fafc;
+        --text-secondary: #cbd5e1;
+        --text-tertiary: #e2e8f0;
+        --chip-text: #bfdbfe;
+    }
 }
-.app-title{
-    margin:0;
-    color:#0f172a;
+html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"]{
+    background: var(--app-bg) !important;
+}
+.home-hero-wrap{
+    padding-top: .15rem;
+    padding-bottom: .2rem;
+}
+.home-title{
+    margin: 0 !important;
+    color: var(--text-primary);
     font-size:42px;
     line-height:1.04;
     font-weight:900;
     letter-spacing:-.03em;
+    text-align:center;
 }
-.app-subtitle{
-    color:#64748b;
-    margin-top:6px;
+.home-subtitle{
+    margin-top:8px;
+    color: var(--text-secondary);
     font-size:16px;
+    line-height:1.55;
+    text-align:center;
     font-weight:500;
 }
-.app-chip{
+.home-chip{
     display:inline-block;
-    background:#eff6ff;
-    color:#1d4ed8;
-    border:1px solid #dbeafe;
+    background: var(--surface-accent);
+    color: var(--chip-text);
+    border:1px solid var(--border-color);
     border-radius:999px;
-    padding:7px 12px;
+    padding:8px 12px;
     font-size:12px;
-    font-weight:700;
+    font-weight:800;
     margin-left:8px;
     margin-top:6px;
+    white-space:nowrap;
 }
-.app-main-line{
-    height: 6px;
+.home-blue-line{
+    height: 10px;
     width: 100%;
     border-radius: 999px;
-    margin: 12px 0 8px 0;
-    background: linear-gradient(90deg, #081a44 0%, #1d4ed8 55%, #081a44 100%);
-    box-shadow: 0 8px 18px rgba(29,78,216,.14);
+    background: linear-gradient(90deg, #081a44 0%, #173266 48%, #2563eb 100%);
+    box-shadow: 0 10px 22px rgba(15,23,42,.12);
+    margin: 14px 0 10px 0;
 }
-.section-divider{
-    margin: 16px 0 14px 0;
+.creddt-card{
+    background: var(--surface);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 16px;
 }
-.section-divider.compact{
-    margin: 8px 0 10px 0;
+.creddt-soft-card{
+    background: var(--surface-soft);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 16px;
 }
-.section-divider-line{
-    position: relative;
-    width: 100%;
-    height: 2px;
-    border-radius: 999px;
-    background: #e5edf7;
-    border: 0;
-    overflow: hidden;
+.creddt-muted{
+    color: var(--text-secondary);
 }
-.section-divider-line::before{
-    content: "";
-    position: absolute;
-    left: 0;
-    top: 0;
-    bottom: 0;
-    width: 100%;
-    border-radius: 999px;
-    background: linear-gradient(90deg, #081a44 0%, #1d4ed8 100%);
+.creddt-strong{
+    color: var(--text-primary);
 }
-@media (max-width: 900px){
-    .app-title{font-size:34px;}
-    .app-subtitle{font-size:15px;}
-}
-@media (max-width: 768px){
-    .app-header{
-        padding: 10px 4px 6px 4px !important;
-        margin: 0.1rem 0 0.45rem 0 !important;
-        background:#ffffff !important;
-    }
-    .app-title-wrap{
-        text-align:center !important;
-        padding-top:2px !important;
-    }
-    .app-title{
-        font-size:26px !important;
-        line-height:1.08 !important;
-        color:#0f172a !important;
-        -webkit-text-fill-color:#0f172a !important;
-    }
-    .app-subtitle{
-        font-size:13px !important;
-        line-height:1.45 !important;
-        color:#64748b !important;
-        -webkit-text-fill-color:#64748b !important;
-    }
-    .app-chip{
-        font-size:11px !important;
-        padding:6px 10px !important;
-        margin-top:6px !important;
-        margin-left:0 !important;
-    }
-    .app-main-line{
-        height:4px !important;
-        margin:10px 0 6px 0 !important;
-    }
-}
-</style>
-""", unsafe_allow_html=True)
-
-def render_section_divider(variant="default"):
-    css_class = "section-divider compact" if variant == "compact" else "section-divider"
-    st.markdown(
-        f"<div class='{css_class}'><div class='section-divider-line'></div></div>",
-        unsafe_allow_html=True
-    )
-
-
-st.markdown("""
-<style>
-.section-click-wrap{position:relative;margin:4px 0 12px 0;}
-.section-click-wrap .stButton{position:relative;z-index:5;margin-top:-92px;height:92px;}
-.section-click-wrap .stButton > button{width:100% !important;height:92px !important;opacity:0 !important;background:transparent !important;border:0 !important;box-shadow:none !important;padding:0 !important;margin:0 !important;cursor:pointer !important;}
-.section-click-wrap .stButton > button:focus{outline:none !important;box-shadow:none !important;}
-@media (max-width: 768px){
-  .section-click-wrap .stButton{margin-top:-88px;height:88px;}
-  .section-click-wrap .stButton > button{height:88px !important;}
-}
-</style>
-""", unsafe_allow_html=True)
-
-def render_toggle_section_header(icono, titulo, subtitulo, state_key, button_key):
-    if state_key not in st.session_state:
-        st.session_state[state_key] = False
-    st.markdown("<div class='section-click-wrap'>", unsafe_allow_html=True)
-    render_section_header(icono, titulo, subtitulo)
-    if st.button(" ", key=button_key, help=("Ocultar" if st.session_state[state_key] else "Mostrar") + f" {titulo}"):
-        st.session_state[state_key] = not st.session_state[state_key]
-        st.rerun()
-    st.markdown("</div>", unsafe_allow_html=True)
-    return st.session_state[state_key]
-
-usuario_hdr = st.session_state.get("usuario", "-")
-rol_hdr = st.session_state.get("rol", "-")
-
-st.markdown("<div class='app-header'>", unsafe_allow_html=True)
-col_logo, col_centro, col_derecha = st.columns([1.0, 4.8, 2.0], gap="small")
-with col_logo:
-    st.image("logo_creddt.png", width=90)
-with col_centro:
-    st.markdown(
-        "<div class='app-title-wrap'><div class='app-title'>CREDDT | CRNTECH</div><div class='app-subtitle'>Plataforma inteligente de gestión de créditos</div></div>",
-        unsafe_allow_html=True
-    )
-with col_derecha:
-    st.markdown(
-        f"<div style='text-align:right;padding-top:10px;'><span class='app-chip'>Usuario: <strong>{usuario_hdr}</strong></span><br><span class='app-chip'>Rol: <strong>{rol_hdr}</strong></span></div>",
-        unsafe_allow_html=True
-    )
-st.markdown("<div class='app-main-line'></div>", unsafe_allow_html=True)
-st.markdown("</div>", unsafe_allow_html=True)
-
-if st.session_state.get("app_busy") and st.session_state.get("app_busy_label"):
-    st.info(f"⏳ {st.session_state.get('app_busy_label')}")
-st.markdown("""
-<style>
 @media (max-width: 1024px) {
   div[data-testid="stHorizontalBlock"] {
     gap: .75rem !important;
@@ -545,9 +549,17 @@ st.markdown("""
   }
 }
 @media (max-width: 768px) {
-  html, body, [data-testid="stAppViewContainer"], .stApp{
-    background:#f8fafc !important;
-    color-scheme: light !important;
+  .home-title{
+    font-size:30px !important;
+    text-align:left !important;
+  }
+  .home-subtitle{
+    font-size:14px !important;
+    text-align:left !important;
+  }
+  .home-chip{
+    margin-left:0 !important;
+    margin-right:8px !important;
   }
   div[data-testid="column"] {
     width: 100% !important;
@@ -564,16 +576,34 @@ st.markdown("""
     font-size: .85rem !important;
     padding: .45rem .7rem !important;
   }
-  [data-testid="stMetricLabel"], [data-testid="stMetricValue"]{
-    color:#0f172a !important;
-    -webkit-text-fill-color:#0f172a !important;
-  }
-  .stMarkdown, .stCaption, p, label, span, div{
-    -webkit-text-fill-color: initial;
-  }
 }
 </style>
 """, unsafe_allow_html=True)
+
+usuario_hdr = st.session_state.get("usuario", "-")
+rol_hdr = st.session_state.get("rol", "-")
+
+with st.container():
+    st.markdown("<div class='home-hero-wrap'></div>", unsafe_allow_html=True)
+    col_logo, col_centro, col_derecha = st.columns([1.15, 4.4, 2.2], gap="small")
+    with col_logo:
+        st.image("logo_creddt.png", width=138)
+    with col_centro:
+        st.markdown("<div class='home-title'>CREDDT | CRNTECH</div>", unsafe_allow_html=True)
+        st.markdown("<div class='home-subtitle'>Plataforma inteligente de gestión de créditos</div>", unsafe_allow_html=True)
+    with col_derecha:
+        st.markdown(
+            f"<div style='text-align:right; padding-top:12px;'>"
+            f"<span class='home-chip'>Usuario: <strong>{usuario_hdr}</strong></span>"
+            f"<span class='home-chip'>Rol: <strong>{rol_hdr}</strong></span>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+
+st.markdown("<div class='home-blue-line'></div>", unsafe_allow_html=True)
+
+if st.session_state.get("app_busy") and st.session_state.get("app_busy_label"):
+    st.info(f"⏳ {st.session_state.get('app_busy_label')}")
 # ==========================
 # VARIABLES SEGURAS
 # ==========================
@@ -694,6 +724,7 @@ def asegurar_estructura_base():
                OR frecuencia IS NULL
         """))
         conn.commit()
+    clear_app_caches()
 asegurar_estructura_base()
 def asegurar_estructura_financiera():
     with get_conn() as conn:
@@ -713,6 +744,7 @@ def asegurar_estructura_financiera():
             WHERE saldo_capital IS NULL OR tasa_mensual IS NULL
         """))
         conn.commit()
+    clear_app_caches()
 asegurar_estructura_financiera()
 
 # ==========================
@@ -753,155 +785,6 @@ def start_busy(label="Procesando..."):
 def stop_busy():
     st.session_state.app_busy = False
     st.session_state.app_busy_label = None
-
-@st.cache_data(ttl=60, show_spinner=False)
-def cargar_estado_general():
-    with get_conn() as conn:
-        estado_df = pd.read_sql(
-            text("""
-            SELECT
-                p.id,
-                p.estado,
-                p.monto_original,
-                p.valor_cuota,
-                p.cuotas,
-                COALESCE(p.frecuencia, 'Mensual') AS frecuencia,
-                p.tipo,
-                p.cliente_cedula,
-                COALESCE(p.contrato_aceptado, 0) AS contrato_aceptado,
-                COALESCE(p.contrato_enviado, 0) AS contrato_enviado,
-                COALESCE(p.desembolso_notificado, 0) AS desembolso_notificado,
-                p.fecha_envio_contrato,
-                p.fecha_aceptacion,
-                p.fecha_desembolso,
-                COALESCE(p.saldo_capital, p.monto_original) AS saldo_capital,
-                COALESCE(p.tasa_mensual, 0) AS tasa_mensual,
-                COALESCE(SUM(pg.valor),0) AS total_pagado,
-                COALESCE((
-                    SELECT SUM(cu.valor_cuota)
-                    FROM cuotas cu
-                    WHERE cu.prestamo_id = p.id
-                      AND cu.estado <> 'Pagada'
-                ),0) AS saldo,
-                COALESCE(SUM(pg.valor),0) + COALESCE((
-                    SELECT SUM(cu.valor_cuota)
-                    FROM cuotas cu
-                    WHERE cu.prestamo_id = p.id
-                      AND cu.estado <> 'Pagada'
-                ),0) AS monto_total_credito,
-                c.nombres || ' ' || c.apellidos AS cliente,
-                c.correo
-            FROM prestamos p
-            LEFT JOIN pagos pg
-                ON pg.prestamo_id = p.id
-            LEFT JOIN clientes c
-                ON c.cedula = p.cliente_cedula
-            GROUP BY
-                p.id, p.estado, p.monto_original, p.valor_cuota, p.cuotas, p.frecuencia, p.tipo,
-                p.cliente_cedula, p.contrato_aceptado, p.contrato_enviado, p.desembolso_notificado,
-                p.fecha_envio_contrato, p.fecha_aceptacion, p.fecha_desembolso,
-                p.saldo_capital, p.tasa_mensual, c.nombres, c.apellidos, c.correo
-            ORDER BY p.id DESC
-            """),
-            conn
-        )
-    for col in [
-        'monto_original',
-        'monto_total_credito',
-        'valor_cuota',
-        'total_pagado',
-        'saldo',
-        'saldo_capital',
-        'tasa_mensual'
-    ]:
-        if col in estado_df.columns:
-            estado_df[col] = pd.to_numeric(estado_df[col], errors='coerce').fillna(0)
-    return estado_df
-
-@st.cache_data(ttl=60, show_spinner=False)
-def cargar_alertas_mora():
-    clientes_mora = 0
-    monto_mora = 0.0
-    with get_conn() as conn:
-        mora_df = pd.read_sql(
-            """
-            SELECT
-                COUNT(DISTINCT prestamo_id) as clientes_mora,
-                COALESCE(SUM(valor_cuota),0) as monto_mora
-            FROM cuotas
-            WHERE estado <> 'Pagada'
-            AND fecha_vencimiento::date < CURRENT_DATE
-            """,
-            conn
-        )
-    if not mora_df.empty:
-        clientes_mora = int(mora_df['clientes_mora'][0] or 0)
-        monto_mora = float(mora_df['monto_mora'][0] or 0)
-    return clientes_mora, monto_mora
-
-@st.cache_data(ttl=60, show_spinner=False)
-def cargar_clientes_df():
-    with get_conn() as conn:
-        return pd.read_sql(
-            text("""
-                SELECT cedula, nombres, apellidos, ciudad, telefono, correo, direccion, empresa, fecha_nacimiento, cargo
-                FROM clientes
-                ORDER BY nombres, apellidos
-            """),
-            conn
-        )
-
-@st.cache_data(ttl=60, show_spinner=False)
-def cargar_cuotas_periodo(inicio, fin):
-    with get_conn() as conn:
-        return pd.read_sql(text("""
-            SELECT cu.fecha_vencimiento, cu.valor_cuota, cu.estado, cu.nro_cuota,
-                   c.nombres || ' ' || c.apellidos AS cliente
-            FROM cuotas cu
-            JOIN prestamos p ON p.id = cu.prestamo_id
-            JOIN clientes c ON c.cedula = p.cliente_cedula
-            WHERE cu.fecha_vencimiento::date >= :inicio
-              AND cu.fecha_vencimiento::date <= :fin
-            ORDER BY cu.fecha_vencimiento
-        """), conn, params={'inicio': inicio, 'fin': fin})
-
-def limpiar_caches_datos():
-    cargar_estado_general.clear()
-    cargar_alertas_mora.clear()
-    cargar_clientes_df.clear()
-    cargar_cuotas_periodo.clear()
-
-# ==========================
-# UI HELPERS
-# ==========================
-def render_section_header(icono, titulo, subtitulo=""):
-    st.markdown(f"""
-    <div style="
-        background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
-        border: 1px solid #e5edf7;
-        border-radius: 18px;
-        padding: 16px 18px 14px 18px;
-        box-shadow: 0 10px 26px rgba(15,23,42,.04);
-        margin: 4px 0 12px 0;">
-        <div style="display:flex;align-items:center;gap:10px;">
-            <div style="
-                width:38px;height:38px;border-radius:12px;
-                background:linear-gradient(135deg,#0b1633 0%, #1d4ed8 100%);
-                color:#fff;display:flex;align-items:center;justify-content:center;
-                font-size:18px;font-weight:800;">{icono}</div>
-            <div>
-                <div style="font-size:24px;font-weight:800;color:#0f172a;line-height:1.05;">{titulo}</div>
-                <div style="font-size:13px;color:#64748b;line-height:1.55;margin-top:4px;">{subtitulo}</div>
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-def render_soft_card_start():
-    return
-
-def render_soft_card_end():
-    return
 # ==========================
 # UTILIDADES
 # ==========================
@@ -1259,6 +1142,7 @@ def enviar_contrato_credito(prestamo_row):
                     WHERE id = :id
                 """), {"fecha": datetime.now().isoformat(timespec='seconds'), "id": prestamo_row["id"]})
                 conn.commit()
+            clear_app_caches()
         return ok_mail, err_mail
     finally:
         if ruta_pdf and os.path.exists(ruta_pdf):
@@ -1283,6 +1167,7 @@ def enviar_correo_desembolso_credito(prestamo_row):
                 WHERE id = :id
             """), {"fecha": datetime.now().isoformat(timespec='seconds'), "id": prestamo_row["id"]})
             conn.commit()
+        clear_app_caches()
     return ok_mail, err_mail
 
 def guardar_cliente_db(data):
@@ -1292,6 +1177,7 @@ def guardar_cliente_db(data):
             VALUES (:cedula, :nombres, :apellidos, :ciudad, :telefono, :correo, :direccion, :empresa, :fecha_nacimiento, :cargo)
         """), data)
         conn.commit()
+    clear_app_caches()
 def actualizar_cliente_db(cedula, data):
     with get_conn() as conn:
         conn.execute(text("""
@@ -1301,6 +1187,7 @@ def actualizar_cliente_db(cedula, data):
             WHERE cedula=:cedula
         """), {**data, "cedula": cedula})
         conn.commit()
+    clear_app_caches()
 def eliminar_cliente_db(cedula):
     with get_conn() as conn:
         existe = conn.execute(text("SELECT COUNT(*) FROM prestamos WHERE cliente_cedula = :cedula"), {"cedula": cedula}).scalar()
@@ -1308,6 +1195,7 @@ def eliminar_cliente_db(cedula):
             return False, "No se puede eliminar el cliente porque tiene créditos asociados"
         conn.execute(text("DELETE FROM clientes WHERE cedula = :cedula"), {"cedula": cedula})
         conn.commit()
+    clear_app_caches()
     return True, None
 
 def _parse_fecha_cliente(valor):
@@ -1380,6 +1268,7 @@ def crear_credito_db(cliente_cedula, monto, cuotas, frecuencia, tipo, fecha_inic
                 "valor_cuota": valor_cuota
             })
         conn.commit()
+        clear_app_caches()
         prestamo_row = {
             "id": prestamo_id,
             "cliente": f"{cliente['nombres']} {cliente['apellidos']}",
@@ -1415,6 +1304,7 @@ def aceptar_contrato_por_token(token):
             WHERE id = :id
         """), {"fecha": datetime.now().isoformat(timespec='seconds'), "id": prestamo["id"]})
         conn.commit()
+    clear_app_caches()
     prestamo_row = dict(prestamo)
     try:
         ok_mail, err_mail = enviar_correo_desembolso_credito(prestamo_row)
@@ -1454,6 +1344,7 @@ def procesar_recordatorios_automaticos():
                 conn.execute(text("INSERT INTO reminders_sent (id_cuota, tipo_recordatorio, fecha_envio) VALUES (:id_cuota, :tipo, :fecha_envio)"), {"id_cuota": r['id_cuota'], "tipo": tipo_r, "fecha_envio": datetime.now().isoformat(timespec='seconds')})
                 enviados += 1
         conn.commit()
+    clear_app_caches()
     return enviados
 
 def render_aceptacion_contrato(token):
@@ -1562,6 +1453,7 @@ def registrar_pago_cuota(prestamo_id, fecha_pago):
         conn.execute(text("UPDATE prestamos SET saldo_capital = :saldo_capital WHERE id = :id"), {"saldo_capital": nuevo_saldo_capital, "id": prestamo_id})
         actualizar_estado_prestamo(conn, prestamo_id)
         conn.commit()
+        clear_app_caches()
         cliente = obtener_datos_cliente(conn, prestamo_db["cliente_cedula"])
     nombre_cliente = cliente[0] if cliente else "Cliente"
     correo_cliente = (cliente[1] or "").strip() if cliente else ""
@@ -1662,6 +1554,7 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
             })
         actualizar_estado_prestamo(conn, prestamo_id)
         conn.commit()
+        clear_app_caches()
         cliente = obtener_datos_cliente(conn, prestamo_db["cliente_cedula"])
     nombre_cliente = cliente[0] if cliente else "Cliente"
     correo_cliente = (cliente[1] or "").strip() if cliente else ""
@@ -1818,18 +1711,18 @@ if token_aceptar:
     render_aceptacion_contrato(token_aceptar)
     st.stop()
 # ==========================
-# CARGA DIFERIDA DE DATOS
+# CARGAR ESTADO GENERAL
 # ==========================
-estado = cargar_estado_general()
-
+estado = load_estado().copy()
 if "recordatorios_auto" not in st.session_state:
     try:
         st.session_state.recordatorios_auto = procesar_recordatorios_automaticos()
-        limpiar_caches_datos()
-        estado = cargar_estado_general()
     except Exception:
         st.session_state.recordatorios_auto = 0
-
+# ==========================
+# CALCULAR ALERTAS
+# ==========================
+clientes_mora, monto_mora = load_mora()
 # ==========================
 # FUNCIONES SIMULADOR
 # ==========================
@@ -1898,195 +1791,113 @@ tab_sim = _tabs_map.get("🧮 Simulador")
 # 📊 RESUMEN
 # ==========================
 with tab_resumen:
-    estado = cargar_estado_general()
-
+    st.subheader("📊 Resumen general")
     if st.session_state.get("recordatorios_auto", 0):
         enviados_auto = st.session_state.get("recordatorios_auto", 0)
         st.success(f"✅ Recordatorios automáticos enviados en esta sesión: {enviados_auto}")
+    total_colocado = estado["monto_original"].sum()
+    total_cobrado = estado["total_pagado"].sum()
+    saldo_pendiente = estado["saldo"].sum()
+    creditos_activos = estado[estado["estado"] != "Cancelado"].shape[0]
+    exposicion_mora_total = 0 if saldo_pendiente <= 0 else (monto_mora / saldo_pendiente) * 100
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("💰 Total colocado", pesos(total_colocado))
+    k2.metric("✅ Total cobrado", pesos(total_cobrado))
+    k3.metric("⏳ Saldo pendiente", pesos(saldo_pendiente))
+    k4.metric("📄 Créditos activos", creditos_activos)
+    st.divider()
+    df = estado.copy()
+    for c in ["monto_original","monto_total_credito","total_pagado","saldo","valor_cuota"]:
+        df[c] = df[c].apply(pesos)
+    tabla_resumen = df[
+        ["id","cliente","monto_original","monto_total_credito",
+         "total_pagado","saldo","valor_cuota","cuotas","tipo","estado"]
+    ].rename(columns={
+        "id": "Crédito",
+        "cliente": "Cliente",
+        "monto_original": "Capital",
+        "monto_total_credito": "Total del crédito",
+        "total_pagado": "Pagado",
+        "saldo": "Saldo pendiente",
+        "valor_cuota": "Cuota",
+        "cuotas": "N.° cuotas",
+        "tipo": "Tipo de crédito",
+        "estado": "Estado"
+    })
+    st.dataframe(tabla_resumen, use_container_width=True, hide_index=True)
+    st.divider()
+    st.subheader("⚠️ Alertas de cartera")
+    a1, a2, a3 = st.columns(3)
+    a1.metric("👥 Clientes en mora", clientes_mora)
+    a2.metric("💸 Monto en mora", pesos(monto_mora))
+    a3.metric("📌 Exposición en mora", f"{exposicion_mora_total:.1f}%")
 
-    abierto_resumen = render_toggle_section_header(
-        "📊",
-        "Resumen general",
-        "Vista consolidada de colocación, recaudo, saldo pendiente y créditos activos.",
-        "open_resumen_general",
-        "toggle_resumen_general"
-    )
-
-    if abierto_resumen:
-        total_colocado = estado["monto_original"].sum()
-        total_cobrado = estado["total_pagado"].sum()
-        saldo_pendiente = estado["saldo"].sum()
-        creditos_activos = estado[estado["estado"] != "Cancelado"].shape[0]
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric("💰 Total colocado", pesos(total_colocado))
-        k2.metric("✅ Total cobrado", pesos(total_cobrado))
-        k3.metric("⏳ Saldo pendiente", pesos(saldo_pendiente))
-        k4.metric("📄 Créditos activos", creditos_activos)
-        render_section_divider("compact")
-        df = estado.copy()
-        for c in ["monto_original","monto_total_credito","total_pagado","saldo","valor_cuota"]:
-            df[c] = df[c].apply(pesos)
-        tabla_resumen = df[[
-            "id","cliente","monto_original","monto_total_credito",
-            "total_pagado","saldo","valor_cuota","cuotas","tipo","estado"
-        ]].rename(columns={
+    detalle_mora_df = load_detalle_mora()
+    if detalle_mora_df.empty:
+        st.info("✅ No hay clientes en mora actualmente.")
+    else:
+        detalle_mora_show = detalle_mora_df.sort_values(["cuotas_en_mora", "monto_en_mora"], ascending=[False, False]).copy()
+        detalle_mora_show["monto_en_mora"] = detalle_mora_show["monto_en_mora"].apply(pesos)
+        detalle_mora_show["exposicion_en_mora"] = detalle_mora_show["exposicion_en_mora"].apply(pesos)
+        detalle_mora_show = detalle_mora_show[["id", "cliente", "cuotas_en_mora", "monto_en_mora", "exposicion_en_mora"]].rename(columns={
             "id": "Crédito",
             "cliente": "Cliente",
-            "monto_original": "Capital",
-            "monto_total_credito": "Total del crédito",
-            "total_pagado": "Pagado",
-            "saldo": "Saldo pendiente",
-            "valor_cuota": "Cuota",
-            "cuotas": "N.° cuotas",
-            "tipo": "Tipo de crédito",
-            "estado": "Estado"
+            "cuotas_en_mora": "Cuotas en mora",
+            "monto_en_mora": "Monto en mora",
+            "exposicion_en_mora": "Exposición en mora"
         })
-        st.dataframe(tabla_resumen, use_container_width=True, hide_index=True)
+        st.dataframe(detalle_mora_show, use_container_width=True, hide_index=True)
 
-    abierto_alertas = render_toggle_section_header(
-        "⚠️",
-        "Alerta de cartera",
-        "Visualiza rápidamente clientes con cuotas vencidas, monto en mora y nivel de exposición.",
-        "open_alerta_cartera",
-        "toggle_alerta_cartera"
-    )
-
-    if abierto_alertas:
-        total_saldo_pendiente = estado["saldo"].sum()
-        clientes_mora, monto_mora = cargar_alertas_mora()
-        exposicion_mora_total = 0 if total_saldo_pendiente <= 0 else (monto_mora / total_saldo_pendiente) * 100
-        a1, a2, a3 = st.columns(3)
-        with a1:
-            if st.button("👥 Clientes en mora", key="btn_alerta_clientes_mora"):
-                st.session_state.detalle_mora = "clientes"
-            st.metric("", clientes_mora)
-        with a2:
-            if st.button("💸 Monto en mora", key="btn_alerta_monto_mora"):
-                st.session_state.detalle_mora = "monto"
-            st.metric("", pesos(monto_mora))
-        with a3:
-            if st.button("📌 Exposición en mora", key="btn_alerta_exposicion_mora"):
-                st.session_state.detalle_mora = "exposicion"
-            st.metric("", f"{exposicion_mora_total:.1f}%")
-
-        if "detalle_mora" in st.session_state:
-            with get_conn() as conn:
-                detalle_mora_df = pd.read_sql(text("""
-                    SELECT
-                        p.id,
-                        c.nombres || ' ' || c.apellidos AS cliente,
-                        COUNT(cu.id_cuota) AS cuotas_en_mora,
-                        COALESCE(SUM(cu.valor_cuota),0) AS monto_en_mora,
-                        COALESCE(MAX(p.saldo_capital),0) AS exposicion_en_mora
-                    FROM cuotas cu
-                    JOIN prestamos p ON p.id = cu.prestamo_id
-                    JOIN clientes c ON c.cedula = p.cliente_cedula
-                    WHERE cu.estado <> 'Pagada'
-                      AND cu.fecha_vencimiento::date < CURRENT_DATE
-                    GROUP BY p.id, c.nombres, c.apellidos
-                """), conn)
-            if detalle_mora_df.empty:
-                st.info("✅ No hay clientes en mora actualmente.")
-            else:
-                if st.session_state.detalle_mora == "monto":
-                    detalle_mora_df = detalle_mora_df.sort_values(["monto_en_mora", "cuotas_en_mora"], ascending=[False, False])
-                    titulo_mora = "💸 Detalle por monto en mora"
-                elif st.session_state.detalle_mora == "exposicion":
-                    detalle_mora_df = detalle_mora_df.sort_values(["exposicion_en_mora", "monto_en_mora"], ascending=[False, False])
-                    titulo_mora = "📌 Detalle por exposición en mora"
-                else:
-                    detalle_mora_df = detalle_mora_df.sort_values(["cuotas_en_mora", "monto_en_mora"], ascending=[False, False])
-                    titulo_mora = "👥 Clientes en mora"
-                detalle_mora_show = detalle_mora_df.copy()
-                detalle_mora_show["monto_en_mora"] = detalle_mora_show["monto_en_mora"].apply(pesos)
-                detalle_mora_show["exposicion_en_mora"] = detalle_mora_show["exposicion_en_mora"].apply(pesos)
-                detalle_mora_show = detalle_mora_show[["id", "cliente", "cuotas_en_mora", "monto_en_mora", "exposicion_en_mora"]].rename(columns={
-                    "id": "Crédito",
-                    "cliente": "Cliente",
-                    "cuotas_en_mora": "Cuotas en mora",
-                    "monto_en_mora": "Monto en mora",
-                    "exposicion_en_mora": "Exposición en mora"
-                })
-                st.markdown(f"### {titulo_mora}")
-                st.dataframe(detalle_mora_show, use_container_width=True, hide_index=True)
-
+    # ==========================
+    # 🔎 CONSULTA MENSUAL
+    # ==========================
+    st.divider()
+    st.subheader("🔎 Consulta mensual (corte 02 → 02)")
     meses_disponibles = pd.date_range("2025-12-01", "2030-12-01", freq="MS").strftime("%Y-%m").tolist()
     mes_actual = date.today().strftime("%Y-%m")
     index_actual = meses_disponibles.index(mes_actual) if mes_actual in meses_disponibles else 0
 
-    abierto_consulta = render_toggle_section_header(
-        "🔎",
-        "Consulta mensual",
-        "Consulta producción y recaudo del período con corte operativo 02 → 02.",
-        "open_consulta_mensual",
-        "toggle_consulta_mensual"
+    mes_consulta = st.selectbox(
+        "Selecciona el mes",
+        meses_disponibles,
+        index=index_actual
     )
+    year, month = map(int, mes_consulta.split("-"))
+    if year == 2025 and month == 12:
+        inicio = datetime(2025,12,15)
+        fin = datetime(2026,1,1)
+    elif year == 2026 and month == 1:
+        inicio = datetime(2026,1,1)
+        fin = datetime(2026,2,2)
+    else:
+        inicio = datetime(year, month, 3)
+        fin = datetime(year + (month==12), 1 if month==12 else month+1, 2)
 
-    if abierto_consulta:
-        mes_consulta = st.selectbox(
-            "Selecciona el mes",
-            meses_disponibles,
-            index=index_actual,
-            key="mes_consulta_resumen"
-        )
+    cuotas_df = load_cuotas_periodo(inicio.date().isoformat(), fin.date().isoformat()).copy()
 
-        year, month = map(int, mes_consulta.split("-"))
-        if year == 2025 and month == 12:
-            inicio = datetime(2025,12,15)
-            fin = datetime(2026,1,1)
-        elif year == 2026 and month == 1:
-            inicio = datetime(2026,1,1)
-            fin = datetime(2026,2,2)
-        else:
-            inicio = datetime(year, month, 3)
-            fin = datetime(year + (month==12), 1 if month==12 else month+1, 2)
+    total_periodo = cuotas_df["valor_cuota"].sum() if not cuotas_df.empty else 0
+    pagado_periodo = cuotas_df[cuotas_df["estado"]=="Pagada"]["valor_cuota"].sum() if not cuotas_df.empty else 0
+    pendiente_periodo = cuotas_df[cuotas_df["estado"].isin(["Pendiente","Parcial"])]["valor_cuota"].sum() if not cuotas_df.empty else 0
 
-        cuotas_df = cargar_cuotas_periodo(inicio, fin)
-        total_periodo = cuotas_df["valor_cuota"].sum() if not cuotas_df.empty else 0
-        pagado_periodo = cuotas_df[cuotas_df["estado"]=="Pagada"]["valor_cuota"].sum() if not cuotas_df.empty else 0
-        pendiente_periodo = cuotas_df[cuotas_df["estado"].isin(["Pendiente","Parcial"])]["valor_cuota"].sum() if not cuotas_df.empty else 0
-        c1,c2,c3 = st.columns(3)
-        with c1:
-            if st.button("📥 Cuotas del período", key="btn_total_periodo"):
-                st.session_state.detalle = "total"
-            st.metric("", pesos(total_periodo))
-        with c2:
-            if st.button("✅ Pagado en el período", key="btn_pagado_periodo"):
-                st.session_state.detalle = "pagado"
-            st.metric("", pesos(pagado_periodo))
-        with c3:
-            if st.button("⏳ Pendiente del período", key="btn_pendiente_periodo"):
-                st.session_state.detalle = "pendiente"
-            st.metric("", pesos(pendiente_periodo))
-        if "detalle" in st.session_state and not cuotas_df.empty:
-            st.divider()
-            if st.session_state.detalle=="total":
-                df_detalle=cuotas_df
-                titulo="📋 Todas las cuotas"
-            elif st.session_state.detalle=="pagado":
-                df_detalle=cuotas_df[cuotas_df["estado"]=="Pagada"]
-                titulo="✅ Pagadas"
-            else:
-                df_detalle=cuotas_df[cuotas_df["estado"].isin(["Pendiente","Parcial"])]
-                titulo="⏳ Pendientes"
-            st.markdown(f"### {titulo}")
-            cols = st.columns(3)
-            for i,r in enumerate(df_detalle.itertuples()):
-                with cols[i%3]:
-                    estado_color = "🟢 Pagada" if r.estado=="Pagada" else "🟡 Parcial" if r.estado=="Parcial" else "🔴 Pendiente"
-                    st.markdown(f"""
-                    <div style="background:#ffffff;color:#111;border-radius:14px;padding:14px;
-                                box-shadow:0 2px 6px rgba(0,0,0,.08);margin-bottom:14px;">
-                        <div style="font-weight:600;font-size:15px;color:#000">{r.cliente}</div>
-                        <div style="font-size:13px;color:#555;margin-top:4px;">
-                            Cuota #{r.nro_cuota} · {r.fecha_vencimiento}
-                        </div>
-                        <div style="font-size:16px;font-weight:700;margin-top:6px;">
-                            {pesos(r.valor_cuota)}
-                        </div>
-                        <div style="font-size:13px;margin-top:4px;">{estado_color}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
+    c1,c2,c3 = st.columns(3)
+    c1.metric("📥 Cuotas del período", pesos(total_periodo))
+    c2.metric("✅ Pagado en el período", pesos(pagado_periodo))
+    c3.metric("⏳ Pendiente del período", pesos(pendiente_periodo))
+
+    st.markdown("### 📋 Detalle del período")
+    if cuotas_df.empty:
+        st.info("ℹ️ No hay cuotas registradas en ese período.")
+    else:
+        cuotas_show = cuotas_df.copy()
+        cuotas_show["valor_cuota"] = cuotas_show["valor_cuota"].apply(pesos)
+        cuotas_show = cuotas_show.rename(columns={
+            "fecha_vencimiento": "Fecha de vencimiento",
+            "valor_cuota": "Valor cuota",
+            "estado": "Estado",
+            "nro_cuota": "Cuota",
+            "cliente": "Cliente"
+        })
+        st.dataframe(cuotas_show, use_container_width=True, hide_index=True)
 # ==========================
 # 👥 CLIENTES
 # ==========================
@@ -2095,7 +1906,15 @@ if tab_clientes is not None:
         st.subheader("👥 Gestión de clientes")
         show_flash("clientes_msg")
 
-        clientes_df = cargar_clientes_df()
+        with get_conn() as conn:
+            clientes_df = pd.read_sql(
+                text("""
+                    SELECT cedula, nombres, apellidos, ciudad, telefono, correo, direccion, empresa, fecha_nacimiento, cargo
+                    FROM clientes
+                    ORDER BY nombres, apellidos
+                """),
+                conn
+            )
 
         _cli_labels = []
         if PUEDE_REGISTRAR_CLIENTES:
@@ -2147,7 +1966,6 @@ if tab_clientes is not None:
                                     "fecha_nacimiento": _fecha_cliente_db(fecha_nacimiento_new),
                                     "cargo": cargo_new.strip()
                                 })
-                                limpiar_caches_datos()
                                 set_flash("clientes_msg", "success", "✅ Cliente registrado correctamente")
                                 st.rerun()
                             except Exception as e:
@@ -2213,7 +2031,6 @@ if tab_clientes is not None:
                                                     "fecha_nacimiento": _fecha_cliente_db(fecha_nacimiento_edit),
                                                     "cargo": cargo_edit.strip()
                                                 })
-                                                limpiar_caches_datos()
                                                 set_flash("clientes_msg", "success", "✅ Cliente actualizado correctamente")
                                                 st.session_state["sel_cliente_gestion"] = None
                                                 st.rerun()
@@ -2232,7 +2049,6 @@ if tab_clientes is not None:
                                             ok_del, err_del = eliminar_cliente_db(cliente_sel)
                                             if ok_del:
                                                 st.session_state["sel_cliente_gestion"] = None
-                                                limpiar_caches_datos()
                                                 set_flash("clientes_msg", "success", "✅ Cliente eliminado correctamente")
                                                 st.rerun()
                                             else:
@@ -2307,7 +2123,6 @@ if tab_creditos is not None:
                             try:
                                 ok_c, err_c, prestamo_creado = crear_credito_db(cliente_normal, monto_normal_new, cuotas_normal_new, frecuencia_normal_new, "Normal", fecha_inicio_normal)
                                 if ok_c:
-                                    limpiar_caches_datos()
                                     st.session_state["cliente_normal_credito"] = None
                                     if not err_c:
                                         set_flash("credito_msg", "success", f"✅ Crédito {prestamo_creado['id']} creado y contrato enviado correctamente")
@@ -2342,7 +2157,6 @@ if tab_creditos is not None:
                             try:
                                 ok_c, err_c, prestamo_creado = crear_credito_db(cliente_express, monto_express_new, cuotas_express_new, frecuencia_express_new, "Express", fecha_inicio_express)
                                 if ok_c:
-                                    limpiar_caches_datos()
                                     st.session_state["cliente_express_credito"] = None
                                     if not err_c:
                                         set_flash("credito_msg", "success", f"✅ Crédito {prestamo_creado['id']} creado y contrato enviado correctamente")
@@ -2378,9 +2192,9 @@ if tab_creditos is not None:
                             fila_p = pendientes_df[pendientes_df["id"] == prestamo_pend_sel].iloc[0].to_dict()
 
                             st.markdown(f"""
-                            <div style="border:1px solid #e5e7eb;border-radius:16px;padding:14px 16px;background:#ffffff;margin-bottom:10px;">
-                                <div style="font-size:18px;font-weight:800;color:#0f172a;">Crédito {fila_p['id']}</div>
-                                <div style="font-size:13px;color:#64748b;margin-top:4px;">{fila_p['cliente']} · {fila_p['tipo']} · Estado: {fila_p['estado']}</div>
+                            <div class="creddt-card" style="padding:14px 16px;margin-bottom:10px;">
+                                <div class="creddt-strong" style="font-size:18px;font-weight:800;">Crédito {fila_p['id']}</div>
+                                <div class="creddt-muted" style="font-size:13px;margin-top:4px;">{fila_p['cliente']} · {fila_p['tipo']} · Estado: {fila_p['estado']}</div>
                             </div>
                             """, unsafe_allow_html=True)
 
@@ -2468,9 +2282,9 @@ if tab_detalle is not None:
                     with st.expander(f"💳 Préstamo {row['id']} — {row['cliente']}"):
                         estado_contrato = "Aceptado" if int(row.get("contrato_aceptado", 0) or 0) == 1 else "Pendiente"
                         st.markdown(f"""
-                        <div style="border:1px solid #e5e7eb;border-radius:16px;padding:14px 16px;background:#ffffff;margin-bottom:10px;">
-                            <div style="font-size:18px;font-weight:800;color:#0f172a;">Crédito {row['id']}</div>
-                            <div style="font-size:13px;color:#64748b;margin-top:4px;">{row['cliente']} · {row['tipo']} · {row['estado']} · Frecuencia: {row.get('frecuencia', 'Mensual')} · Contrato: {estado_contrato}</div>
+                        <div class="creddt-card" style="padding:14px 16px;margin-bottom:10px;">
+                            <div class="creddt-strong" style="font-size:18px;font-weight:800;">Crédito {row['id']}</div>
+                            <div class="creddt-muted" style="font-size:13px;margin-top:4px;">{row['cliente']} · {row['tipo']} · {row['estado']} · Frecuencia: {row.get('frecuencia', 'Mensual')} · Contrato: {estado_contrato}</div>
                         </div>
                         """, unsafe_allow_html=True)
 
@@ -2576,10 +2390,10 @@ if tab_pagos is not None:
                             st.info("ℹ️ Este crédito no tiene cuotas pendientes.")
                         else:
                             st.markdown(f"""
-                            <div style='padding:14px 16px;border:1px solid #e5e7eb;border-radius:16px;background:#f8fafc;margin-bottom:12px;'>
-                                <div style='font-size:13px;color:#64748b;margin-bottom:6px;'>Próxima cuota pendiente</div>
-                                <div style='font-size:18px;font-weight:800;color:#0f172a;'>Cuota #{proxima_cuota[1]} — {pesos(proxima_cuota[2])}</div>
-                                <div style='font-size:13px;color:#475569;margin-top:4px;'>Fecha de vencimiento: {proxima_cuota[3]}</div>
+                            <div class='creddt-soft-card' style='padding:14px 16px;margin-bottom:12px;'>
+                                <div class='creddt-muted' style='font-size:13px;margin-bottom:6px;'>Próxima cuota pendiente</div>
+                                <div class='creddt-strong' style='font-size:18px;font-weight:800;'>Cuota #{proxima_cuota[1]} — {pesos(proxima_cuota[2])}</div>
+                                <div class='creddt-muted' style='font-size:13px;margin-top:4px;'>Fecha de vencimiento: {proxima_cuota[3]}</div>
                             </div>
                             """, unsafe_allow_html=True)
                             with st.form("form_pago_cuota", clear_on_submit=True):
@@ -2591,10 +2405,8 @@ if tab_pagos is not None:
                                     with st.spinner("⏳ Aplicando pago, por favor espera..."):
                                         resultado = registrar_pago_cuota(prestamo.id, fecha_pago)
                                         if resultado.get("ok"):
-                                            limpiar_caches_datos()
                                             st.session_state.pago_msg = {"tipo": "CUOTA", **resultado}
                                             st.session_state.reset_select_prestamo_pago = True
-                                            time.sleep(0.2)
                                             st.rerun()
                                         else:
                                             st.error(f"❌ {resultado.get('error')}")
@@ -2621,7 +2433,6 @@ if tab_pagos is not None:
                                     if resultado.get("ok"):
                                         st.session_state.pago_msg = {"tipo": "ABONO_CAPITAL", **resultado}
                                         st.session_state.reset_select_prestamo_pago = True
-                                        time.sleep(0.2)
                                         st.rerun()
                                     else:
                                         st.error(f"❌ {resultado.get('error')}")
@@ -2713,11 +2524,6 @@ if tab_sim is not None:
                         f"💰 Total a pagar estimado: **{pesos(cuota * cuotas_express)}**\n\n"
                         f"📈 Tasa aplicada: **{calcular_tasa_express(frecuencia)*100:.2f}%**"
                     )
-
-
-
-
-
 
 
 

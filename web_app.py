@@ -236,6 +236,47 @@ if "auth" not in st.session_state:
 if not st.session_state.auth and not token_aceptar:
     st.markdown("""
     <style>
+    :root{
+        color-scheme: light;
+        --login-bg: #f8fafc;
+        --login-surface: #ffffff;
+        --login-surface-soft: #fbfdff;
+        --login-border: #e2e8f0;
+        --login-border-strong: #dfe7f2;
+        --login-text: #0f172a;
+        --login-text-soft: #64748b;
+        --login-label: #334155;
+        --login-input-bg: #f8fafc;
+        --login-note: #94a3b8;
+        --login-chip-bg: #eff6ff;
+        --login-chip-text: #2563eb;
+        --login-chip-border: #dbeafe;
+        --login-shadow: 0 26px 70px rgba(15,23,42,.10);
+        --login-form-shadow: 0 12px 30px rgba(15,23,42,.06);
+    }
+    @media (prefers-color-scheme: dark){
+        :root{
+            color-scheme: dark;
+            --login-bg: #020817;
+            --login-surface: #0f172a;
+            --login-surface-soft: #111827;
+            --login-border: #334155;
+            --login-border-strong: #334155;
+            --login-text: #f8fafc;
+            --login-text-soft: #cbd5e1;
+            --login-label: #e2e8f0;
+            --login-input-bg: #111827;
+            --login-note: #94a3b8;
+            --login-chip-bg: rgba(37,99,235,.14);
+            --login-chip-text: #bfdbfe;
+            --login-chip-border: rgba(147,197,253,.24);
+            --login-shadow: 0 26px 70px rgba(2,6,23,.45);
+            --login-form-shadow: 0 12px 30px rgba(2,6,23,.28);
+        }
+    }
+    html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"]{
+        background: var(--login-bg) !important;
+    }
     .block-container{
         padding-top: 0.25rem !important;
         padding-bottom: 1rem !important;
@@ -248,22 +289,22 @@ if not st.session_state.auth and not token_aceptar:
     }
     .login-stage{
         position: relative;
-        background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
-        border: 1px solid #e2e8f0;
+        background: linear-gradient(180deg, var(--login-surface) 0%, var(--login-surface-soft) 100%);
+        border: 1px solid var(--login-border);
         border-radius: 30px;
         overflow: hidden;
-        box-shadow: 0 26px 70px rgba(15,23,42,.10);
+        box-shadow: var(--login-shadow);
     }
     .login-stage::before{
         content: "";
         position: absolute;
         inset: 0;
-        background: radial-gradient(circle at top right, rgba(37,99,235,.08), transparent 30%);
+        background: radial-gradient(circle at top right, rgba(37,99,235,.10), transparent 30%);
         pointer-events: none;
     }
     .login-head{
         padding: 20px 28px 14px 28px;
-        background:#ffffff;
+        background: var(--login-surface);
         position: relative;
         z-index: 1;
     }
@@ -278,13 +319,13 @@ if not st.session_state.auth and not token_aceptar:
         line-height:1.02;
         font-weight:900;
         letter-spacing:-.035em;
-        color:#0f172a;
+        color: var(--login-text);
     }
     .login-title-wrap p{
         margin:10px 0 0 0;
         font-size:20px;
         line-height:1.55;
-        color:#64748b;
+        color: var(--login-text-soft);
         font-weight:500;
     }
     .login-blue-bar{
@@ -303,9 +344,9 @@ if not st.session_state.auth and not token_aceptar:
         font-size:12px;
         font-weight:800;
         letter-spacing:.16em;
-        color:#2563eb;
-        background:#eff6ff;
-        border:1px solid #dbeafe;
+        color: var(--login-chip-text);
+        background: var(--login-chip-bg);
+        border:1px solid var(--login-chip-border);
         border-radius:999px;
         padding:8px 13px;
         margin-bottom:16px;
@@ -315,28 +356,28 @@ if not st.session_state.auth and not token_aceptar:
         font-size:44px;
         line-height:1.04;
         font-weight:900;
-        color:#0f172a;
+        color: var(--login-text);
         margin:0 0 12px 0;
         letter-spacing:-.035em;
     }
     .login-sub{
         font-size:17px;
         line-height:1.72;
-        color:#64748b;
+        color: var(--login-text-soft);
         margin:0 0 16px 0;
     }
     .login-note{
         text-align:center;
-        color:#94a3b8;
+        color: var(--login-note);
         font-size:12.5px;
         margin-top:16px;
     }
     div[data-testid="stForm"]{
-        border: 1px solid #dfe7f2 !important;
+        border: 1px solid var(--login-border-strong) !important;
         border-radius: 22px !important;
         padding: 18px 18px 16px 18px !important;
-        background: rgba(255,255,255,.94) !important;
-        box-shadow: 0 12px 30px rgba(15,23,42,.06) !important;
+        background: color-mix(in srgb, var(--login-surface) 94%, transparent) !important;
+        box-shadow: var(--login-form-shadow) !important;
         backdrop-filter: blur(6px);
         margin-top: 0 !important;
     }
@@ -347,15 +388,20 @@ if not st.session_state.auth and not token_aceptar:
     }
     .stTextInput > div > div > input{
         border-radius: 14px !important;
-        border:1px solid #dbe3ef !important;
-        background:#f8fafc !important;
+        border:1px solid var(--login-border) !important;
+        background: var(--login-input-bg) !important;
+        color: var(--login-text) !important;
         min-height: 52px !important;
         font-size:16px !important;
         padding-left: 14px !important;
     }
     .stTextInput > label{
         font-weight:700 !important;
-        color:#334155 !important;
+        color: var(--login-label) !important;
+    }
+    .stTextInput input::placeholder{
+        color: var(--login-text-soft) !important;
+        opacity: .9 !important;
     }
     div.stButton > button, div[data-testid="stFormSubmitButton"] > button{
         border-radius: 14px !important;
@@ -363,6 +409,7 @@ if not st.session_state.auth and not token_aceptar:
         font-size: 17px !important;
         font-weight: 800 !important;
         border: 0 !important;
+        color: #ffffff !important;
         background: linear-gradient(135deg, #0b1633 0%, #173266 42%, #2563eb 100%) !important;
         box-shadow: 0 12px 24px rgba(37,99,235,.20) !important;
         transition: all .18s ease !important;
@@ -449,6 +496,132 @@ PUEDE_VER_CONTRATOS_PENDIENTES = tiene_rol("ADMIN", "ASESOR")
 PUEDE_VER_DETALLE = tiene_rol("ADMIN", "ASESOR", "CONSULTA")
 PUEDE_REGISTRAR_PAGOS = tiene_rol("ADMIN", "ASESOR")
 PUEDE_USAR_SIMULADOR = tiene_rol("ADMIN", "ASESOR", "CONSULTA")
+
+
+from contextlib import nullcontext
+
+# ==========================
+# NAVEGACIÓN LATERAL
+# ==========================
+MENU_LABELS = ["📊 Resumen"]
+if PUEDE_VER_CLIENTES:
+    MENU_LABELS.append("👥 Clientes")
+if PUEDE_CREAR_CREDITOS:
+    MENU_LABELS.append("🆕 Nuevo crédito")
+if PUEDE_VER_DETALLE:
+    MENU_LABELS.append("📄 Detalle por crédito")
+if PUEDE_REGISTRAR_PAGOS:
+    MENU_LABELS.append("💰 Pagos")
+if PUEDE_USAR_SIMULADOR:
+    MENU_LABELS.append("🧮 Simulador")
+
+if "menu_activo" not in st.session_state or st.session_state.menu_activo not in MENU_LABELS:
+    st.session_state.menu_activo = MENU_LABELS[0]
+
+st.markdown("""
+<style>
+[data-testid="stSidebar"]{
+    background: linear-gradient(180deg, #081a44 0%, #0b1633 100%) !important;
+    border-right: 1px solid rgba(148,163,184,.18);
+}
+[data-testid="stSidebar"] *{
+    color: #f8fafc;
+}
+.sidebar-logo-wrap{
+    padding-top: .4rem;
+    text-align: left;
+}
+.sidebar-brand{
+    font-size: 28px;
+    font-weight: 900;
+    letter-spacing: -.03em;
+    color: #ffffff;
+    margin-top: 8px;
+}
+.sidebar-sub{
+    font-size: 12px;
+    color: #cbd5e1;
+    line-height: 1.45;
+    margin-bottom: 14px;
+}
+.sidebar-user-card{
+    margin-top: 14px;
+    border: 1px solid rgba(148,163,184,.18);
+    background: rgba(255,255,255,.06);
+    border-radius: 18px;
+    padding: 14px 14px 12px 14px;
+}
+.sidebar-user-pill{
+    display: inline-block;
+    background: rgba(37,99,235,.22);
+    border: 1px solid rgba(147,197,253,.22);
+    border-radius: 999px;
+    color: #dbeafe;
+    font-size: 11px;
+    font-weight: 800;
+    padding: 5px 10px;
+    margin-bottom: 10px;
+}
+.stRadio > div{
+    gap: .35rem !important;
+}
+.stRadio label{
+    background: rgba(255,255,255,.04);
+    border: 1px solid rgba(148,163,184,.12);
+    border-radius: 14px;
+    padding: 10px 12px !important;
+}
+.stRadio label:hover{
+    background: rgba(37,99,235,.12);
+    border-color: rgba(96,165,250,.32);
+}
+[data-testid="stSidebar"] div.stButton > button{
+    width: 100%;
+    border-radius: 14px !important;
+    min-height: 48px !important;
+    font-weight: 800 !important;
+    border: 1px solid rgba(148,163,184,.22) !important;
+    color: #ffffff !important;
+    background: linear-gradient(135deg, rgba(11,22,51,.95) 0%, rgba(23,50,102,.98) 45%, rgba(37,99,235,.98) 100%) !important;
+    box-shadow: 0 14px 26px rgba(2,6,23,.26) !important;
+}
+[data-testid="stSidebar"] div.stButton > button:hover{
+    transform: translateY(-1px);
+}
+</style>
+""", unsafe_allow_html=True)
+
+with st.sidebar:
+    st.markdown("<div class='sidebar-logo-wrap'>", unsafe_allow_html=True)
+    if os.path.exists("logo_creddt.png"):
+        st.image("logo_creddt.png", width=120)
+    st.markdown("<div class='sidebar-brand'>CREDDT | CRNTECH</div>", unsafe_allow_html=True)
+    st.markdown("<div class='sidebar-sub'>Panel principal de operación y seguimiento de créditos.</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.session_state.menu_activo = st.radio(
+        "Opciones",
+        MENU_LABELS,
+        index=MENU_LABELS.index(st.session_state.menu_activo),
+        label_visibility="collapsed"
+    )
+
+    st.markdown(
+        f"<div class='sidebar-user-card'>"
+        f"<div class='sidebar-user-pill'>Sesión activa</div>"
+        f"<div style='font-size:15px;font-weight:800;color:#ffffff;'>{st.session_state.get('usuario','-')}</div>"
+        f"<div style='font-size:12px;color:#cbd5e1;margin-top:4px;'>Rol: {st.session_state.get('rol','-')}</div>"
+        f"</div>",
+        unsafe_allow_html=True
+    )
+
+    if st.button("Cerrar sesión", key="btn_logout_sidebar"):
+        for k in ["auth", "usuario", "rol", "menu_activo", "pago_msg", "detalle", "detalle_mora"]:
+            if k in st.session_state:
+                del st.session_state[k]
+        st.rerun()
+
+SECCION_ACTIVA = st.session_state.menu_activo
 
 # ==========================
 # HEADER - TITULO
@@ -1764,33 +1937,18 @@ def calcular_fecha_vencimiento(fecha_inicio, nro_cuota, frecuencia):
 def obtener_nuevo_id_prestamo(prefix="P"):
     return prefix + uuid.uuid4().hex[:6].upper()
 # ==========================
-# TABS
+# NAVEGACIÓN DE SECCIONES
 # ==========================
-_tabs_labels = ["📊 Resumen"]
-if PUEDE_VER_CLIENTES:
-    _tabs_labels.append("👥 Clientes")
-if PUEDE_CREAR_CREDITOS:
-    _tabs_labels.append("🆕 Nuevo crédito")
-if PUEDE_VER_DETALLE:
-    _tabs_labels.append("📄 Detalle por crédito")
-if PUEDE_REGISTRAR_PAGOS:
-    _tabs_labels.append("💰 Pagos")
-if PUEDE_USAR_SIMULADOR:
-    _tabs_labels.append("🧮 Simulador")
-
-_tabs_objs = st.tabs(_tabs_labels)
-_tabs_map = dict(zip(_tabs_labels, _tabs_objs))
-
-tab_resumen = _tabs_map["📊 Resumen"]
-tab_clientes = _tabs_map.get("👥 Clientes")
-tab_creditos = _tabs_map.get("🆕 Nuevo crédito")
-tab_detalle = _tabs_map.get("📄 Detalle por crédito")
-tab_pagos = _tabs_map.get("💰 Pagos")
-tab_sim = _tabs_map.get("🧮 Simulador")
+tab_resumen = SECCION_ACTIVA == "📊 Resumen"
+tab_clientes = SECCION_ACTIVA == "👥 Clientes"
+tab_creditos = SECCION_ACTIVA == "🆕 Nuevo crédito"
+tab_detalle = SECCION_ACTIVA == "📄 Detalle por crédito"
+tab_pagos = SECCION_ACTIVA == "💰 Pagos"
+tab_sim = SECCION_ACTIVA == "🧮 Simulador"
 # ==========================
 # 📊 RESUMEN
 # ==========================
-with tab_resumen:
+if tab_resumen:
     st.subheader("📊 Resumen general")
     if st.session_state.get("recordatorios_auto", 0):
         enviados_auto = st.session_state.get("recordatorios_auto", 0)
@@ -1925,8 +2083,7 @@ with tab_resumen:
 # ==========================
 # 👥 CLIENTES
 # ==========================
-if tab_clientes is not None:
-    with tab_clientes:
+if tab_clientes:
         st.subheader("👥 Gestión de clientes")
         show_flash("clientes_msg")
 
@@ -2100,8 +2257,7 @@ if tab_clientes is not None:
 # ==========================
 # 🆕 NUEVO CRÉDITO
 # ==========================
-if tab_creditos is not None:
-    with tab_creditos:
+if tab_creditos:
             st.subheader("🆕 Registrar nuevo crédito")
             show_flash("credito_msg")
             show_flash("contrato_msg")
@@ -2286,8 +2442,7 @@ if tab_creditos is not None:
 # ==========================
 # 📄 DETALLE
 # ==========================
-if tab_detalle is not None:
-    with tab_detalle:
+if tab_detalle:
             st.subheader("📄 Detalle por crédito")
             st.caption("Consulta la ficha del crédito, su plan de cuotas y sus movimientos. Los créditos cerrados se conservan en historial para consulta.")
             show_flash("detalle_msg")
@@ -2373,8 +2528,7 @@ if "pago_msg" not in st.session_state:
     st.session_state.pago_msg = None
 if "reset_select_prestamo_pago" not in st.session_state:
     st.session_state.reset_select_prestamo_pago = False
-if tab_pagos is not None:
-    with tab_pagos:
+if tab_pagos:
             st.subheader("💰 Pagos del crédito")
             st.caption("Aquí solo se muestran créditos activos con saldo pendiente. Los créditos cerrados siguen visibles en Resumen e Historial, pero no interfieren en la operación diaria.")
             activos = estado[(estado["estado"] != "Cancelado") & (pd.to_numeric(estado["saldo"], errors="coerce").fillna(0) > 0)].copy()
@@ -2486,8 +2640,7 @@ if tab_pagos is not None:
 # ==========================
 # 🧮 SIMULADOR
 # ==========================
-if tab_sim is not None:
-    with tab_sim:
+if tab_sim:
             st.subheader("🧮 Simulador de crédito")
             t1, t2 = st.tabs([
                 "💳 Crédito normal",

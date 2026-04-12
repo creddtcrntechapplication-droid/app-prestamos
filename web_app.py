@@ -1880,24 +1880,48 @@ with tab_resumen:
     pendiente_periodo = cuotas_df[cuotas_df["estado"].isin(["Pendiente","Parcial"])]["valor_cuota"].sum() if not cuotas_df.empty else 0
 
     c1,c2,c3 = st.columns(3)
-    c1.metric("📥 Cuotas del período", pesos(total_periodo))
-    c2.metric("✅ Pagado en el período", pesos(pagado_periodo))
-    c3.metric("⏳ Pendiente del período", pesos(pendiente_periodo))
+    with c1:
+        if st.button("📥 Cuotas del período", key="btn_total_periodo"):
+            st.session_state.detalle = "total"
+        st.metric("", pesos(total_periodo))
+    with c2:
+        if st.button("✅ Pagado en el período", key="btn_pagado_periodo"):
+            st.session_state.detalle = "pagado"
+        st.metric("", pesos(pagado_periodo))
+    with c3:
+        if st.button("⏳ Pendiente del período", key="btn_pendiente_periodo"):
+            st.session_state.detalle = "pendiente"
+        st.metric("", pesos(pendiente_periodo))
 
-    st.markdown("### 📋 Detalle del período")
-    if cuotas_df.empty:
-        st.info("ℹ️ No hay cuotas registradas en ese período.")
-    else:
-        cuotas_show = cuotas_df.copy()
-        cuotas_show["valor_cuota"] = cuotas_show["valor_cuota"].apply(pesos)
-        cuotas_show = cuotas_show.rename(columns={
-            "fecha_vencimiento": "Fecha de vencimiento",
-            "valor_cuota": "Valor cuota",
-            "estado": "Estado",
-            "nro_cuota": "Cuota",
-            "cliente": "Cliente"
-        })
-        st.dataframe(cuotas_show, use_container_width=True, hide_index=True)
+    if "detalle" in st.session_state and not cuotas_df.empty:
+        st.divider()
+        if st.session_state.detalle=="total":
+            df_detalle=cuotas_df
+            titulo="📋 Todas las cuotas"
+        elif st.session_state.detalle=="pagado":
+            df_detalle=cuotas_df[cuotas_df["estado"]=="Pagada"]
+            titulo="✅ Pagadas"
+        else:
+            df_detalle=cuotas_df[cuotas_df["estado"].isin(["Pendiente","Parcial"])]
+            titulo="⏳ Pendientes"
+        st.markdown(f"### {titulo}")
+        cols = st.columns(3)
+        for i,r in enumerate(df_detalle.itertuples()):
+            with cols[i%3]:
+                estado_color = "🟢 Pagada" if r.estado=="Pagada" else "🟡 Parcial" if r.estado=="Parcial" else "🔴 Pendiente"
+                st.markdown(f"""
+                <div style="background:var(--card-bg, #ffffff);color:var(--text-primary, #111);border-radius:14px;padding:14px;
+                            box-shadow:0 2px 6px rgba(0,0,0,.08);margin-bottom:14px;border:1px solid var(--card-border, #e5e7eb);">
+                    <div style="font-weight:600;font-size:15px;color:var(--text-primary, #000)">{r.cliente}</div>
+                    <div style="font-size:13px;color:var(--text-secondary, #555);margin-top:4px;">
+                        Cuota #{r.nro_cuota} · {r.fecha_vencimiento}
+                    </div>
+                    <div style="font-size:16px;font-weight:700;margin-top:6px;color:var(--text-primary, #111);">
+                        {pesos(r.valor_cuota)}
+                    </div>
+                    <div style="font-size:13px;margin-top:4px;color:var(--text-primary, #111);">{estado_color}</div>
+                </div>
+                """, unsafe_allow_html=True)
 # ==========================
 # 👥 CLIENTES
 # ==========================

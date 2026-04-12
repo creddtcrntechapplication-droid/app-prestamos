@@ -521,14 +521,17 @@ if "menu_activo" not in st.session_state or st.session_state.menu_activo not in 
 st.markdown("""
 <style>
 [data-testid="stSidebar"]{
-    background: linear-gradient(180deg, #081a44 0%, #0b1633 100%) !important;
-    border-right: 1px solid rgba(148,163,184,.18);
+    background: linear-gradient(180deg, #07173c 0%, #081a44 42%, #0a1530 100%) !important;
+    border-right: 1px solid rgba(96,165,250,.14);
+}
+[data-testid="stSidebar"] > div:first-child{
+    padding-top: .45rem;
 }
 [data-testid="stSidebar"] *{
     color: #f8fafc;
 }
 .sidebar-logo-wrap{
-    padding-top: .4rem;
+    padding-top: .25rem;
     text-align: left;
 }
 .sidebar-brand{
@@ -536,57 +539,140 @@ st.markdown("""
     font-weight: 900;
     letter-spacing: -.03em;
     color: #ffffff;
-    margin-top: 8px;
+    margin-top: 10px;
+    line-height: 1.06;
+}
+.sidebar-brand-accent{
+    color: #3b82f6;
 }
 .sidebar-sub{
     font-size: 12px;
     color: #cbd5e1;
-    line-height: 1.45;
-    margin-bottom: 14px;
+    line-height: 1.5;
+    margin: 10px 0 18px 0;
+}
+.sidebar-menu-title{
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: #93c5fd;
+    opacity: .9;
+    margin: 10px 0 10px 2px;
+}
+[data-testid="stSidebar"] .stRadio > div{
+    gap: .42rem !important;
+}
+[data-testid="stSidebar"] .stRadio label{
+    position: relative;
+    width: 100%;
+    margin: 0;
+    background: transparent !important;
+    border: 1px solid transparent !important;
+    border-radius: 16px !important;
+    padding: 12px 14px 12px 16px !important;
+    transition: all .18s ease;
+    box-shadow: none !important;
+}
+[data-testid="stSidebar"] .stRadio label > div:first-child{
+    display: none !important;
+}
+[data-testid="stSidebar"] .stRadio label p{
+    color: #dbeafe !important;
+    font-size: 15px !important;
+    font-weight: 700 !important;
+    line-height: 1.15 !important;
+}
+[data-testid="stSidebar"] .stRadio label:hover{
+    background: rgba(59,130,246,.10) !important;
+    border-color: rgba(96,165,250,.26) !important;
+    transform: translateX(2px);
+}
+[data-testid="stSidebar"] .stRadio label:has(input:checked){
+    background: linear-gradient(135deg, rgba(29,78,216,.28) 0%, rgba(37,99,235,.18) 55%, rgba(59,130,246,.12) 100%) !important;
+    border-color: rgba(96,165,250,.32) !important;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 10px 24px rgba(2,6,23,.20) !important;
+}
+[data-testid="stSidebar"] .stRadio label:has(input:checked)::before{
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 8px;
+    bottom: 8px;
+    width: 4px;
+    border-radius: 999px;
+    background: linear-gradient(180deg, #22d3ee 0%, #3b82f6 100%);
 }
 .sidebar-user-card{
-    margin-top: 14px;
-    border: 1px solid rgba(148,163,184,.18);
-    background: rgba(255,255,255,.06);
-    border-radius: 18px;
-    padding: 14px 14px 12px 14px;
+    margin-top: 20px;
+    border: 1px solid rgba(96,165,250,.16);
+    background: linear-gradient(180deg, rgba(255,255,255,.065) 0%, rgba(255,255,255,.04) 100%);
+    border-radius: 20px;
+    padding: 14px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.04);
+}
+.sidebar-user-top{
+    display:flex;
+    align-items:center;
+    gap:12px;
+    margin-bottom:10px;
+}
+.sidebar-avatar{
+    width:44px;
+    height:44px;
+    border-radius:50%;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:18px;
+    font-weight:900;
+    color:#ffffff;
+    background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 48%, #0ea5e9 100%);
+    box-shadow: 0 10px 22px rgba(2,6,23,.24);
 }
 .sidebar-user-pill{
     display: inline-block;
-    background: rgba(37,99,235,.22);
-    border: 1px solid rgba(147,197,253,.22);
+    background: rgba(37,99,235,.18);
+    border: 1px solid rgba(147,197,253,.20);
     border-radius: 999px;
     color: #dbeafe;
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 800;
-    padding: 5px 10px;
-    margin-bottom: 10px;
+    padding: 4px 9px;
+    margin-bottom: 4px;
 }
-.stRadio > div{
-    gap: .35rem !important;
+.sidebar-user-name{
+    font-size: 16px;
+    font-weight: 800;
+    color: #ffffff;
+    line-height:1.1;
 }
-.stRadio label{
-    background: rgba(255,255,255,.04);
-    border: 1px solid rgba(148,163,184,.12);
-    border-radius: 14px;
-    padding: 10px 12px !important;
-}
-.stRadio label:hover{
-    background: rgba(37,99,235,.12);
-    border-color: rgba(96,165,250,.32);
+.sidebar-user-role{
+    font-size: 12px;
+    color: #bfdbfe;
+    margin-top: 3px;
 }
 [data-testid="stSidebar"] div.stButton > button{
     width: 100%;
-    border-radius: 14px !important;
-    min-height: 48px !important;
+    border-radius: 15px !important;
+    min-height: 46px !important;
     font-weight: 800 !important;
-    border: 1px solid rgba(148,163,184,.22) !important;
+    border: 1px solid rgba(96,165,250,.20) !important;
     color: #ffffff !important;
-    background: linear-gradient(135deg, rgba(11,22,51,.95) 0%, rgba(23,50,102,.98) 45%, rgba(37,99,235,.98) 100%) !important;
-    box-shadow: 0 14px 26px rgba(2,6,23,.26) !important;
+    background: linear-gradient(135deg, #163f97 0%, #1d4ed8 48%, #2563eb 100%) !important;
+    box-shadow: 0 14px 28px rgba(2,6,23,.24) !important;
+    margin-top: 6px;
 }
 [data-testid="stSidebar"] div.stButton > button:hover{
     transform: translateY(-1px);
+    box-shadow: 0 16px 30px rgba(2,6,23,.28) !important;
+}
+.sidebar-foot{
+    text-align:center;
+    color:#93a7cf;
+    font-size:11px;
+    margin-top:10px;
+    opacity:.92;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -594,9 +680,10 @@ st.markdown("""
 with st.sidebar:
     st.markdown("<div class='sidebar-logo-wrap'>", unsafe_allow_html=True)
     if os.path.exists("logo_creddt.png"):
-        st.image("logo_creddt.png", width=120)
-    st.markdown("<div class='sidebar-brand'>CREDDT | CRNTECH</div>", unsafe_allow_html=True)
-    st.markdown("<div class='sidebar-sub'>Panel principal de operación y seguimiento de créditos.</div>", unsafe_allow_html=True)
+        st.image("logo_creddt.png", width=112)
+    st.markdown("<div class='sidebar-brand'>CREDDT | <span class='sidebar-brand-accent'>CRNTECH</span></div>", unsafe_allow_html=True)
+    st.markdown("<div class='sidebar-sub'>Gestión principal de créditos, clientes, pagos y seguimiento operativo.</div>", unsafe_allow_html=True)
+    st.markdown("<div class='sidebar-menu-title'>Menú principal</div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.session_state.menu_activo = st.radio(
@@ -608,18 +695,25 @@ with st.sidebar:
 
     st.markdown(
         f"<div class='sidebar-user-card'>"
+        f"<div class='sidebar-user-top'>"
+        f"<div class='sidebar-avatar'>👤</div>"
+        f"<div>"
         f"<div class='sidebar-user-pill'>Sesión activa</div>"
-        f"<div style='font-size:15px;font-weight:800;color:#ffffff;'>{st.session_state.get('usuario','-')}</div>"
-        f"<div style='font-size:12px;color:#cbd5e1;margin-top:4px;'>Rol: {st.session_state.get('rol','-')}</div>"
+        f"<div class='sidebar-user-name'>{st.session_state.get('usuario','-')}</div>"
+        f"<div class='sidebar-user-role'>Rol: {st.session_state.get('rol','-')}</div>"
+        f"</div>"
+        f"</div>"
         f"</div>",
         unsafe_allow_html=True
     )
 
-    if st.button("Cerrar sesión", key="btn_logout_sidebar"):
+    if st.button("↪ Cerrar sesión", key="btn_logout_sidebar"):
         for k in ["auth", "usuario", "rol", "menu_activo", "pago_msg", "detalle", "detalle_mora"]:
             if k in st.session_state:
                 del st.session_state[k]
         st.rerun()
+
+    st.markdown("<div class='sidebar-foot'>v1.0.0 • CREDDT | CRNTECH</div>", unsafe_allow_html=True)
 
 SECCION_ACTIVA = st.session_state.menu_activo
 

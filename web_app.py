@@ -1063,13 +1063,14 @@ def pesos(valor):
 def normalizar_decimal(valor):
     return Decimal(str(valor or 0)).quantize(Decimal("0.01"))
 def enviar_correo(destino, asunto, cuerpo):
-    ok, error = enviar_correo_mailersend(
+    ok, error = enviar_correo_async(
         destino=destino,
         asunto=asunto,
         cuerpo=cuerpo
     )
     if not ok:
         st.warning(f"⚠️ El correo no pudo enviarse: {error}")
+    return ok, error
 def calcular_cuota_amortizada(capital, tasa_mensual, cuotas_restantes):
     capital = float(capital or 0)
     tasa_mensual = float(tasa_mensual or 0)
@@ -1384,39 +1385,97 @@ def enviar_pdf_por_correo(destino, asunto, cuerpo, ruta_pdf, nombre_adj, html_ov
 
 
 def enviar_contrato_credito(prestamo_row):
+    """Genera y envía el contrato del crédito.
+
+    Retorna (ok, error). Si el correo fue enviado, ok queda en True aunque
+    falle la actualización del marcador en BD, para evitar mostrar un falso
+    error de envío al usuario.
+    """
     if not prestamo_row.get("correo"):
         return False, "Cliente sin correo registrado"
+
+    if not APP_BASE_URL:
+        return False, "Falta configurar APP_BASE_URL para generar el enlace de aceptación"
+
     token = prestamo_row.get("contrato_token")
-    if not token:
-        token = uuid.uuid4().hex
-        with get_conn() as conn:
-            conn.execute(text("UPDATE prestamos SET contrato_token = :token WHERE id = :id"), {"token": token, "id": prestamo_row["id"]})
-            conn.commit()
-    enlace = f"{APP_BASE_URL}?aceptar={token}" if APP_BASE_URL else None
-    ruta_pdf = None
     try:
-        ruta_pdf = generar_contrato_pdf(prestamo_row["id"], prestamo_row["cliente"], prestamo_row["monto_original"], prestamo_row["cuotas"], prestamo_row["valor_cuota"], prestamo_row["tipo"])
-        cuerpo = construir_cuerpo_correo("CONTRATO", prestamo_row["cliente"], prestamo_id=prestamo_row["id"], monto=prestamo_row["monto_original"], cuotas=prestamo_row["cuotas"], valor_cuota=prestamo_row["valor_cuota"], tipo_credito=prestamo_row.get("tipo"), link_aceptacion=enlace)
-        html_correo = construir_html_correo("CONTRATO", prestamo_row["cliente"], prestamo_id=prestamo_row["id"], monto=prestamo_row["monto_original"], cuotas=prestamo_row["cuotas"], valor_cuota=prestamo_row["valor_cuota"], tipo_credito=prestamo_row.get("tipo"), link_aceptacion=enlace)
-        with open(ruta_pdf, "rb") as f:
-            ok_mail, err_mail = enviar_correo_async(prestamo_row["correo"], "CREDDT CRNTECH | Contrato de crédito para aceptación", cuerpo, attachment_bytes=f.read(), attachment_name=f"contrato_{prestamo_row['id']}.pdf", html_override=html_correo)
-        if ok_mail:
+        if not token:
+            token = uuid.uuid4().hex
             with get_conn() as conn:
-                conn.execute(text("""
-                    UPDATE prestamos
-                    SET contrato_enviado = 1,
-                        fecha_envio_contrato = :fecha
-                    WHERE id = :id
-                """), {"fecha": datetime.now().isoformat(timespec='seconds'), "id": prestamo_row["id"]})
+                conn.execute(
+                    text("UPDATE prestamos SET contrato_token = :token WHERE id = :id"),
+                    {"token": token, "id": prestamo_row["id"]}
+                )
                 conn.commit()
-            clear_app_caches()
-        return ok_mail, err_mail
-    finally:
-        if ruta_pdf and os.path.exists(ruta_pdf):
+
+        enlace = f"{APP_BASE_URL}?aceptar={token}"
+        ruta_pdf = generar_contrato_pdf(
+            prestamo_row["id"],
+            prestamo_row["cliente"],
+            prestamo_row["monto_original"],
+            prestamo_row["cuotas"],
+            prestamo_row["valor_cuota"],
+            prestamo_row.get("tipo", "Normal")
+        )
+
+        try:
+            cuerpo = construir_cuerpo_correo(
+                "CONTRATO",
+                prestamo_row["cliente"],
+                prestamo_id=prestamo_row["id"],
+                monto=prestamo_row["monto_original"],
+                cuotas=prestamo_row["cuotas"],
+                valor_cuota=prestamo_row["valor_cuota"],
+                tipo_credito=prestamo_row.get("tipo"),
+                link_aceptacion=enlace
+            )
+            html_correo = construir_html_correo(
+                "CONTRATO",
+                prestamo_row["cliente"],
+                prestamo_id=prestamo_row["id"],
+                monto=prestamo_row["monto_original"],
+                cuotas=prestamo_row["cuotas"],
+                valor_cuota=prestamo_row["valor_cuota"],
+                tipo_credito=prestamo_row.get("tipo"),
+                link_aceptacion=enlace
+            )
+
+            with open(ruta_pdf, "rb") as f:
+                ok_mail, err_mail = enviar_correo_async(
+                    prestamo_row["correo"],
+                    "CREDDT CRNTECH | Contrato de crédito para aceptación",
+                    cuerpo,
+                    attachment_bytes=f.read(),
+                    attachment_name=f"contrato_{prestamo_row['id']}.pdf",
+                    html_override=html_correo
+                )
+
+            if not ok_mail:
+                return False, err_mail
+
             try:
-                os.remove(ruta_pdf)
-            except Exception:
-                pass
+                with get_conn() as conn:
+                    conn.execute(text("""
+                        UPDATE prestamos
+                        SET contrato_enviado = 1,
+                            fecha_envio_contrato = :fecha
+                        WHERE id = :id
+                    """), {"fecha": datetime.now().isoformat(timespec='seconds'), "id": prestamo_row["id"]})
+                    conn.commit()
+                clear_app_caches()
+            except Exception as e_bd:
+                return True, f"Correo enviado, pero no se pudo marcar el contrato como enviado en BD: {e_bd}"
+
+            return True, None
+        finally:
+            if ruta_pdf and os.path.exists(ruta_pdf):
+                try:
+                    os.remove(ruta_pdf)
+                except Exception:
+                    pass
+
+    except Exception as e:
+        return False, f"Error enviando contrato: {e}"
 
 
 def enviar_correo_desembolso_credito(prestamo_row):
@@ -1880,6 +1939,11 @@ def enviar_correo_brevo(
         if not destino:
             return False, "Cliente sin correo registrado"
 
+        if not BREVO_API_KEY:
+            return False, "Falta configurar BREVO_API_KEY"
+        if not BREVO_FROM_EMAIL:
+            return False, "Falta configurar BREVO_FROM_EMAIL"
+
         cuerpo = (cuerpo or "").strip()
         cuerpo_html = cuerpo.replace("\n", "<br>")
 
@@ -2255,6 +2319,13 @@ if tab_clientes:
                 else:
                     clientes_df = clientes_df.fillna("")
                     cliente_options = [None] + clientes_df["cedula"].tolist()
+
+                    # Streamlit no permite modificar el session_state de un widget
+                    # después de haberlo creado. Esta bandera limpia la selección
+                    # al inicio del siguiente rerun, antes de instanciar el selectbox.
+                    if st.session_state.pop("reset_sel_cliente_gestion", False):
+                        st.session_state["sel_cliente_gestion"] = None
+
                     cliente_sel = st.selectbox(
                         "Selecciona un cliente",
                         cliente_options,
@@ -2307,7 +2378,7 @@ if tab_clientes:
                                                     "cargo": cargo_edit.strip()
                                                 })
                                                 set_flash("clientes_msg", "success", "✅ Cliente actualizado correctamente")
-                                                st.session_state["sel_cliente_gestion"] = None
+                                                st.session_state["reset_sel_cliente_gestion"] = True
                                                 st.rerun()
                                             except Exception as e:
                                                 st.error(f"❌ No se pudo actualizar el cliente: {e}")
@@ -2323,7 +2394,7 @@ if tab_clientes:
                                         try:
                                             ok_del, err_del = eliminar_cliente_db(cliente_sel)
                                             if ok_del:
-                                                st.session_state["sel_cliente_gestion"] = None
+                                                st.session_state["reset_sel_cliente_gestion"] = True
                                                 set_flash("clientes_msg", "success", "✅ Cliente eliminado correctamente")
                                                 st.rerun()
                                             else:
@@ -2374,6 +2445,11 @@ if tab_creditos:
                 cliente_options = [None] + clientes_credito_df["cedula"].tolist()
                 nombre_cliente = lambda x: "Selecciona un cliente" if x is None else f"{x} — {clientes_credito_df.loc[clientes_credito_df['cedula']==x, 'nombres'].iloc[0]} {clientes_credito_df.loc[clientes_credito_df['cedula']==x, 'apellidos'].iloc[0]}"
 
+                if st.session_state.pop("reset_cliente_normal_credito", False):
+                    st.session_state["cliente_normal_credito"] = None
+                if st.session_state.pop("reset_cliente_express_credito", False):
+                    st.session_state["cliente_express_credito"] = None
+
                 with cred_tab1:
                     with st.form("form_credito_normal", clear_on_submit=True):
                         cliente_normal = st.selectbox(
@@ -2397,11 +2473,11 @@ if tab_creditos:
                             try:
                                 ok_c, err_c, prestamo_creado = crear_credito_db(cliente_normal, monto_normal_new, cuotas_normal_new, frecuencia_normal_new, "Normal", fecha_inicio_normal)
                                 if ok_c:
-                                    st.session_state["cliente_normal_credito"] = None
+                                    st.session_state["reset_cliente_normal_credito"] = True
                                     if not err_c:
                                         set_flash("credito_msg", "success", f"✅ Crédito {prestamo_creado['id']} creado y contrato enviado correctamente")
                                     else:
-                                        set_flash("credito_msg", "warning", f"⚠️ Crédito {prestamo_creado['id']} creado, pero el contrato quedó pendiente: {err_c}")
+                                        set_flash("credito_msg", "warning", f"⚠️ Crédito {prestamo_creado['id']} creado. Observación del contrato: {err_c}")
                                     st.rerun()
                                 else:
                                     st.error(f"❌ {err_c}")
@@ -2431,11 +2507,11 @@ if tab_creditos:
                             try:
                                 ok_c, err_c, prestamo_creado = crear_credito_db(cliente_express, monto_express_new, cuotas_express_new, frecuencia_express_new, "Express", fecha_inicio_express)
                                 if ok_c:
-                                    st.session_state["cliente_express_credito"] = None
+                                    st.session_state["reset_cliente_express_credito"] = True
                                     if not err_c:
                                         set_flash("credito_msg", "success", f"✅ Crédito {prestamo_creado['id']} creado y contrato enviado correctamente")
                                     else:
-                                        set_flash("credito_msg", "warning", f"⚠️ Crédito {prestamo_creado['id']} creado, pero el contrato quedó pendiente: {err_c}")
+                                        set_flash("credito_msg", "warning", f"⚠️ Crédito {prestamo_creado['id']} creado. Observación del contrato: {err_c}")
                                     st.rerun()
                                 else:
                                     st.error(f"❌ {err_c}")
@@ -2506,12 +2582,17 @@ if tab_creditos:
                                 try:
                                     ok_send, err_send = enviar_contrato_credito(fila_p)
                                     if ok_send:
-                                        set_flash("contrato_msg", "success", f"✅ Contrato enviado correctamente para el crédito {fila_p['id']}. Ahora queda esperando aceptación.")
+                                        if err_send:
+                                            set_flash("contrato_msg", "warning", f"⚠️ Contrato enviado para el crédito {fila_p['id']}, pero quedó una observación: {err_send}")
+                                        else:
+                                            set_flash("contrato_msg", "success", f"✅ Contrato enviado correctamente para el crédito {fila_p['id']}. Ahora queda esperando aceptación.")
                                     else:
                                         set_flash("contrato_msg", "warning", f"⚠️ No se pudo enviar el contrato del crédito {fila_p['id']}: {err_send}")
-                                    st.rerun()
+                                except Exception as e:
+                                    set_flash("contrato_msg", "error", f"❌ Error inesperado enviando contrato: {e}")
                                 finally:
                                     stop_busy()
+                                st.rerun()
 
                         pendientes_show = pendientes_df[["id", "cliente", "monto_original", "valor_cuota", "cuotas", "frecuencia", "tipo", "estado", "contrato_enviado", "contrato_aceptado", "desembolso_notificado"]].copy()
                         pendientes_show["monto_original"] = pendientes_show["monto_original"].apply(pesos)

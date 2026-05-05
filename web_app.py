@@ -732,6 +732,14 @@ st.markdown("""
     --text-secondary: #64748b;
     --text-tertiary: #475569;
     --chip-text: #1d4ed8;
+    --card-bg: #ffffff;
+    --card-border: #e2e8f0;
+    --status-paid-bg: #dcfce7;
+    --status-paid-text: #166534;
+    --status-partial-bg: #fef3c7;
+    --status-partial-text: #92400e;
+    --status-pending-bg: #fee2e2;
+    --status-pending-text: #991b1b;
 }
 @media (prefers-color-scheme: dark){
     :root{
@@ -744,6 +752,14 @@ st.markdown("""
         --text-secondary: #cbd5e1;
         --text-tertiary: #e2e8f0;
         --chip-text: #bfdbfe;
+        --card-bg: #111827;
+        --card-border: #334155;
+        --status-paid-bg: rgba(22,101,52,.22);
+        --status-paid-text: #bbf7d0;
+        --status-partial-bg: rgba(146,64,14,.26);
+        --status-partial-text: #fde68a;
+        --status-pending-bg: rgba(153,27,27,.24);
+        --status-pending-text: #fecaca;
     }
 }
 html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"]{
@@ -809,6 +825,57 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"]{
 .creddt-strong{
     color: var(--text-primary);
 }
+.cuota-card{
+    background: var(--card-bg) !important;
+    color: var(--text-primary) !important;
+    border: 1px solid var(--card-border) !important;
+    border-radius: 16px;
+    padding: 14px 15px;
+    margin-bottom: 14px;
+    box-shadow: 0 8px 20px rgba(15,23,42,.07);
+    min-height: 142px;
+}
+.cuota-card-title{
+    color: var(--text-primary) !important;
+    font-weight: 800;
+    font-size: 15px;
+    line-height: 1.25;
+    word-break: break-word;
+}
+.cuota-card-meta{
+    color: var(--text-secondary) !important;
+    font-size: 13px;
+    margin-top: 6px;
+    line-height: 1.35;
+}
+.cuota-card-value{
+    color: var(--text-primary) !important;
+    font-size: 18px;
+    font-weight: 900;
+    margin-top: 9px;
+}
+.cuota-status{
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border-radius: 999px;
+    padding: 6px 10px;
+    margin-top: 8px;
+    font-size: 12px;
+    font-weight: 800;
+}
+.cuota-status-pagada{
+    background: var(--status-paid-bg);
+    color: var(--status-paid-text);
+}
+.cuota-status-parcial{
+    background: var(--status-partial-bg);
+    color: var(--status-partial-text);
+}
+.cuota-status-pendiente{
+    background: var(--status-pending-bg);
+    color: var(--status-pending-text);
+}
 @media (max-width: 1024px) {
   div[data-testid="stHorizontalBlock"] {
     gap: .75rem !important;
@@ -842,6 +909,16 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"]{
   div[data-testid="stTabs"] button {
     font-size: .85rem !important;
     padding: .45rem .7rem !important;
+  }
+  .cuota-card{
+    min-height: auto !important;
+    padding: 14px !important;
+  }
+  .cuota-card-title{
+    font-size: 15px !important;
+  }
+  .cuota-card-value{
+    font-size: 17px !important;
   }
 }
 </style>
@@ -2221,23 +2298,45 @@ if tab_resumen:
             df_detalle=cuotas_df[cuotas_df["estado"].isin(["Pendiente","Parcial"])]
             titulo="⏳ Pendientes"
         st.markdown(f"### {titulo}")
-        cols = st.columns(3)
-        for i,r in enumerate(df_detalle.itertuples()):
-            with cols[i%3]:
-                estado_color = "🟢 Pagada" if r.estado=="Pagada" else "🟡 Parcial" if r.estado=="Parcial" else "🔴 Pendiente"
-                st.markdown(f"""
-                <div style="background:var(--card-bg, #ffffff);color:var(--text-primary, #111);border-radius:14px;padding:14px;
-                            box-shadow:0 2px 6px rgba(0,0,0,.08);margin-bottom:14px;border:1px solid var(--card-border, #e5e7eb);">
-                    <div style="font-weight:600;font-size:15px;color:var(--text-primary, #000)">{r.cliente}</div>
-                    <div style="font-size:13px;color:var(--text-secondary, #555);margin-top:4px;">
-                        Cuota #{r.nro_cuota} · {r.fecha_vencimiento}
+
+        buscar_detalle = st.text_input(
+            "Buscar cliente en este detalle",
+            placeholder="Escribe el nombre del cliente...",
+            key=f"buscar_detalle_{st.session_state.detalle}"
+        )
+
+        if buscar_detalle.strip():
+            df_detalle = df_detalle[df_detalle["cliente"].astype(str).str.contains(buscar_detalle.strip(), case=False, na=False)]
+
+        st.caption(f"Mostrando {len(df_detalle)} cuota(s) en este detalle.")
+
+        if df_detalle.empty:
+            st.info("No hay cuotas para mostrar con el filtro actual.")
+        else:
+            cols = st.columns(3)
+            for i,r in enumerate(df_detalle.itertuples()):
+                with cols[i%3]:
+                    if r.estado == "Pagada":
+                        estado_label = "Pagada"
+                        estado_icono = "🟢"
+                        estado_class = "cuota-status-pagada"
+                    elif r.estado == "Parcial":
+                        estado_label = "Parcial"
+                        estado_icono = "🟡"
+                        estado_class = "cuota-status-parcial"
+                    else:
+                        estado_label = "Pendiente"
+                        estado_icono = "🔴"
+                        estado_class = "cuota-status-pendiente"
+
+                    st.markdown(f"""
+                    <div class="cuota-card">
+                        <div class="cuota-card-title">{r.cliente}</div>
+                        <div class="cuota-card-meta">Cuota #{r.nro_cuota} · {r.fecha_vencimiento}</div>
+                        <div class="cuota-card-value">{pesos(r.valor_cuota)}</div>
+                        <div class="cuota-status {estado_class}">{estado_icono} {estado_label}</div>
                     </div>
-                    <div style="font-size:16px;font-weight:700;margin-top:6px;color:var(--text-primary, #111);">
-                        {pesos(r.valor_cuota)}
-                    </div>
-                    <div style="font-size:13px;margin-top:4px;color:var(--text-primary, #111);">{estado_color}</div>
-                </div>
-                """, unsafe_allow_html=True)
+                    """, unsafe_allow_html=True)
 # ==========================
 # 👥 CLIENTES
 # ==========================

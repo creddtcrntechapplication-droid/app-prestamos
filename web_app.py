@@ -1173,7 +1173,7 @@ def asegurar_estructura_financiera():
         """))
         conn.commit()
     clear_app_caches()
-asegurar_estrutura_financiera()
+asegurar_estructura_financiera()
 
 def asegurar_estructura_control_financiero():
     with get_conn() as conn:

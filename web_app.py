@@ -66,6 +66,7 @@ def clear_app_caches():
         load_mora.cache_clear()
         load_cuotas_periodo.cache_clear()
         load_detalle_mora.cache_clear()
+        load_kpis_financieros.cache_clear()
     except Exception:
         pass
 
@@ -86,13 +87,9 @@ def load_estado():
                 COALESCE(p.contrato_aceptado, 0) AS contrato_aceptado,
                 COALESCE(p.contrato_enviado, 0) AS contrato_enviado,
                 COALESCE(p.desembolso_notificado, 0) AS desembolso_notificado,
-                COALESCE(p.contrato_cancelado, 0) AS contrato_cancelado,
                 p.fecha_envio_contrato,
                 p.fecha_aceptacion,
                 p.fecha_desembolso,
-                p.fecha_cancelacion_contrato,
-                p.motivo_cancelacion_contrato,
-                p.cancelado_por,
                 COALESCE(p.saldo_capital, p.monto_original) AS saldo_capital,
                 COALESCE(p.tasa_mensual, 0) AS tasa_mensual,
                 COALESCE(SUM(pg.valor),0) AS total_pagado,
@@ -117,9 +114,8 @@ def load_estado():
                 ON c.cedula = p.cliente_cedula
             GROUP BY
                 p.id, p.estado, p.monto_original, p.valor_cuota, p.cuotas, p.frecuencia, p.tipo,
-                p.cliente_cedula, p.contrato_aceptado, p.contrato_enviado, p.desembolso_notificado, p.contrato_cancelado,
-                p.fecha_envio_contrato, p.fecha_aceptacion, p.fecha_desembolso, p.fecha_cancelacion_contrato,
-                p.motivo_cancelacion_contrato, p.cancelado_por,
+                p.cliente_cedula, p.contrato_aceptado, p.contrato_enviado, p.desembolso_notificado,
+                p.fecha_envio_contrato, p.fecha_aceptacion, p.fecha_desembolso,
                 p.saldo_capital, p.tasa_mensual, c.nombres, c.apellidos, c.correo
             ORDER BY p.id DESC
             """),
@@ -187,6 +183,73 @@ def load_cuotas_periodo(inicio_iso, fin_iso):
             AND cu.fecha_vencimiento::date <= :fin
             ORDER BY cu.fecha_vencimiento
         """), conn, params={"inicio": inicio_iso, "fin": fin_iso})
+
+@st.cache_data(ttl=45, show_spinner=False)
+def load_kpis_financieros():
+    with get_conn() as conn:
+        row = conn.execute(text("""
+            WITH prestamos_validos AS (
+                SELECT *
+                FROM prestamos
+                WHERE COALESCE(estado, '') <> 'Anulado'
+            ),
+            pagos_enriquecidos AS (
+                SELECT
+                    pg.id_pago,
+                    pg.prestamo_id,
+                    COALESCE(pg.valor, 0) AS valor,
+                    COALESCE(pg.tipo_movimiento, 'CUOTA') AS tipo_movimiento,
+                    COALESCE(
+                        pg.capital_pagado,
+                        CASE
+                            WHEN COALESCE(pg.tipo_movimiento, '') = 'ABONO_CAPITAL' THEN COALESCE(pg.valor, 0)
+                            WHEN pg.saldo_capital_anterior IS NOT NULL AND pg.saldo_capital_nuevo IS NOT NULL THEN GREATEST(pg.saldo_capital_anterior - pg.saldo_capital_nuevo, 0)
+                            ELSE 0
+                        END
+                    ) AS capital_pagado_calc,
+                    COALESCE(
+                        pg.interes_pagado,
+                        CASE
+                            WHEN COALESCE(pg.tipo_movimiento, '') = 'CUOTA' THEN GREATEST(
+                                COALESCE(pg.valor, 0) - COALESCE(
+                                    pg.capital_pagado,
+                                    CASE
+                                        WHEN pg.saldo_capital_anterior IS NOT NULL AND pg.saldo_capital_nuevo IS NOT NULL THEN GREATEST(pg.saldo_capital_anterior - pg.saldo_capital_nuevo, 0)
+                                        ELSE 0
+                                    END
+                                ),
+                                0
+                            )
+                            ELSE 0
+                        END
+                    ) AS interes_pagado_calc
+                FROM pagos pg
+                JOIN prestamos_validos pv ON pv.id = pg.prestamo_id
+            ),
+            cuotas_pendientes AS (
+                SELECT COALESCE(SUM(cu.valor_cuota), 0) AS total
+                FROM cuotas cu
+                JOIN prestamos_validos pv ON pv.id = cu.prestamo_id
+                WHERE cu.estado <> 'Pagada'
+            ),
+            cartera_mora AS (
+                SELECT COALESCE(SUM(cu.valor_cuota), 0) AS total
+                FROM cuotas cu
+                JOIN prestamos_validos pv ON pv.id = cu.prestamo_id
+                WHERE cu.estado <> 'Pagada'
+                  AND cu.fecha_vencimiento::date < CURRENT_DATE
+            )
+            SELECT
+                COALESCE((SELECT SUM(monto_original) FROM prestamos_validos), 0) AS capital_colocado,
+                COALESCE((SELECT SUM(capital_pagado_calc) FROM pagos_enriquecidos), 0) AS capital_recuperado,
+                COALESCE((SELECT SUM(interes_pagado_calc) FROM pagos_enriquecidos), 0) AS interes_cobrado,
+                COALESCE((SELECT SUM(COALESCE(saldo_capital, monto_original)) FROM prestamos_validos WHERE COALESCE(estado, '') NOT IN ('Cancelado', 'Anulado')), 0) AS capital_vivo,
+                COALESCE((SELECT SUM(valor) FROM pagos_enriquecidos), 0) AS recaudo_acumulado,
+                COALESCE((SELECT total FROM cuotas_pendientes), 0) AS cuotas_pendientes,
+                COALESCE((SELECT total FROM cartera_mora), 0) AS cartera_mora,
+                COALESCE((SELECT COUNT(*) FROM prestamos_validos WHERE COALESCE(estado, '') NOT IN ('Cancelado', 'Anulado')), 0) AS creditos_activos
+        """)).mappings().first()
+    return dict(row or {})
 
 def ejecutar_sql(query, params=None, fetch=False):
     """
@@ -996,22 +1059,7 @@ def asegurar_estructura_base():
                 fecha_envio_contrato TEXT,
                 desembolso_notificado INTEGER DEFAULT 0,
                 fecha_inicio TEXT,
-                contrato_cancelado INTEGER DEFAULT 0,
-                fecha_cancelacion_contrato TEXT,
-                motivo_cancelacion_contrato TEXT,
-                cancelado_por TEXT,
                 FOREIGN KEY(cliente_cedula) REFERENCES clientes(cedula)
-            )
-        """))
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS auditoria_contratos (
-                id SERIAL PRIMARY KEY,
-                prestamo_id TEXT,
-                accion TEXT,
-                motivo TEXT,
-                usuario TEXT,
-                fecha TEXT,
-                detalle TEXT
             )
         """))
         conn.execute(text("""
@@ -1064,12 +1112,13 @@ def asegurar_estructura_base():
             "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS fecha_envio_contrato TEXT",
             "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS desembolso_notificado INTEGER DEFAULT 0",
             "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS fecha_inicio TEXT",
-            "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS contrato_cancelado INTEGER DEFAULT 0",
-            "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS fecha_cancelacion_contrato TEXT",
-            "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS motivo_cancelacion_contrato TEXT",
-            "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS cancelado_por TEXT",
             "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS tipo_movimiento TEXT",
             "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS detalle TEXT",
+            "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS interes_pagado NUMERIC(18,2)",
+            "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS capital_pagado NUMERIC(18,2)",
+            "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS saldo_capital_anterior NUMERIC(18,2)",
+            "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS saldo_capital_nuevo NUMERIC(18,2)",
+            "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS cuota_numero INTEGER",
             "ALTER TABLE pagos_cuotas ADD COLUMN IF NOT EXISTS valor_aplicado NUMERIC(18,2)",
             "ALTER TABLE reminders_sent ADD COLUMN IF NOT EXISTS tipo_recordatorio TEXT"
         ]:
@@ -1081,7 +1130,6 @@ def asegurar_estructura_base():
                 contrato_aceptado = COALESCE(contrato_aceptado, 0),
                 contrato_enviado = COALESCE(contrato_enviado, 0),
                 desembolso_notificado = COALESCE(desembolso_notificado, 0),
-                contrato_cancelado = COALESCE(contrato_cancelado, 0),
                 fecha_inicio = COALESCE(fecha_inicio, CURRENT_DATE::text),
                 frecuencia = COALESCE(frecuencia, 'Mensual')
             WHERE saldo_capital IS NULL
@@ -1089,7 +1137,6 @@ def asegurar_estructura_base():
                OR contrato_aceptado IS NULL
                OR contrato_enviado IS NULL
                OR desembolso_notificado IS NULL
-               OR contrato_cancelado IS NULL
                OR fecha_inicio IS NULL
                OR frecuencia IS NULL
         """))
@@ -1103,6 +1150,11 @@ def asegurar_estructura_financiera():
             "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS tasa_mensual NUMERIC(12,6)",
             "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS tipo_movimiento TEXT",
             "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS detalle TEXT",
+            "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS interes_pagado NUMERIC(18,2)",
+            "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS capital_pagado NUMERIC(18,2)",
+            "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS saldo_capital_anterior NUMERIC(18,2)",
+            "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS saldo_capital_nuevo NUMERIC(18,2)",
+            "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS cuota_numero INTEGER",
             "ALTER TABLE pagos_cuotas ADD COLUMN IF NOT EXISTS valor_aplicado NUMERIC(18,2)"
         ]
         for sentencia in sentencias:
@@ -1155,25 +1207,6 @@ def start_busy(label="Procesando..."):
 def stop_busy():
     st.session_state.app_busy = False
     st.session_state.app_busy_label = None
-
-def registrar_auditoria_contrato(prestamo_id, accion, usuario=None, motivo=None, detalle=None):
-    try:
-        with get_conn() as conn:
-            conn.execute(text("""
-                INSERT INTO auditoria_contratos (prestamo_id, accion, motivo, usuario, fecha, detalle)
-                VALUES (:prestamo_id, :accion, :motivo, :usuario, :fecha, :detalle)
-            """), {
-                "prestamo_id": prestamo_id,
-                "accion": accion,
-                "motivo": motivo,
-                "usuario": usuario or st.session_state.get("usuario") or "SISTEMA",
-                "fecha": datetime.now().isoformat(timespec='seconds'),
-                "detalle": detalle
-            })
-            conn.commit()
-    except Exception:
-        pass
-
 # ==========================
 # UTILIDADES
 # ==========================
@@ -1501,54 +1534,6 @@ def obtener_datos_cliente(conn, cedula):
         WHERE cedula = :cedula
     """), {"cedula": cedula}).fetchone()
 
-def construir_cuerpo_anulacion_contrato(nombre_cliente, prestamo_id, motivo):
-    motivo_txt = (motivo or "No especificado").strip()
-    return f"""Estimado(a) {nombre_cliente},
-
-Reciba un cordial saludo de CREDDT CRNTECH.
-
-Le informamos que el contrato asociado al crédito {prestamo_id} fue anulado en nuestro sistema debido a una validación administrativa.
-
-Motivo registrado:
-- {motivo_txt}
-
-Este contrato queda sin efecto y el enlace de aceptación anterior ya no debe ser utilizado.
-
-Ofrecemos disculpas por la novedad presentada. Si requiere una nueva validación o confirmación, nuestro equipo estará atento para brindarle apoyo.
-
-Cordialmente,
-CREDDT CRNTECH
-Área Administrativa y Financiera"""
-
-def construir_html_anulacion_contrato(nombre_cliente, prestamo_id, motivo):
-    motivo_txt = (motivo or "No especificado").strip()
-    return f"""
-    <div style=\"margin:0;padding:24px;background:#f3f6fb;font-family:Arial,Helvetica,sans-serif;color:#0f172a;\">
-        <div style=\"max-width:720px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:18px;overflow:hidden;\">
-            <div style=\"background:#0f172a;padding:28px 32px;\">
-                <div style=\"font-size:24px;font-weight:800;color:#ffffff;letter-spacing:.2px;\">CREDDT CRNTECH</div>
-                <div style=\"margin-top:6px;font-size:14px;color:#cbd5e1;\">Anulación de contrato de crédito</div>
-            </div>
-            <div style=\"padding:30px 32px;\">
-                <p style=\"margin:0 0 16px 0;font-size:15px;line-height:1.75;\">Estimado(a) <strong>{nombre_cliente}</strong>,</p>
-                <p style=\"margin:0 0 18px 0;font-size:15px;line-height:1.75;color:#334155;\">
-                    Le informamos que el contrato asociado al crédito <strong>{prestamo_id}</strong> fue anulado en nuestro sistema debido a una validación administrativa.
-                </p>
-                <div style=\"background:#fff7ed;border:1px solid #fdba74;border-radius:14px;padding:18px 20px;margin:0 0 24px 0;\">
-                    <div style=\"font-size:13px;font-weight:700;letter-spacing:.4px;color:#9a3412;margin-bottom:10px;text-transform:uppercase;\">Motivo registrado</div>
-                    <div style=\"font-size:15px;line-height:1.7;color:#7c2d12;\">{motivo_txt}</div>
-                </div>
-                <p style=\"margin:0 0 18px 0;font-size:15px;line-height:1.75;color:#334155;\">
-                    El enlace de aceptación anterior ya no debe ser utilizado. Ofrecemos disculpas por la novedad presentada.
-                </p>
-                <div style=\"border-top:1px solid #e5e7eb;padding-top:18px;margin-top:18px;\">
-                    <p style=\"margin:0;font-size:14px;line-height:1.7;color:#334155;\">Cordialmente,<br><strong>CREDDT CRNTECH</strong><br>Área Administrativa y Financiera</p>
-                </div>
-            </div>
-        </div>
-    </div>
-    """
-
 def enviar_pdf_por_correo(destino, asunto, cuerpo, ruta_pdf, nombre_adj, html_override=None):
     with open(ruta_pdf, "rb") as f:
         return enviar_correo_async(destino=destino, asunto=asunto, cuerpo=cuerpo, attachment_bytes=f.read(), attachment_name=nombre_adj, html_override=html_override)
@@ -1563,12 +1548,6 @@ def enviar_contrato_credito(prestamo_row):
     """
     if not prestamo_row.get("correo"):
         return False, "Cliente sin correo registrado"
-
-    if int(prestamo_row.get("contrato_cancelado", 0) or 0) == 1 or str(prestamo_row.get("estado") or "").strip().lower() == "anulado":
-        return False, "El contrato está anulado y no puede reenviarse"
-
-    if int(prestamo_row.get("contrato_aceptado", 0) or 0) == 1:
-        return False, "El contrato ya fue aceptado y no corresponde reenviarlo"
 
     if not APP_BASE_URL:
         return False, "Falta configurar APP_BASE_URL para generar el enlace de aceptación"
@@ -1639,9 +1618,7 @@ def enviar_contrato_credito(prestamo_row):
                     """), {"fecha": datetime.now().isoformat(timespec='seconds'), "id": prestamo_row["id"]})
                     conn.commit()
                 clear_app_caches()
-                registrar_auditoria_contrato(prestamo_row["id"], "ENVIO_CONTRATO", detalle=f"Contrato enviado a {prestamo_row.get('correo')}")
             except Exception as e_bd:
-                registrar_auditoria_contrato(prestamo_row["id"], "ENVIO_CONTRATO", detalle=f"Correo enviado a {prestamo_row.get('correo')}, pero falló el update de BD: {e_bd}")
                 return True, f"Correo enviado, pero no se pudo marcar el contrato como enviado en BD: {e_bd}"
 
             return True, None
@@ -1787,70 +1764,6 @@ def crear_credito_db(cliente_cedula, monto, cuotas, frecuencia, tipo, fecha_inic
     ok_mail, err_mail = enviar_contrato_credito(prestamo_row)
     return True, None if ok_mail else err_mail, prestamo_row
 
-def cancelar_contrato_prestamo(prestamo_id, motivo, usuario=None):
-    motivo = (motivo or "").strip()
-    if not motivo:
-        return False, "Debes indicar el motivo de la anulación"
-
-    with get_conn() as conn:
-        prestamo = conn.execute(text("""
-            SELECT p.id, p.estado, p.contrato_aceptado, COALESCE(p.contrato_cancelado, 0) AS contrato_cancelado,
-                   p.cliente_cedula, c.nombres || ' ' || c.apellidos AS cliente, c.correo
-            FROM prestamos p
-            JOIN clientes c ON c.cedula = p.cliente_cedula
-            WHERE p.id = :id
-        """), {"id": prestamo_id}).mappings().first()
-
-        if not prestamo:
-            return False, "No se encontró el crédito seleccionado"
-
-        if int(prestamo["contrato_aceptado"] or 0) == 1:
-            return False, "No se puede anular porque el contrato ya fue aceptado"
-
-        if int(prestamo["contrato_cancelado"] or 0) == 1 or str(prestamo["estado"] or "").strip().lower() == "anulado":
-            return False, "Este contrato ya fue anulado previamente"
-
-        conn.execute(text("""
-            UPDATE prestamos
-            SET estado = 'Anulado',
-                contrato_cancelado = 1,
-                fecha_cancelacion_contrato = :fecha,
-                motivo_cancelacion_contrato = :motivo,
-                cancelado_por = :usuario,
-                contrato_token = NULL
-            WHERE id = :id
-        """), {
-            "fecha": datetime.now().isoformat(timespec='seconds'),
-            "motivo": motivo,
-            "usuario": usuario or st.session_state.get("usuario") or "SISTEMA",
-            "id": prestamo_id
-        })
-        conn.commit()
-
-    clear_app_caches()
-    registrar_auditoria_contrato(prestamo_id, "ANULACION_CONTRATO", usuario=usuario, motivo=motivo, detalle="Contrato anulado manualmente desde la app")
-
-    correo_ok = False
-    correo_error = None
-    if (prestamo.get("correo") or "").strip():
-        cuerpo = construir_cuerpo_anulacion_contrato(prestamo["cliente"], prestamo_id, motivo)
-        html = construir_html_anulacion_contrato(prestamo["cliente"], prestamo_id, motivo)
-        correo_ok, correo_error = enviar_correo_async(
-            prestamo["correo"],
-            f"CREDDT CRNTECH | Actualización del contrato del crédito {prestamo_id}",
-            cuerpo,
-            html_override=html
-        )
-    else:
-        correo_error = "Cliente sin correo registrado"
-
-    return True, {
-        "prestamo_id": prestamo_id,
-        "correo": correo_ok,
-        "correo_error": correo_error,
-        "cliente": prestamo["cliente"],
-    }
-
 def aceptar_contrato_por_token(token):
     with get_conn() as conn:
         prestamo = conn.execute(text("""
@@ -1921,7 +1834,6 @@ def render_aceptacion_contrato(token):
     with get_conn() as conn:
         prestamo = conn.execute(text("""
             SELECT p.id, p.monto_original, p.cuotas, p.frecuencia, p.valor_cuota, p.tipo, p.estado, p.contrato_aceptado,
-                   COALESCE(p.contrato_cancelado, 0) AS contrato_cancelado, p.fecha_cancelacion_contrato, p.motivo_cancelacion_contrato,
                    c.nombres || ' ' || c.apellidos AS cliente
             FROM prestamos p
             JOIN clientes c ON c.cedula = p.cliente_cedula
@@ -1937,12 +1849,6 @@ def render_aceptacion_contrato(token):
     st.markdown(f"**Frecuencia:** {prestamo['frecuencia']}")
     st.markdown(f"**Cuotas:** {prestamo['cuotas']}")
     st.markdown(f"**Valor cuota:** {pesos(prestamo['valor_cuota'])}")
-    if int(prestamo.get('contrato_cancelado', 0) or 0) == 1 or str(prestamo.get('estado') or '').strip().lower() == 'anulado':
-        st.error("❌ Este contrato fue anulado y el enlace ya no es válido.")
-        motivo = prestamo.get('motivo_cancelacion_contrato') or '-'
-        fecha_c = prestamo.get('fecha_cancelacion_contrato') or '-'
-        st.caption(f"Fecha de anulación: {fecha_c} | Motivo: {motivo}")
-        return
     if int(prestamo['contrato_aceptado'] or 0) == 1:
         st.success("✅ Este contrato ya fue aceptado previamente.")
         return
@@ -2010,14 +1916,25 @@ def registrar_pago_cuota(prestamo_id, fecha_pago):
         if nuevo_saldo_capital < 0:
             nuevo_saldo_capital = Decimal("0.00")
         result_pago = conn.execute(text("""
-            INSERT INTO pagos (prestamo_id, fecha_pago, valor, estado, tipo_movimiento, detalle)
-            VALUES (:id, :fecha, :valor, 'Pagado', 'CUOTA', :detalle)
+            INSERT INTO pagos (
+                prestamo_id, fecha_pago, valor, estado, tipo_movimiento, detalle,
+                interes_pagado, capital_pagado, saldo_capital_anterior, saldo_capital_nuevo, cuota_numero
+            )
+            VALUES (
+                :id, :fecha, :valor, 'Pagado', 'CUOTA', :detalle,
+                :interes_pagado, :capital_pagado, :saldo_capital_anterior, :saldo_capital_nuevo, :cuota_numero
+            )
             RETURNING id_pago
         """), {
             "id": prestamo_id,
             "fecha": fecha_pago.isoformat(),
             "valor": valor_pago,
-            "detalle": f"Pago cuota #{nro_cuota}"
+            "detalle": f"Pago cuota #{nro_cuota}",
+            "interes_pagado": interes_periodo,
+            "capital_pagado": capital_pagado,
+            "saldo_capital_anterior": saldo_capital_actual,
+            "saldo_capital_nuevo": nuevo_saldo_capital,
+            "cuota_numero": nro_cuota
         })
         id_pago = result_pago.fetchone()[0]
         conn.execute(text("""
@@ -2107,14 +2024,25 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
         cuotas_restantes = len(cuotas_pendientes)
         nueva_cuota = Decimal(str(calcular_cuota_amortizada(nuevo_saldo_capital, prestamo_db["tasa_mensual"], cuotas_restantes))).quantize(Decimal("0.01"))
         result_pago = conn.execute(text("""
-            INSERT INTO pagos (prestamo_id, fecha_pago, valor, estado, tipo_movimiento, detalle)
-            VALUES (:id, :fecha, :valor, 'Pagado', 'ABONO_CAPITAL', :detalle)
+            INSERT INTO pagos (
+                prestamo_id, fecha_pago, valor, estado, tipo_movimiento, detalle,
+                interes_pagado, capital_pagado, saldo_capital_anterior, saldo_capital_nuevo, cuota_numero
+            )
+            VALUES (
+                :id, :fecha, :valor, 'Pagado', 'ABONO_CAPITAL', :detalle,
+                :interes_pagado, :capital_pagado, :saldo_capital_anterior, :saldo_capital_nuevo, :cuota_numero
+            )
             RETURNING id_pago
         """), {
             "id": prestamo_id,
             "fecha": fecha_pago.isoformat(),
             "valor": valor_abono,
-            "detalle": f"Abono a capital por {valor_abono}"
+            "detalle": f"Abono a capital por {valor_abono}",
+            "interes_pagado": Decimal("0.00"),
+            "capital_pagado": valor_abono,
+            "saldo_capital_anterior": saldo_capital_actual,
+            "saldo_capital_nuevo": nuevo_saldo_capital,
+            "cuota_numero": cuotas_pendientes[0][1] if cuotas_pendientes else None
         })
         id_pago = result_pago.fetchone()[0]
         conn.execute(text("UPDATE prestamos SET saldo_capital = :saldo_capital, valor_cuota = :valor_cuota WHERE id = :id"), {
@@ -2360,19 +2288,34 @@ if tab_resumen:
     if st.session_state.get("recordatorios_auto", 0):
         enviados_auto = st.session_state.get("recordatorios_auto", 0)
         st.success(f"✅ Recordatorios automáticos enviados en esta sesión: {enviados_auto}")
-    estado_resumen = estado[estado["estado"] != "Anulado"].copy()
-    total_colocado = estado_resumen["monto_original"].sum()
-    total_cobrado = estado_resumen["total_pagado"].sum()
-    saldo_pendiente = estado_resumen["saldo"].sum()
-    creditos_activos = estado_resumen[~estado_resumen["estado"].isin(["Cancelado", "Anulado"])].shape[0]
-    exposicion_mora_total = 0 if saldo_pendiente <= 0 else (monto_mora / saldo_pendiente) * 100
+
+    kpis_fin = load_kpis_financieros()
+    capital_colocado = float(kpis_fin.get("capital_colocado", 0) or 0)
+    capital_recuperado = float(kpis_fin.get("capital_recuperado", 0) or 0)
+    interes_cobrado = float(kpis_fin.get("interes_cobrado", 0) or 0)
+    capital_vivo = float(kpis_fin.get("capital_vivo", 0) or 0)
+    recaudo_acumulado = float(kpis_fin.get("recaudo_acumulado", 0) or 0)
+    cuotas_pendientes_total = float(kpis_fin.get("cuotas_pendientes", 0) or 0)
+    cartera_mora_total = float(kpis_fin.get("cartera_mora", 0) or 0)
+    creditos_activos = int(kpis_fin.get("creditos_activos", 0) or 0)
+    exposicion_mora_total = 0 if cuotas_pendientes_total <= 0 else (cartera_mora_total / cuotas_pendientes_total) * 100
+
+    st.markdown("### 💼 Indicadores financieros")
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("💰 Total colocado", pesos(total_colocado))
-    k2.metric("✅ Total cobrado", pesos(total_cobrado))
-    k3.metric("⏳ Saldo pendiente", pesos(saldo_pendiente))
-    k4.metric("📄 Créditos activos", creditos_activos)
+    k1.metric("💰 Capital colocado", pesos(capital_colocado))
+    k2.metric("🏦 Capital recuperado", pesos(capital_recuperado))
+    k3.metric("📈 Interés cobrado", pesos(interes_cobrado))
+    k4.metric("💳 Capital vivo", pesos(capital_vivo))
+
+    st.markdown("### ⚙️ Indicadores operativos")
+    o1, o2, o3, o4 = st.columns(4)
+    o1.metric("✅ Recaudo acumulado", pesos(recaudo_acumulado))
+    o2.metric("⏳ Cuotas pendientes", pesos(cuotas_pendientes_total))
+    o3.metric("🚨 Cartera en mora", pesos(cartera_mora_total))
+    o4.metric("📄 Créditos activos", creditos_activos)
+
     st.divider()
-    df = estado_resumen.copy()
+    df = estado[estado["estado"] != "Anulado"].copy()
     for c in ["monto_original","monto_total_credito","total_pagado","saldo","valor_cuota"]:
         df[c] = df[c].apply(pesos)
     tabla_resumen = df[
@@ -2395,7 +2338,7 @@ if tab_resumen:
     st.subheader("⚠️ Alertas de cartera")
     a1, a2, a3 = st.columns(3)
     a1.metric("👥 Clientes en mora", clientes_mora)
-    a2.metric("💸 Monto en mora", pesos(monto_mora))
+    a2.metric("💸 Monto en mora", pesos(cartera_mora_total))
     a3.metric("📌 Exposición en mora", f"{exposicion_mora_total:.1f}%")
 
     detalle_mora_df = load_detalle_mora()
@@ -2735,17 +2678,11 @@ if tab_creditos:
                         cuotas_normal_new = st.selectbox("Número de cuotas", [12, 15], key="nuevo_cuotas_normal")
                         frecuencia_normal_new = st.selectbox("Frecuencia", ["Mensual", "Quincenal"], key="nuevo_frec_normal")
                         fecha_inicio_normal = st.date_input("Fecha de inicio", value=date.today(), key="fecha_inicio_normal")
-                        confirmar_envio_normal = st.checkbox(
-                            "Confirmo que validé cliente, monto, correo y autorizo el envío del contrato",
-                            key="confirmar_envio_normal"
-                        )
                         st.caption("La simulación final se procesa al registrar el crédito.")
                         submit_normal = st.form_submit_button("Registrar crédito normal", type="primary", disabled=st.session_state.get("app_busy", False))
                     if submit_normal:
                         if cliente_normal is None:
                             st.warning("ℹ️ Selecciona un cliente para registrar un crédito normal.")
-                        elif not confirmar_envio_normal:
-                            st.warning("ℹ️ Debes confirmar la validación antes de enviar el contrato.")
                         else:
                             start_busy("Creando crédito normal...")
                             try:
@@ -2775,17 +2712,11 @@ if tab_creditos:
                         frecuencia_express_new = st.selectbox("Frecuencia", ["Mensual", "Quincenal"], key="nuevo_frec_express")
                         cuotas_express_new = 5 if frecuencia_express_new == "Mensual" else 6
                         fecha_inicio_express = st.date_input("Fecha de inicio", value=date.today(), key="fecha_inicio_express")
-                        confirmar_envio_express = st.checkbox(
-                            "Confirmo que validé cliente, monto, correo y autorizo el envío del contrato",
-                            key="confirmar_envio_express"
-                        )
                         st.caption(f"Crédito express a {cuotas_express_new} cuotas de frecuencia {frecuencia_express_new.lower()}.")
                         submit_express = st.form_submit_button("Registrar crédito express", type="primary", disabled=st.session_state.get("app_busy", False))
                     if submit_express:
                         if cliente_express is None:
                             st.warning("ℹ️ Selecciona un cliente para registrar un crédito express.")
-                        elif not confirmar_envio_express:
-                            st.warning("ℹ️ Debes confirmar la validación antes de enviar el contrato.")
                         else:
                             start_busy("Creando crédito express...")
                             try:
@@ -2803,12 +2734,12 @@ if tab_creditos:
                                 stop_busy()
 
                 with cred_tab3:
-                    pendientes_df = estado[(estado["estado"] == "Pendiente") & (estado["contrato_cancelado"].fillna(0) == 0)].copy()
+                    pendientes_df = estado[estado["estado"] == "Pendiente"].copy()
 
                     if pendientes_df.empty:
                         st.success("✅ No hay créditos pendientes de envío de contrato.")
                     else:
-                        st.caption("Aquí puedes reenviar manualmente el contrato a créditos pendientes o anularlo con trazabilidad y motivo.")
+                        st.caption("Aquí puedes reenviar manualmente el contrato a créditos que ya fueron registrados en el sistema y quedaron pendientes.")
                         pendientes_df = pendientes_df.sort_values(["cliente", "id"])
                         pendientes_options = [None] + pendientes_df["id"].tolist()
 
@@ -2861,63 +2792,22 @@ if tab_creditos:
                             else:
                                 st.success("✅ El flujo del contrato y desembolso ya quedó completado para este crédito.")
 
-                            confirmar_reenvio = st.checkbox(
-                                "Confirmo que validé cliente, correo y autorizo el envío del contrato",
-                                key=f"confirmar_reenvio_{fila_p['id']}"
-                            )
-
-                            motivo_anulacion = st.text_area(
-                                "Motivo de anulación del contrato",
-                                placeholder="Ejemplo: Se envió a un cliente equivocado por error administrativo.",
-                                key=f"motivo_anulacion_{fila_p['id']}",
-                                height=100
-                            )
-
-                            col_accion_1, col_accion_2 = st.columns(2)
-
-                            with col_accion_1:
-                                if st.button("📨 Enviar contrato manual", type="primary", key="btn_enviar_contrato_manual", disabled=st.session_state.get("app_busy", False)):
-                                    if not confirmar_reenvio:
-                                        set_flash("contrato_msg", "warning", "ℹ️ Debes confirmar la validación antes de reenviar el contrato.")
-                                        st.rerun()
-                                    start_busy("Enviando contrato manual...")
-                                    try:
-                                        ok_send, err_send = enviar_contrato_credito(fila_p)
-                                        if ok_send:
-                                            if err_send:
-                                                set_flash("contrato_msg", "warning", f"⚠️ Contrato enviado para el crédito {fila_p['id']}, pero quedó una observación: {err_send}")
-                                            else:
-                                                set_flash("contrato_msg", "success", f"✅ Contrato enviado correctamente para el crédito {fila_p['id']}. Ahora queda esperando aceptación.")
+                            if st.button("📨 Enviar contrato manual", type="primary", key="btn_enviar_contrato_manual", disabled=st.session_state.get("app_busy", False)):
+                                start_busy("Enviando contrato manual...")
+                                try:
+                                    ok_send, err_send = enviar_contrato_credito(fila_p)
+                                    if ok_send:
+                                        if err_send:
+                                            set_flash("contrato_msg", "warning", f"⚠️ Contrato enviado para el crédito {fila_p['id']}, pero quedó una observación: {err_send}")
                                         else:
-                                            set_flash("contrato_msg", "warning", f"⚠️ No se pudo enviar el contrato del crédito {fila_p['id']}: {err_send}")
-                                    except Exception as e:
-                                        set_flash("contrato_msg", "error", f"❌ Error inesperado enviando contrato: {e}")
-                                    finally:
-                                        stop_busy()
-                                    st.rerun()
-
-                            with col_accion_2:
-                                if st.button("🚫 Anular contrato", key=f"btn_anular_contrato_{fila_p['id']}", disabled=st.session_state.get("app_busy", False)):
-                                    start_busy("Anulando contrato...")
-                                    try:
-                                        ok_cancel, data_cancel = cancelar_contrato_prestamo(
-                                            fila_p["id"],
-                                            motivo_anulacion,
-                                            usuario=st.session_state.get("usuario")
-                                        )
-                                        if ok_cancel:
-                                            if data_cancel.get("correo"):
-                                                set_flash("contrato_msg", "success", f"✅ Contrato {fila_p['id']} anulado y correo enviado al cliente.")
-                                            else:
-                                                obs = data_cancel.get("correo_error") or "sin detalle adicional"
-                                                set_flash("contrato_msg", "warning", f"⚠️ Contrato {fila_p['id']} anulado, pero el correo no se pudo enviar: {obs}")
-                                        else:
-                                            set_flash("contrato_msg", "error", f"❌ {data_cancel}")
-                                    except Exception as e:
-                                        set_flash("contrato_msg", "error", f"❌ Error anulando contrato: {e}")
-                                    finally:
-                                        stop_busy()
-                                    st.rerun()
+                                            set_flash("contrato_msg", "success", f"✅ Contrato enviado correctamente para el crédito {fila_p['id']}. Ahora queda esperando aceptación.")
+                                    else:
+                                        set_flash("contrato_msg", "warning", f"⚠️ No se pudo enviar el contrato del crédito {fila_p['id']}: {err_send}")
+                                except Exception as e:
+                                    set_flash("contrato_msg", "error", f"❌ Error inesperado enviando contrato: {e}")
+                                finally:
+                                    stop_busy()
+                                st.rerun()
 
                         pendientes_show = pendientes_df[["id", "cliente", "monto_original", "valor_cuota", "cuotas", "frecuencia", "tipo", "estado", "contrato_enviado", "contrato_aceptado", "desembolso_notificado"]].copy()
                         pendientes_show["monto_original"] = pendientes_show["monto_original"].apply(pesos)
@@ -2947,8 +2837,8 @@ if tab_detalle:
             st.caption("Consulta la ficha del crédito, su plan de cuotas y sus movimientos. Los créditos cerrados se conservan en historial para consulta.")
             show_flash("detalle_msg")
 
-            detalle_activos = estado[(~estado["estado"].isin(["Cancelado", "Anulado"])) & (pd.to_numeric(estado["saldo"], errors="coerce").fillna(0) > 0)].copy()
-            detalle_cerrados = estado[(estado["estado"].isin(["Cancelado", "Anulado"])) | (pd.to_numeric(estado["saldo"], errors="coerce").fillna(0) <= 0)].copy()
+            detalle_activos = estado[(estado["estado"] != "Cancelado") & (pd.to_numeric(estado["saldo"], errors="coerce").fillna(0) > 0)].copy()
+            detalle_cerrados = estado[(estado["estado"] == "Cancelado") | (pd.to_numeric(estado["saldo"], errors="coerce").fillna(0) <= 0)].copy()
 
             det_tab_activos, det_tab_hist = st.tabs(["🟢 Créditos activos", "📚 Historial / cerrados"])
 
@@ -2990,14 +2880,8 @@ if tab_detalle:
                                 WHERE prestamo_id = :id
                                 ORDER BY id_pago DESC
                             """), conn, params={"id": row["id"]})
-                            auditoria_credito = pd.read_sql(text("""
-                                SELECT fecha, accion, usuario, motivo, detalle
-                                FROM auditoria_contratos
-                                WHERE prestamo_id = :id
-                                ORDER BY id DESC
-                            """), conn, params={"id": row["id"]})
 
-                        t1, t2, t3 = st.tabs(["📅 Cuotas del crédito", "💸 Movimientos registrados", "🧾 Auditoría contrato"])
+                        t1, t2 = st.tabs(["📅 Cuotas del crédito", "💸 Movimientos registrados"])
                         with t1:
                             if cuotas_credito.empty:
                                 st.info("Sin cuotas registradas para este crédito.")
@@ -3022,18 +2906,6 @@ if tab_detalle:
                                     "detalle": "Detalle"
                                 })
                                 st.dataframe(pagos_credito, use_container_width=True, hide_index=True)
-                        with t3:
-                            if auditoria_credito.empty:
-                                st.info("Sin auditoría de contrato para este crédito.")
-                            else:
-                                auditoria_credito = auditoria_credito.rename(columns={
-                                    "fecha": "Fecha",
-                                    "accion": "Acción",
-                                    "usuario": "Usuario",
-                                    "motivo": "Motivo",
-                                    "detalle": "Detalle"
-                                })
-                                st.dataframe(auditoria_credito, use_container_width=True, hide_index=True)
 
             with det_tab_activos:
                 render_detalle_creditos(detalle_activos, "ℹ️ No hay créditos activos con saldo pendiente.")
@@ -3049,7 +2921,7 @@ if "reset_select_prestamo_pago" not in st.session_state:
 if tab_pagos:
             st.subheader("💰 Pagos del crédito")
             st.caption("Aquí solo se muestran créditos activos con saldo pendiente. Los créditos cerrados siguen visibles en Resumen e Historial, pero no interfieren en la operación diaria.")
-            activos = estado[(~estado["estado"].isin(["Cancelado", "Anulado"])) & (pd.to_numeric(estado["saldo"], errors="coerce").fillna(0) > 0)].copy()
+            activos = estado[(estado["estado"] != "Cancelado") & (pd.to_numeric(estado["saldo"], errors="coerce").fillna(0) > 0)].copy()
             if activos.empty:
                 st.info("ℹ️ No hay préstamos activos con saldo pendiente.")
             else:

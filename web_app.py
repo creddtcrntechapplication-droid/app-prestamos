@@ -188,68 +188,74 @@ def load_cuotas_periodo(inicio_iso, fin_iso):
 def load_kpis_financieros():
     with get_conn() as conn:
         row = conn.execute(text("""
-            WITH prestamos_validos AS (
+            WITH prestamos_financieros AS (
                 SELECT *
                 FROM prestamos
                 WHERE COALESCE(estado, '') <> 'Anulado'
+                  AND (
+                      COALESCE(contrato_aceptado, 0) = 1
+                      OR COALESCE(estado, '') IN ('Activo', 'Cancelado')
+                  )
             ),
-            pagos_enriquecidos AS (
+            pagos_financieros AS (
                 SELECT
                     pg.id_pago,
                     pg.prestamo_id,
                     COALESCE(pg.valor, 0) AS valor,
-                    COALESCE(pg.tipo_movimiento, 'CUOTA') AS tipo_movimiento,
-                    COALESCE(
-                        pg.capital_pagado,
-                        CASE
-                            WHEN COALESCE(pg.tipo_movimiento, '') = 'ABONO_CAPITAL' THEN COALESCE(pg.valor, 0)
-                            WHEN pg.saldo_capital_anterior IS NOT NULL AND pg.saldo_capital_nuevo IS NOT NULL THEN GREATEST(pg.saldo_capital_anterior - pg.saldo_capital_nuevo, 0)
-                            ELSE 0
-                        END
-                    ) AS capital_pagado_calc,
-                    COALESCE(
-                        pg.interes_pagado,
-                        CASE
-                            WHEN COALESCE(pg.tipo_movimiento, '') = 'CUOTA' THEN GREATEST(
-                                COALESCE(pg.valor, 0) - COALESCE(
-                                    pg.capital_pagado,
-                                    CASE
-                                        WHEN pg.saldo_capital_anterior IS NOT NULL AND pg.saldo_capital_nuevo IS NOT NULL THEN GREATEST(pg.saldo_capital_anterior - pg.saldo_capital_nuevo, 0)
-                                        ELSE 0
-                                    END
-                                ),
-                                0
-                            )
-                            ELSE 0
-                        END
-                    ) AS interes_pagado_calc
+                    COALESCE(pg.capital_pagado, 0) AS capital_pagado,
+                    COALESCE(pg.interes_pagado, 0) AS interes_pagado,
+                    COALESCE(pg.tipo_movimiento, 'CUOTA') AS tipo_movimiento
                 FROM pagos pg
-                JOIN prestamos_validos pv ON pv.id = pg.prestamo_id
+                JOIN prestamos_financieros pf ON pf.id = pg.prestamo_id
             ),
             cuotas_pendientes AS (
                 SELECT COALESCE(SUM(cu.valor_cuota), 0) AS total
                 FROM cuotas cu
-                JOIN prestamos_validos pv ON pv.id = cu.prestamo_id
+                JOIN prestamos_financieros pf ON pf.id = cu.prestamo_id
                 WHERE cu.estado <> 'Pagada'
             ),
             cartera_mora AS (
                 SELECT COALESCE(SUM(cu.valor_cuota), 0) AS total
                 FROM cuotas cu
-                JOIN prestamos_validos pv ON pv.id = cu.prestamo_id
+                JOIN prestamos_financieros pf ON pf.id = cu.prestamo_id
                 WHERE cu.estado <> 'Pagada'
                   AND cu.fecha_vencimiento::date < CURRENT_DATE
+            ),
+            contratos_pendientes AS (
+                SELECT COUNT(*) AS total,
+                       COALESCE(SUM(monto_original), 0) AS capital
+                FROM prestamos
+                WHERE COALESCE(estado, '') = 'Pendiente'
+                  AND COALESCE(contrato_aceptado, 0) = 0
+                  AND COALESCE(estado, '') <> 'Anulado'
             )
             SELECT
-                COALESCE((SELECT SUM(monto_original) FROM prestamos_validos), 0) AS capital_colocado,
-                COALESCE((SELECT SUM(capital_pagado_calc) FROM pagos_enriquecidos), 0) AS capital_recuperado,
-                COALESCE((SELECT SUM(interes_pagado_calc) FROM pagos_enriquecidos), 0) AS interes_cobrado,
-                COALESCE((SELECT SUM(COALESCE(saldo_capital, monto_original)) FROM prestamos_validos WHERE COALESCE(estado, '') NOT IN ('Cancelado', 'Anulado')), 0) AS capital_vivo,
-                COALESCE((SELECT SUM(valor) FROM pagos_enriquecidos), 0) AS recaudo_acumulado,
+                COALESCE((SELECT SUM(monto_original) FROM prestamos_financieros), 0) AS capital_colocado,
+                COALESCE((SELECT SUM(capital_pagado) FROM pagos_financieros), 0) AS capital_recuperado,
+                COALESCE((SELECT SUM(interes_pagado) FROM pagos_financieros), 0) AS interes_cobrado,
+                COALESCE((SELECT SUM(COALESCE(saldo_capital, monto_original)) FROM prestamos_financieros WHERE COALESCE(estado, '') <> 'Cancelado'), 0) AS capital_vivo,
+                COALESCE((SELECT SUM(valor) FROM pagos_financieros), 0) AS recaudo_acumulado,
                 COALESCE((SELECT total FROM cuotas_pendientes), 0) AS cuotas_pendientes,
                 COALESCE((SELECT total FROM cartera_mora), 0) AS cartera_mora,
-                COALESCE((SELECT COUNT(*) FROM prestamos_validos WHERE COALESCE(estado, '') NOT IN ('Cancelado', 'Anulado')), 0) AS creditos_activos
+                COALESCE((SELECT COUNT(*) FROM prestamos_financieros WHERE COALESCE(estado, '') <> 'Cancelado'), 0) AS creditos_activos,
+                COALESCE((SELECT total FROM contratos_pendientes), 0) AS contratos_pendientes,
+                COALESCE((SELECT capital FROM contratos_pendientes), 0) AS capital_pendiente_aprobacion
         """)).mappings().first()
-    return dict(row or {})
+
+    data = dict(row or {})
+    capital_colocado = float(data.get("capital_colocado", 0) or 0)
+    capital_recuperado = float(data.get("capital_recuperado", 0) or 0)
+    interes_cobrado = float(data.get("interes_cobrado", 0) or 0)
+    capital_vivo = float(data.get("capital_vivo", 0) or 0)
+    recaudo_acumulado = float(data.get("recaudo_acumulado", 0) or 0)
+
+    data["diferencia_capital"] = round(capital_colocado - (capital_recuperado + capital_vivo), 2)
+    data["diferencia_recaudo"] = round(recaudo_acumulado - (capital_recuperado + interes_cobrado), 2)
+    data["recuperacion_capital_pct"] = round((capital_recuperado / capital_colocado) * 100, 2) if capital_colocado > 0 else 0.0
+    data["margen_realizado_pct"] = round((interes_cobrado / capital_colocado) * 100, 2) if capital_colocado > 0 else 0.0
+    data["mora_sobre_cuotas_pct"] = round((float(data.get("cartera_mora", 0) or 0) / float(data.get("cuotas_pendientes", 0) or 0)) * 100, 2) if float(data.get("cuotas_pendientes", 0) or 0) > 0 else 0.0
+    data["consistencia_ok"] = abs(data["diferencia_capital"]) <= 1 and abs(data["diferencia_recaudo"]) <= 1
+    return data
 
 def ejecutar_sql(query, params=None, fetch=False):
     """
@@ -1167,7 +1173,155 @@ def asegurar_estructura_financiera():
         """))
         conn.commit()
     clear_app_caches()
-asegurar_estructura_financiera()
+asegurar_estrutura_financiera()
+
+def asegurar_estructura_control_financiero():
+    with get_conn() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS app_meta (
+                clave TEXT PRIMARY KEY,
+                valor TEXT,
+                updated_at TEXT
+            )
+        """))
+        conn.commit()
+
+
+def get_app_meta(clave, default=None):
+    with get_conn() as conn:
+        row = conn.execute(text("SELECT valor FROM app_meta WHERE clave = :clave"), {"clave": clave}).fetchone()
+    return row[0] if row else default
+
+
+def set_app_meta(conn, clave, valor):
+    conn.execute(text("""
+        INSERT INTO app_meta (clave, valor, updated_at)
+        VALUES (:clave, :valor, :updated_at)
+        ON CONFLICT (clave) DO UPDATE SET
+            valor = EXCLUDED.valor,
+            updated_at = EXCLUDED.updated_at
+    """), {"clave": clave, "valor": str(valor), "updated_at": datetime.now().isoformat(timespec='seconds')})
+
+
+def reconstruir_historial_financiero():
+    resumen = {"prestamos": 0, "pagos": 0, "ajustes_negativos": 0}
+    asegurar_estructura_control_financiero()
+    with get_conn() as conn:
+        prestamos = conn.execute(text("""
+            SELECT id, monto_original, COALESCE(tasa_mensual, 0) AS tasa_mensual,
+                   COALESCE(estado, '') AS estado, COALESCE(contrato_aceptado, 0) AS contrato_aceptado
+            FROM prestamos
+            WHERE COALESCE(estado, '') <> 'Anulado'
+            ORDER BY id
+        """)).mappings().all()
+
+        for prestamo in prestamos:
+            resumen["prestamos"] += 1
+            saldo_actual = normalizar_decimal(prestamo["monto_original"])
+            tasa_mensual = Decimal(str(prestamo["tasa_mensual"] or 0)).quantize(Decimal("0.000001"))
+            pagos = conn.execute(text("""
+                SELECT id_pago, fecha_pago, COALESCE(valor, 0) AS valor,
+                       COALESCE(tipo_movimiento, '') AS tipo_movimiento,
+                       COALESCE(detalle, '') AS detalle, cuota_numero
+                FROM pagos
+                WHERE prestamo_id = :prestamo_id
+                ORDER BY COALESCE(fecha_pago, '1900-01-01'), id_pago
+            """), {"prestamo_id": prestamo["id"]}).mappings().all()
+
+            pago_cuota_map = {row[0]: row[1] for row in conn.execute(text("""
+                SELECT pc.id_pago, cu.nro_cuota
+                FROM pagos_cuotas pc
+                JOIN cuotas cu ON cu.id_cuota = pc.id_cuota
+                WHERE cu.prestamo_id = :prestamo_id
+            """), {"prestamo_id": prestamo["id"]}).fetchall()}
+
+            contador_cuotas = 0
+            for pago in pagos:
+                resumen["pagos"] += 1
+                valor_pago = normalizar_decimal(pago["valor"])
+                tipo_movimiento = (pago["tipo_movimiento"] or "").strip().upper()
+                detalle = (pago["detalle"] or "").upper()
+                if not tipo_movimiento:
+                    tipo_movimiento = "ABONO_CAPITAL" if "ABONO" in detalle else "CUOTA"
+
+                saldo_anterior = saldo_actual
+                interes_pagado = Decimal("0.00")
+                capital_pagado = Decimal("0.00")
+
+                if valor_pago < 0:
+                    resumen["ajustes_negativos"] += 1
+                    capital_pagado = valor_pago
+                    saldo_nuevo = saldo_anterior - capital_pagado
+                elif tipo_movimiento == "ABONO_CAPITAL":
+                    capital_pagado = min(valor_pago, saldo_anterior)
+                    saldo_nuevo = saldo_anterior - capital_pagado
+                else:
+                    interes_estimado = (saldo_anterior * tasa_mensual).quantize(Decimal("0.01")) if tasa_mensual > 0 else Decimal("0.00")
+                    interes_pagado = min(valor_pago, interes_estimado)
+                    capital_pagado = valor_pago - interes_pagado
+                    if capital_pagado < 0:
+                        capital_pagado = Decimal("0.00")
+                        interes_pagado = valor_pago
+                    if capital_pagado > saldo_anterior:
+                        capital_pagado = saldo_anterior
+                        interes_pagado = valor_pago - capital_pagado
+                        if interes_pagado < 0:
+                            interes_pagado = Decimal("0.00")
+                    saldo_nuevo = saldo_anterior - capital_pagado
+                    contador_cuotas += 1
+
+                if saldo_nuevo < 0:
+                    saldo_nuevo = Decimal("0.00")
+
+                cuota_numero = pago["cuota_numero"] or pago_cuota_map.get(pago["id_pago"])
+                if not cuota_numero and tipo_movimiento != "ABONO_CAPITAL":
+                    cuota_numero = contador_cuotas
+
+                conn.execute(text("""
+                    UPDATE pagos
+                    SET tipo_movimiento = :tipo_movimiento,
+                        interes_pagado = :interes_pagado,
+                        capital_pagado = :capital_pagado,
+                        saldo_capital_anterior = :saldo_capital_anterior,
+                        saldo_capital_nuevo = :saldo_capital_nuevo,
+                        cuota_numero = :cuota_numero
+                    WHERE id_pago = :id_pago
+                """), {
+                    "id_pago": pago["id_pago"],
+                    "tipo_movimiento": tipo_movimiento,
+                    "interes_pagado": interes_pagado,
+                    "capital_pagado": capital_pagado,
+                    "saldo_capital_anterior": saldo_anterior,
+                    "saldo_capital_nuevo": saldo_nuevo,
+                    "cuota_numero": cuota_numero
+                })
+
+                saldo_actual = saldo_nuevo
+
+            conn.execute(text("UPDATE prestamos SET saldo_capital = :saldo_capital WHERE id = :prestamo_id"), {
+                "prestamo_id": prestamo["id"],
+                "saldo_capital": saldo_actual
+            })
+
+            if prestamo["estado"] not in ("Pendiente", "Anulado"):
+                pendientes = conn.execute(text("""
+                    SELECT COUNT(*)
+                    FROM cuotas
+                    WHERE prestamo_id = :prestamo_id AND estado <> 'Pagada'
+                """), {"prestamo_id": prestamo["id"]}).scalar()
+                nuevo_estado = "Cancelado" if int(pendientes or 0) == 0 else "Activo"
+                conn.execute(text("UPDATE prestamos SET estado = :estado WHERE id = :prestamo_id"), {
+                    "prestamo_id": prestamo["id"],
+                    "estado": nuevo_estado
+                })
+
+        set_app_meta(conn, "finanzas_reconciliadas_at", datetime.now().isoformat(timespec='seconds'))
+        conn.commit()
+
+    clear_app_caches()
+    return resumen
+
+asegurar_estructura_control_financiero()
 
 # ==========================
 # MENSAJES DE CONFIRMACIÓN
@@ -2289,6 +2443,7 @@ if tab_resumen:
         enviados_auto = st.session_state.get("recordatorios_auto", 0)
         st.success(f"✅ Recordatorios automáticos enviados en esta sesión: {enviados_auto}")
 
+    show_flash("sistema_msg")
     kpis_fin = load_kpis_financieros()
     capital_colocado = float(kpis_fin.get("capital_colocado", 0) or 0)
     capital_recuperado = float(kpis_fin.get("capital_recuperado", 0) or 0)
@@ -2298,7 +2453,45 @@ if tab_resumen:
     cuotas_pendientes_total = float(kpis_fin.get("cuotas_pendientes", 0) or 0)
     cartera_mora_total = float(kpis_fin.get("cartera_mora", 0) or 0)
     creditos_activos = int(kpis_fin.get("creditos_activos", 0) or 0)
+    contratos_pendientes = int(kpis_fin.get("contratos_pendientes", 0) or 0)
+    capital_pendiente_aprobacion = float(kpis_fin.get("capital_pendiente_aprobacion", 0) or 0)
     exposicion_mora_total = 0 if cuotas_pendientes_total <= 0 else (cartera_mora_total / cuotas_pendientes_total) * 100
+    recuperacion_capital_pct = float(kpis_fin.get("recuperacion_capital_pct", 0) or 0)
+    margen_realizado_pct = float(kpis_fin.get("margen_realizado_pct", 0) or 0)
+    diferencia_capital = float(kpis_fin.get("diferencia_capital", 0) or 0)
+    diferencia_recaudo = float(kpis_fin.get("diferencia_recaudo", 0) or 0)
+    consistencia_ok = bool(kpis_fin.get("consistencia_ok", False))
+
+    ultima_reconciliacion = get_app_meta("finanzas_reconciliadas_at", "Sin ejecutar")
+    st.markdown("### 🧭 Control gerencial")
+    g1, g2, g3 = st.columns([1.4, 1.4, 1.8])
+    with g1:
+        st.metric("✅ Recuperación de capital", f"{recuperacion_capital_pct:.2f}%")
+    with g2:
+        st.metric("📈 Margen realizado", f"{margen_realizado_pct:.2f}%")
+    with g3:
+        st.caption(f"Última conciliación financiera: {ultima_reconciliacion}")
+        if ES_ADMIN and st.button("🔄 Reconciliar histórico financiero", key="btn_reconciliar_finanzas", disabled=st.session_state.get("app_busy", False)):
+            start_busy("Reconstruyendo histórico financiero...")
+            try:
+                resumen_recon = reconstruir_historial_financiero()
+                set_flash(
+                    "sistema_msg",
+                    "success",
+                    f"✅ Conciliación completada. Préstamos revisados: {resumen_recon['prestamos']} | Pagos recalculados: {resumen_recon['pagos']} | Ajustes negativos detectados: {resumen_recon['ajustes_negativos']}"
+                )
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ No se pudo ejecutar la conciliación financiera: {e}")
+            finally:
+                stop_busy()
+
+    if consistencia_ok:
+        st.success("✅ Los KPI financieros están conciliados. Ya puedes usarlos para decisiones gerenciales con mucha más confianza.")
+    else:
+        st.warning(
+            f"⚠️ Los KPI financieros aún no cierran por completo. Diferencia capital: {pesos(diferencia_capital)} | Diferencia recaudo: {pesos(diferencia_recaudo)}. Ejecuta la conciliación histórica antes de tomar decisiones de retiro de capital o utilidad."
+        )
 
     st.markdown("### 💼 Indicadores financieros")
     k1, k2, k3, k4 = st.columns(4)
@@ -2313,6 +2506,9 @@ if tab_resumen:
     o2.metric("⏳ Cuotas pendientes", pesos(cuotas_pendientes_total))
     o3.metric("🚨 Cartera en mora", pesos(cartera_mora_total))
     o4.metric("📄 Créditos activos", creditos_activos)
+
+    if contratos_pendientes > 0:
+        st.info(f"ℹ️ Tienes {contratos_pendientes} contrato(s) pendiente(s) por aceptación, equivalentes a {pesos(capital_pendiente_aprobacion)}. No se incluyen en los KPI financieros hasta que el contrato sea aceptado.")
 
     st.divider()
     df = estado[estado["estado"] != "Anulado"].copy()

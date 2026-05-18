@@ -190,6 +190,33 @@ def load_cuotas_periodo(inicio_iso, fin_iso):
         """), conn, params={"inicio": inicio_iso, "fin": fin_iso})
 
 @st.cache_data(ttl=45, show_spinner=False)
+def load_cuotas_proyeccion(inicio_iso, fin_iso):
+    with get_conn() as conn:
+        return pd.read_sql(text("""
+            SELECT
+                cu.fecha_vencimiento,
+                cu.valor_cuota,
+                cu.estado AS estado_cuota,
+                cu.nro_cuota,
+                p.id AS credito,
+                COALESCE(p.tipo, 'Normal') AS tipo_credito,
+                COALESCE(p.estado, '') AS estado_credito,
+                c.nombres || ' ' || c.apellidos AS cliente
+            FROM cuotas cu
+            JOIN prestamos p ON p.id = cu.prestamo_id
+            JOIN clientes c ON c.cedula = p.cliente_cedula
+            WHERE cu.fecha_vencimiento::date >= :inicio
+              AND cu.fecha_vencimiento::date <= :fin
+              AND cu.estado <> 'Pagada'
+              AND COALESCE(p.estado, '') <> 'Anulado'
+              AND (
+                  COALESCE(p.contrato_aceptado, 0) = 1
+                  OR COALESCE(p.estado, '') = 'Activo'
+              )
+            ORDER BY cu.fecha_vencimiento, c.nombres, c.apellidos
+        """), conn, params={"inicio": inicio_iso, "fin": fin_iso})
+
+@st.cache_data(ttl=45, show_spinner=False)
 def load_kpis_financieros():
     with get_conn() as conn:
         row = conn.execute(text("""
@@ -592,6 +619,7 @@ if PUEDE_VER_DETALLE:
 if PUEDE_REGISTRAR_PAGOS:
     MENU_LABELS.append("💰 Pagos")
 if PUEDE_USAR_SIMULADOR:
+    MENU_LABELS.append("📈 Proyección")
     MENU_LABELS.append("🧮 Simulador")
 
 if "menu_activo" not in st.session_state or st.session_state.menu_activo not in MENU_LABELS:
@@ -2598,6 +2626,7 @@ tab_clientes = SECCION_ACTIVA == "👥 Clientes"
 tab_creditos = SECCION_ACTIVA == "🆕 Nuevo crédito"
 tab_detalle = SECCION_ACTIVA == "📄 Detalle por crédito"
 tab_pagos = SECCION_ACTIVA == "💰 Pagos"
+tab_proyeccion = SECCION_ACTIVA == "📈 Proyección"
 tab_sim = SECCION_ACTIVA == "🧮 Simulador"
 # ==========================
 # 📊 RESUMEN
@@ -2814,6 +2843,213 @@ if tab_resumen:
                         <div class="cuota-status {estado_class}">{estado_icono} {estado_label}</div>
                     </div>
                     """, unsafe_allow_html=True)
+# ==========================
+# 📈 PROYECCIÓN
+# ==========================
+if tab_proyeccion:
+    st.subheader("📈 Proyección mensual")
+    st.caption("Planea el próximo corte sin saturar el resumen: meta de recaudo, reinversión, caja, gerencia y créditos sugeridos.")
+
+    hoy = date.today()
+    if hoy.month == 12:
+        siguiente_year, siguiente_month = hoy.year + 1, 1
+    else:
+        siguiente_year, siguiente_month = hoy.year, hoy.month + 1
+
+    meses_disponibles_proy = pd.date_range("2025-12-01", "2030-12-01", freq="MS").strftime("%Y-%m").tolist()
+    mes_siguiente_default = f"{siguiente_year:04d}-{siguiente_month:02d}"
+    index_proy = meses_disponibles_proy.index(mes_siguiente_default) if mes_siguiente_default in meses_disponibles_proy else 0
+
+    st.markdown("### ⚙️ Parámetros de planeación")
+    cparam1, cparam2, cparam3, cparam4 = st.columns(4)
+    with cparam1:
+        mes_proyeccion = st.selectbox("Mes a proyectar", meses_disponibles_proy, index=index_proy, key="mes_proyeccion")
+    with cparam2:
+        meta_mensual = st.number_input(
+            "Meta mínima de recaudo",
+            min_value=0.0,
+            step=100000.0,
+            value=float(get_app_meta("proy_meta_mensual", 6000000) or 6000000),
+            key="proy_meta_mensual_input"
+        )
+    with cparam3:
+        valor_express_ref = st.number_input(
+            "Valor promedio crédito express",
+            min_value=0.0,
+            step=50000.0,
+            value=float(get_app_meta("proy_valor_express", 700000) or 700000),
+            key="proy_valor_express_input"
+        )
+    with cparam4:
+        valor_normal_ref = st.number_input(
+            "Valor promedio crédito normal",
+            min_value=0.0,
+            step=50000.0,
+            value=float(get_app_meta("proy_valor_normal", 1800000) or 1800000),
+            key="proy_valor_normal_input"
+        )
+
+    pcol1, pcol2, pcol3, pcol4 = st.columns(4)
+    with pcol1:
+        pct_reinvertir = st.number_input(
+            "% volver a prestar",
+            min_value=0.0,
+            max_value=100.0,
+            step=1.0,
+            value=float(get_app_meta("proy_pct_reinvertir", 70) or 70),
+            key="proy_pct_reinvertir_input"
+        )
+    with pcol2:
+        pct_caja = st.number_input(
+            "% guardar en caja",
+            min_value=0.0,
+            max_value=100.0,
+            step=1.0,
+            value=float(get_app_meta("proy_pct_caja", 20) or 20),
+            key="proy_pct_caja_input"
+        )
+    with pcol3:
+        pct_gerencia = st.number_input(
+            "% gerencia",
+            min_value=0.0,
+            max_value=100.0,
+            step=1.0,
+            value=float(get_app_meta("proy_pct_gerencia", 10) or 10),
+            key="proy_pct_gerencia_input"
+        )
+    with pcol4:
+        total_pct = pct_reinvertir + pct_caja + pct_gerencia
+        st.metric("Total distribución", f"{total_pct:.0f}%")
+
+    if abs(total_pct - 100) > 0.01:
+        st.warning("⚠️ La distribución debe sumar 100%. Ajusta reinversión, caja y gerencia antes de usar la recomendación.")
+    elif ES_ADMIN:
+        if st.button("💾 Guardar parámetros", key="btn_guardar_parametros_proyeccion"):
+            with get_conn() as conn:
+                set_app_meta(conn, "proy_meta_mensual", meta_mensual)
+                set_app_meta(conn, "proy_valor_express", valor_express_ref)
+                set_app_meta(conn, "proy_valor_normal", valor_normal_ref)
+                set_app_meta(conn, "proy_pct_reinvertir", pct_reinvertir)
+                set_app_meta(conn, "proy_pct_caja", pct_caja)
+                set_app_meta(conn, "proy_pct_gerencia", pct_gerencia)
+                conn.commit()
+            st.success("✅ Parámetros de proyección guardados.")
+
+    year_proy, month_proy = map(int, mes_proyeccion.split("-"))
+    if year_proy == 2025 and month_proy == 12:
+        inicio_proy = datetime(2025, 12, 15)
+        fin_proy = datetime(2026, 1, 1)
+    elif year_proy == 2026 and month_proy == 1:
+        inicio_proy = datetime(2026, 1, 1)
+        fin_proy = datetime(2026, 2, 2)
+    else:
+        inicio_proy = datetime(year_proy, month_proy, 3)
+        fin_proy = datetime(year_proy + (month_proy == 12), 1 if month_proy == 12 else month_proy + 1, 2)
+
+    cuotas_proy = load_cuotas_proyeccion(inicio_proy.date().isoformat(), fin_proy.date().isoformat()).copy()
+    if not cuotas_proy.empty:
+        cuotas_proy["valor_cuota"] = pd.to_numeric(cuotas_proy["valor_cuota"], errors="coerce").fillna(0)
+
+    recaudo_proyectado = float(cuotas_proy["valor_cuota"].sum()) if not cuotas_proy.empty else 0.0
+    faltante_meta = max(float(meta_mensual or 0) - recaudo_proyectado, 0)
+    excedente_meta = max(recaudo_proyectado - float(meta_mensual or 0), 0)
+
+    capital_reinvertir = recaudo_proyectado * (pct_reinvertir / 100)
+    valor_caja = recaudo_proyectado * (pct_caja / 100)
+    valor_gerencia = recaudo_proyectado * (pct_gerencia / 100)
+
+    express_necesarios_reinversion = math.ceil(capital_reinvertir / valor_express_ref) if valor_express_ref > 0 and capital_reinvertir > 0 else 0
+    normales_necesarios_reinversion = math.ceil(capital_reinvertir / valor_normal_ref) if valor_normal_ref > 0 and capital_reinvertir > 0 else 0
+    express_necesarios_faltante = math.ceil(faltante_meta / valor_express_ref) if valor_express_ref > 0 and faltante_meta > 0 else 0
+    normales_necesarios_faltante = math.ceil(faltante_meta / valor_normal_ref) if valor_normal_ref > 0 and faltante_meta > 0 else 0
+
+    st.divider()
+    st.markdown(f"### 📅 Corte proyectado: {inicio_proy.date().isoformat()} → {fin_proy.date().isoformat()}")
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Recaudo proyectado", pesos(recaudo_proyectado))
+    m2.metric("Meta mínima", pesos(meta_mensual))
+    m3.metric("Faltante para meta", pesos(faltante_meta))
+    m4.metric("Excedente sobre meta", pesos(excedente_meta))
+
+    d1, d2, d3 = st.columns(3)
+    d1.metric("🔁 Volver a prestar", pesos(capital_reinvertir), f"{pct_reinvertir:.0f}%")
+    d2.metric("🏦 Guardar en caja", pesos(valor_caja), f"{pct_caja:.0f}%")
+    d3.metric("👔 Gerencia", pesos(valor_gerencia), f"{pct_gerencia:.0f}%")
+
+    st.markdown("### 🎯 Recomendación del sistema")
+    if recaudo_proyectado <= 0:
+        st.error("🚨 No hay recaudo proyectado para este corte. Revisa si existen cuotas pendientes con vencimiento dentro del período seleccionado.")
+    elif faltante_meta > 0:
+        st.warning(
+            f"⚠️ Para no bajar de {pesos(meta_mensual)}, faltan {pesos(faltante_meta)} en el corte proyectado. "
+            f"Como referencia, necesitas aproximadamente {express_necesarios_faltante} crédito(s) express de {pesos(valor_express_ref)} "
+            f"o {normales_necesarios_faltante} crédito(s) normal(es) de {pesos(valor_normal_ref)}."
+        )
+    else:
+        st.success(
+            f"✅ Con la cartera actual sí alcanzas la meta mínima. Puedes planear reinvertir {pesos(capital_reinvertir)} "
+            f"sin bajar del objetivo de {pesos(meta_mensual)}."
+        )
+
+    r1, r2 = st.columns(2)
+    with r1:
+        st.markdown(f"""
+        <div class="creddt-card" style="padding:18px 18px;margin-top:6px;">
+            <div class="creddt-strong" style="font-size:18px;font-weight:900;">Escenario solo Express</div>
+            <div class="creddt-muted" style="font-size:13px;margin-top:5px;">Para colocar el capital de reinversión recomendado</div>
+            <div style="font-size:32px;font-weight:900;margin-top:12px;">{express_necesarios_reinversion}</div>
+            <div class="creddt-muted">crédito(s) de {pesos(valor_express_ref)}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with r2:
+        st.markdown(f"""
+        <div class="creddt-card" style="padding:18px 18px;margin-top:6px;">
+            <div class="creddt-strong" style="font-size:18px;font-weight:900;">Escenario solo Normal</div>
+            <div class="creddt-muted" style="font-size:13px;margin-top:5px;">Para colocar el capital de reinversión recomendado</div>
+            <div style="font-size:32px;font-weight:900;margin-top:12px;">{normales_necesarios_reinversion}</div>
+            <div class="creddt-muted">crédito(s) de {pesos(valor_normal_ref)}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("### 🧩 Simulador rápido de mezcla")
+    mix1, mix2, mix3 = st.columns(3)
+    with mix1:
+        mix_express = st.number_input("Cantidad express", min_value=0, step=1, value=express_necesarios_reinversion, key="mix_express_proy")
+    with mix2:
+        mix_normal = st.number_input("Cantidad normal", min_value=0, step=1, value=0, key="mix_normal_proy")
+    with mix3:
+        capital_mix = (mix_express * valor_express_ref) + (mix_normal * valor_normal_ref)
+        diferencia_mix = capital_mix - capital_reinvertir
+        st.metric("Capital simulado", pesos(capital_mix), pesos(diferencia_mix))
+
+    if capital_mix >= capital_reinvertir and capital_reinvertir > 0:
+        st.success(f"✅ La mezcla cubre la reinversión sugerida de {pesos(capital_reinvertir)}.")
+    elif capital_reinvertir > 0:
+        st.info(f"ℹ️ A esta mezcla le faltan {pesos(abs(diferencia_mix))} para cubrir la reinversión sugerida.")
+
+    st.markdown("### 📋 Cuotas que soportan esta proyección")
+    if cuotas_proy.empty:
+        st.info("No hay cuotas pendientes para el corte seleccionado.")
+    else:
+        resumen_tipo = cuotas_proy.groupby("tipo_credito", dropna=False)["valor_cuota"].sum().reset_index()
+        resumen_tipo["valor_cuota"] = resumen_tipo["valor_cuota"].apply(pesos)
+        resumen_tipo = resumen_tipo.rename(columns={"tipo_credito": "Tipo de crédito", "valor_cuota": "Recaudo proyectado"})
+        st.dataframe(resumen_tipo, use_container_width=True, hide_index=True)
+
+        detalle_proy = cuotas_proy[["fecha_vencimiento", "cliente", "credito", "nro_cuota", "tipo_credito", "valor_cuota", "estado_cuota"]].copy()
+        detalle_proy["valor_cuota"] = detalle_proy["valor_cuota"].apply(pesos)
+        detalle_proy = detalle_proy.rename(columns={
+            "fecha_vencimiento": "Fecha vencimiento",
+            "cliente": "Cliente",
+            "credito": "Crédito",
+            "nro_cuota": "Cuota",
+            "tipo_credito": "Tipo",
+            "valor_cuota": "Valor cuota",
+            "estado_cuota": "Estado cuota"
+        })
+        st.dataframe(detalle_proy, use_container_width=True, hide_index=True)
+
 # ==========================
 # 👥 CLIENTES
 # ==========================

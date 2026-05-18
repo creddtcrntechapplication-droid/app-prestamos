@@ -65,6 +65,7 @@ def clear_app_caches():
         load_estado.cache_clear()
         load_mora.cache_clear()
         load_cuotas_periodo.cache_clear()
+        load_cuotas_proyeccion.cache_clear()
         load_detalle_mora.cache_clear()
         load_kpis_financieros.cache_clear()
     except Exception:
@@ -142,17 +143,18 @@ def load_estado():
 @st.cache_data(ttl=45, show_spinner=False)
 def load_mora():
     with get_conn() as conn:
-        mora_df = pd.read_sql(
-            """
+        mora_df = pd.read_sql(text("""
             SELECT
-                COUNT(DISTINCT prestamo_id) as clientes_mora,
-                COALESCE(SUM(valor_cuota),0) as monto_mora
-            FROM cuotas
-            WHERE estado <> 'Pagada'
-            AND fecha_vencimiento::date < CURRENT_DATE
-            """,
-            conn
-        )
+                COUNT(DISTINCT cu.prestamo_id) as clientes_mora,
+                COALESCE(SUM(cu.valor_cuota),0) as monto_mora
+            FROM cuotas cu
+            JOIN prestamos p ON p.id = cu.prestamo_id
+            WHERE cu.estado <> 'Pagada'
+              AND cu.fecha_vencimiento::date < CURRENT_DATE
+              AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
+              AND COALESCE(p.contrato_aceptado, 0) = 1
+              AND COALESCE(p.contrato_cancelado, 0) = 0
+        """), conn)
     if mora_df.empty:
         return 0, 0.0
     return int(mora_df["clientes_mora"][0] or 0), float(mora_df["monto_mora"][0] or 0)
@@ -172,6 +174,9 @@ def load_detalle_mora():
             JOIN clientes c ON c.cedula = p.cliente_cedula
             WHERE cu.estado <> 'Pagada'
               AND cu.fecha_vencimiento::date < CURRENT_DATE
+              AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
+              AND COALESCE(p.contrato_aceptado, 0) = 1
+              AND COALESCE(p.contrato_cancelado, 0) = 0
             GROUP BY p.id, c.nombres, c.apellidos
         """), conn)
 
@@ -179,13 +184,24 @@ def load_detalle_mora():
 def load_cuotas_periodo(inicio_iso, fin_iso):
     with get_conn() as conn:
         return pd.read_sql(text("""
-            SELECT cu.fecha_vencimiento, cu.valor_cuota, cu.estado, cu.nro_cuota,
-                   c.nombres || ' ' || c.apellidos AS cliente
+            SELECT
+                cu.fecha_vencimiento,
+                cu.valor_cuota,
+                cu.estado,
+                cu.nro_cuota,
+                p.id AS credito,
+                COALESCE(p.estado, '') AS estado_credito,
+                COALESCE(p.contrato_cancelado, 0) AS contrato_cancelado,
+                COALESCE(p.tipo, 'Normal') AS tipo_credito,
+                c.nombres || ' ' || c.apellidos AS cliente
             FROM cuotas cu
             JOIN prestamos p ON p.id = cu.prestamo_id
             JOIN clientes c ON c.cedula = p.cliente_cedula
             WHERE cu.fecha_vencimiento::date >= :inicio
-            AND cu.fecha_vencimiento::date <= :fin
+              AND cu.fecha_vencimiento::date <= :fin
+              AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
+              AND COALESCE(p.contrato_aceptado, 0) = 1
+              AND COALESCE(p.contrato_cancelado, 0) = 0
             ORDER BY cu.fecha_vencimiento
         """), conn, params={"inicio": inicio_iso, "fin": fin_iso})
 
@@ -201,6 +217,7 @@ def load_cuotas_proyeccion(inicio_iso, fin_iso):
                 p.id AS credito,
                 COALESCE(p.tipo, 'Normal') AS tipo_credito,
                 COALESCE(p.estado, '') AS estado_credito,
+                COALESCE(p.contrato_cancelado, 0) AS contrato_cancelado,
                 c.nombres || ' ' || c.apellidos AS cliente
             FROM cuotas cu
             JOIN prestamos p ON p.id = cu.prestamo_id
@@ -208,11 +225,9 @@ def load_cuotas_proyeccion(inicio_iso, fin_iso):
             WHERE cu.fecha_vencimiento::date >= :inicio
               AND cu.fecha_vencimiento::date <= :fin
               AND cu.estado <> 'Pagada'
-              AND COALESCE(p.estado, '') <> 'Anulado'
-              AND (
-                  COALESCE(p.contrato_aceptado, 0) = 1
-                  OR COALESCE(p.estado, '') = 'Activo'
-              )
+              AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
+              AND COALESCE(p.contrato_aceptado, 0) = 1
+              AND COALESCE(p.contrato_cancelado, 0) = 0
             ORDER BY cu.fecha_vencimiento, c.nombres, c.apellidos
         """), conn, params={"inicio": inicio_iso, "fin": fin_iso})
 
@@ -223,10 +238,11 @@ def load_kpis_financieros():
             WITH prestamos_financieros AS (
                 SELECT *
                 FROM prestamos
-                WHERE COALESCE(estado, '') <> 'Anulado'
+                WHERE LOWER(TRIM(COALESCE(estado, ''))) <> 'anulado'
+                  AND COALESCE(contrato_cancelado, 0) = 0
                   AND (
                       COALESCE(contrato_aceptado, 0) = 1
-                      OR COALESCE(estado, '') IN ('Activo', 'Cancelado')
+                      OR LOWER(TRIM(COALESCE(estado, ''))) IN ('activo', 'cancelado')
                   )
             ),
             pagos_financieros AS (
@@ -245,6 +261,8 @@ def load_kpis_financieros():
                 FROM cuotas cu
                 JOIN prestamos_financieros pf ON pf.id = cu.prestamo_id
                 WHERE cu.estado <> 'Pagada'
+                  AND LOWER(TRIM(COALESCE(pf.estado, ''))) = 'activo'
+                  AND COALESCE(pf.contrato_cancelado, 0) = 0
             ),
             cartera_mora AS (
                 SELECT COALESCE(SUM(cu.valor_cuota), 0) AS total
@@ -252,24 +270,26 @@ def load_kpis_financieros():
                 JOIN prestamos_financieros pf ON pf.id = cu.prestamo_id
                 WHERE cu.estado <> 'Pagada'
                   AND cu.fecha_vencimiento::date < CURRENT_DATE
+                  AND LOWER(TRIM(COALESCE(pf.estado, ''))) = 'activo'
+                  AND COALESCE(pf.contrato_cancelado, 0) = 0
             ),
             contratos_pendientes AS (
                 SELECT COUNT(*) AS total,
                        COALESCE(SUM(monto_original), 0) AS capital
                 FROM prestamos
-                WHERE COALESCE(estado, '') = 'Pendiente'
+                WHERE LOWER(TRIM(COALESCE(estado, ''))) = 'pendiente'
                   AND COALESCE(contrato_aceptado, 0) = 0
-                  AND COALESCE(estado, '') <> 'Anulado'
+                  AND COALESCE(contrato_cancelado, 0) = 0
             )
             SELECT
                 COALESCE((SELECT SUM(monto_original) FROM prestamos_financieros), 0) AS capital_colocado,
                 COALESCE((SELECT SUM(capital_pagado) FROM pagos_financieros), 0) AS capital_recuperado,
                 COALESCE((SELECT SUM(interes_pagado) FROM pagos_financieros), 0) AS interes_cobrado,
-                COALESCE((SELECT SUM(COALESCE(saldo_capital, monto_original)) FROM prestamos_financieros WHERE COALESCE(estado, '') <> 'Cancelado'), 0) AS capital_vivo,
+                COALESCE((SELECT SUM(COALESCE(saldo_capital, monto_original)) FROM prestamos_financieros WHERE LOWER(TRIM(COALESCE(estado, ''))) <> 'cancelado'), 0) AS capital_vivo,
                 COALESCE((SELECT SUM(valor) FROM pagos_financieros), 0) AS recaudo_acumulado,
                 COALESCE((SELECT total FROM cuotas_pendientes), 0) AS cuotas_pendientes,
                 COALESCE((SELECT total FROM cartera_mora), 0) AS cartera_mora,
-                COALESCE((SELECT COUNT(*) FROM prestamos_financieros WHERE COALESCE(estado, '') <> 'Cancelado'), 0) AS creditos_activos,
+                COALESCE((SELECT COUNT(*) FROM prestamos_financieros WHERE LOWER(TRIM(COALESCE(estado, ''))) <> 'cancelado'), 0) AS creditos_activos,
                 COALESCE((SELECT total FROM contratos_pendientes), 0) AS contratos_pendientes,
                 COALESCE((SELECT capital FROM contratos_pendientes), 0) AS capital_pendiente_aprobacion
         """)).mappings().first()
@@ -2773,6 +2793,13 @@ if tab_resumen:
         fin = datetime(year + (month==12), 1 if month==12 else month+1, 2)
 
     cuotas_df = load_cuotas_periodo(inicio.date().isoformat(), fin.date().isoformat()).copy()
+    # Filtro defensivo: evita que cuotas de créditos anulados/cancelados se pinten como tarjetas
+    # aunque queden cuotas pendientes antiguas en la tabla cuotas.
+    if not cuotas_df.empty:
+        if "estado_credito" in cuotas_df.columns:
+            cuotas_df = cuotas_df[cuotas_df["estado_credito"].astype(str).str.strip().str.lower().eq("activo")]
+        if "contrato_cancelado" in cuotas_df.columns:
+            cuotas_df = cuotas_df[pd.to_numeric(cuotas_df["contrato_cancelado"], errors="coerce").fillna(0).eq(0)]
 
     total_periodo = cuotas_df["valor_cuota"].sum() if not cuotas_df.empty else 0
     pagado_periodo = cuotas_df[cuotas_df["estado"]=="Pagada"]["valor_cuota"].sum() if not cuotas_df.empty else 0
@@ -2947,7 +2974,12 @@ if tab_proyeccion:
         fin_proy = datetime(year_proy + (month_proy == 12), 1 if month_proy == 12 else month_proy + 1, 2)
 
     cuotas_proy = load_cuotas_proyeccion(inicio_proy.date().isoformat(), fin_proy.date().isoformat()).copy()
+    # Filtro defensivo para que la proyección no use cuotas de créditos anulados/cancelados.
     if not cuotas_proy.empty:
+        if "estado_credito" in cuotas_proy.columns:
+            cuotas_proy = cuotas_proy[cuotas_proy["estado_credito"].astype(str).str.strip().str.lower().eq("activo")]
+        if "contrato_cancelado" in cuotas_proy.columns:
+            cuotas_proy = cuotas_proy[pd.to_numeric(cuotas_proy["contrato_cancelado"], errors="coerce").fillna(0).eq(0)]
         cuotas_proy["valor_cuota"] = pd.to_numeric(cuotas_proy["valor_cuota"], errors="coerce").fillna(0)
 
     recaudo_proyectado = float(cuotas_proy["valor_cuota"].sum()) if not cuotas_proy.empty else 0.0

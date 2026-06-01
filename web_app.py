@@ -10,6 +10,7 @@ import time
 import uuid
 from decimal import Decimal
 from datetime import datetime, date, timedelta
+from zoneinfo import ZoneInfo
 from sqlalchemy import create_engine, text
 from reportlab.lib import pagesizes, colors
 from reportlab.lib.pagesizes import letter
@@ -43,6 +44,13 @@ def get_config(key, default=""):
         return default
 
 DATABASE_URL = get_config("DATABASE_URL")
+APP_TIMEZONE = get_config("APP_TIMEZONE", "America/Bogota")
+
+def ahora_local():
+    return datetime.now(ZoneInfo(APP_TIMEZONE))
+
+def hoy_local():
+    return ahora_local().date()
 try:
     # Creamos el motor de conexión usando el puerto 6543 y SSL
     engine = create_engine(
@@ -150,11 +158,11 @@ def load_mora():
             FROM cuotas cu
             JOIN prestamos p ON p.id = cu.prestamo_id
             WHERE cu.estado <> 'Pagada'
-              AND cu.fecha_vencimiento::date < CURRENT_DATE
+              AND cu.fecha_vencimiento::date < :hoy
               AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
               AND COALESCE(p.contrato_aceptado, 0) = 1
               AND COALESCE(p.contrato_cancelado, 0) = 0
-        """), conn)
+        """), conn, params={"hoy": hoy_local().isoformat()})
     if mora_df.empty:
         return 0, 0.0
     return int(mora_df["clientes_mora"][0] or 0), float(mora_df["monto_mora"][0] or 0)
@@ -173,12 +181,12 @@ def load_detalle_mora():
             JOIN prestamos p ON p.id = cu.prestamo_id
             JOIN clientes c ON c.cedula = p.cliente_cedula
             WHERE cu.estado <> 'Pagada'
-              AND cu.fecha_vencimiento::date < CURRENT_DATE
+              AND cu.fecha_vencimiento::date < :hoy
               AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
               AND COALESCE(p.contrato_aceptado, 0) = 1
               AND COALESCE(p.contrato_cancelado, 0) = 0
             GROUP BY p.id, c.nombres, c.apellidos
-        """), conn)
+        """), conn, params={"hoy": hoy_local().isoformat()})
 
 @st.cache_data(ttl=45, show_spinner=False)
 def load_cuotas_periodo(inicio_iso, fin_iso):
@@ -269,7 +277,7 @@ def load_kpis_financieros():
                 FROM cuotas cu
                 JOIN prestamos_financieros pf ON pf.id = cu.prestamo_id
                 WHERE cu.estado <> 'Pagada'
-                  AND cu.fecha_vencimiento::date < CURRENT_DATE
+                  AND cu.fecha_vencimiento::date < :hoy
                   AND LOWER(TRIM(COALESCE(pf.estado, ''))) = 'activo'
                   AND COALESCE(pf.contrato_cancelado, 0) = 0
             ),
@@ -292,7 +300,7 @@ def load_kpis_financieros():
                 COALESCE((SELECT COUNT(*) FROM prestamos_financieros WHERE LOWER(TRIM(COALESCE(estado, ''))) <> 'cancelado'), 0) AS creditos_activos,
                 COALESCE((SELECT total FROM contratos_pendientes), 0) AS contratos_pendientes,
                 COALESCE((SELECT capital FROM contratos_pendientes), 0) AS capital_pendiente_aprobacion
-        """)).mappings().first()
+        """), {"hoy": hoy_local().isoformat()}).mappings().first()
 
     data = dict(row or {})
     capital_colocado = float(data.get("capital_colocado", 0) or 0)
@@ -1204,7 +1212,7 @@ def asegurar_estructura_base():
                 contrato_enviado = COALESCE(contrato_enviado, 0),
                 desembolso_notificado = COALESCE(desembolso_notificado, 0),
                 contrato_cancelado = COALESCE(contrato_cancelado, 0),
-                fecha_inicio = COALESCE(fecha_inicio, CURRENT_DATE::text),
+                fecha_inicio = COALESCE(fecha_inicio, :hoy),
                 frecuencia = COALESCE(frecuencia, 'Mensual')
             WHERE saldo_capital IS NULL
                OR tasa_mensual IS NULL
@@ -1214,7 +1222,7 @@ def asegurar_estructura_base():
                OR contrato_cancelado IS NULL
                OR fecha_inicio IS NULL
                OR frecuencia IS NULL
-        """))
+        """), {"hoy": hoy_local().isoformat()})
         conn.commit()
     clear_app_caches()
 asegurar_estructura_base()
@@ -1269,7 +1277,7 @@ def set_app_meta(conn, clave, valor):
         ON CONFLICT (clave) DO UPDATE SET
             valor = EXCLUDED.valor,
             updated_at = EXCLUDED.updated_at
-    """), {"clave": clave, "valor": str(valor), "updated_at": datetime.now().isoformat(timespec='seconds')})
+    """), {"clave": clave, "valor": str(valor), "updated_at": ahora_local().isoformat(timespec='seconds')})
 
 
 def reconstruir_historial_financiero():
@@ -1384,7 +1392,7 @@ def reconstruir_historial_financiero():
                     "estado": nuevo_estado
                 })
 
-        set_app_meta(conn, "finanzas_reconciliadas_at", datetime.now().isoformat(timespec='seconds'))
+        set_app_meta(conn, "finanzas_reconciliadas_at", ahora_local().isoformat(timespec='seconds'))
         conn.commit()
 
     clear_app_caches()
@@ -1494,6 +1502,7 @@ def _area_responsable(tipo_correo):
         "RECORDATORIO": "Área de Cartera",
         "RECIBO_CUOTA": "Área Administrativa y Financiera",
         "RECIBO_ABONO": "Área Administrativa y Financiera",
+        "CIERRE_CREDITO": "Área Administrativa y Financiera",
     }.get(tipo_correo, "Área Administrativa y Financiera")
 
 
@@ -1504,6 +1513,7 @@ def _titulo_correo(tipo_correo):
         "RECORDATORIO": "Recordatorio de pago",
         "RECIBO_CUOTA": "Confirmación de pago recibido",
         "RECIBO_ABONO": "Confirmación de abono a capital",
+        "CIERRE_CREDITO": "Crédito finalizado y cuenta cerrada",
     }.get(tipo_correo, "Notificación de crédito")
 
 
@@ -1514,6 +1524,7 @@ def _intro_correo(tipo_correo):
         "RECORDATORIO": "Le recordamos oportunamente la información de su obligación para facilitar la gestión de pago y mantener su crédito al día.",
         "RECIBO_CUOTA": "Le confirmamos que el pago de su cuota fue registrado exitosamente en nuestro sistema. Adjuntamos el comprobante para su soporte.",
         "RECIBO_ABONO": "Le confirmamos que su abono a capital fue registrado exitosamente en nuestro sistema. Adjuntamos el comprobante para su soporte.",
+        "CIERRE_CREDITO": "Le confirmamos que su crédito quedó pagado en su totalidad. La obligación queda cerrada en nuestro sistema.",
     }.get(tipo_correo, "Adjuntamos la información correspondiente a su crédito para consulta y soporte.")
 
 
@@ -1557,6 +1568,13 @@ def _resumen_items_correo(tipo_correo, **kwargs):
             ("Nuevo saldo capital", pesos(kwargs.get("saldo_capital"))),
             ("Nueva cuota estimada", pesos(kwargs.get("nueva_cuota"))),
         ]
+    if tipo_correo == "CIERRE_CREDITO":
+        return [
+            ("Crédito", kwargs.get("prestamo_id")),
+            ("Fecha de cierre", kwargs.get("fecha_pago")),
+            ("Total aplicado", pesos(kwargs.get("valor"))),
+            ("Estado", "Cuenta cerrada"),
+        ]
     return []
 
 
@@ -1585,6 +1603,11 @@ def construir_cuerpo_correo(tipo_correo, nombre_cliente, **kwargs):
         lineas.extend([
             "",
             "Agradecemos realizar el pago dentro del plazo correspondiente para mantener su obligación al día.",
+        ])
+    elif tipo_correo == "CIERRE_CREDITO":
+        lineas.extend([
+            "",
+            "Gracias por completar el pago de su obligación. No registra cuotas pendientes para este crédito.",
         ])
     lineas.extend([
         "",
@@ -1708,7 +1731,7 @@ def generar_recibo_pdf(prestamo_id, cliente, monto_credito, fecha_pago, valor_pa
 
 def generar_contrato_pdf(prestamo_id, cliente, monto_credito, cuotas, valor_cuota, tipo_credito, fecha_emision=None):
     ruta_pdf = os.path.join(tempfile.gettempdir(), f"contrato_{prestamo_id}.pdf")
-    fecha_emision = fecha_emision or date.today().isoformat()
+    fecha_emision = fecha_emision or hoy_local().isoformat()
     doc = SimpleDocTemplate(ruta_pdf, pagesize=pagesizes.A4, rightMargin=40, leftMargin=40, topMargin=36, bottomMargin=34)
     estilos = getSampleStyleSheet()
     azul_oscuro = colors.HexColor("#0F172A")
@@ -1909,7 +1932,7 @@ def enviar_contrato_credito(prestamo_row):
                         SET contrato_enviado = 1,
                             fecha_envio_contrato = :fecha
                         WHERE id = :id
-                    """), {"fecha": datetime.now().isoformat(timespec='seconds'), "id": prestamo_row["id"]})
+                    """), {"fecha": ahora_local().isoformat(timespec='seconds'), "id": prestamo_row["id"]})
                     conn.commit()
                 clear_app_caches()
                 registrar_auditoria_contrato(prestamo_row["id"], "ENVIO_CONTRATO", detalle=f"Contrato enviado a {prestamo_row.get('correo')}")
@@ -1942,7 +1965,7 @@ def enviar_correo_desembolso_credito(prestamo_row):
                 SET desembolso_notificado = 1,
                     fecha_desembolso = COALESCE(fecha_desembolso, :fecha)
                 WHERE id = :id
-            """), {"fecha": datetime.now().isoformat(timespec='seconds'), "id": prestamo_row["id"]})
+            """), {"fecha": ahora_local().isoformat(timespec='seconds'), "id": prestamo_row["id"]})
             conn.commit()
         clear_app_caches()
     return ok_mail, err_mail
@@ -1996,7 +2019,7 @@ def _fecha_cliente_db(valor):
         return valor.isoformat()
     return str(valor).strip()
 def crear_credito_db(cliente_cedula, monto, cuotas, frecuencia, tipo, fecha_inicio=None):
-    fecha_inicio = fecha_inicio or date.today()
+    fecha_inicio = fecha_inicio or hoy_local()
     monto = float(monto or 0)
     cuotas = int(cuotas or 0)
     frecuencia = str(frecuencia or "Mensual").title()
@@ -2093,7 +2116,7 @@ def cancelar_contrato_prestamo(prestamo_id, motivo, usuario=None):
                 contrato_token = NULL
             WHERE id = :id
         """), {
-            "fecha": datetime.now().isoformat(timespec='seconds'),
+            "fecha": ahora_local().isoformat(timespec='seconds'),
             "motivo": motivo,
             "usuario": usuario or st.session_state.get("usuario") or "SISTEMA",
             "id": prestamo_id
@@ -2143,7 +2166,7 @@ def aceptar_contrato_por_token(token):
                 estado = 'Activo',
                 fecha_aceptacion = :fecha
             WHERE id = :id
-        """), {"fecha": datetime.now().isoformat(timespec='seconds'), "id": prestamo["id"]})
+        """), {"fecha": ahora_local().isoformat(timespec='seconds'), "id": prestamo["id"]})
         conn.commit()
     clear_app_caches()
     prestamo_row = dict(prestamo)
@@ -2168,10 +2191,10 @@ def procesar_recordatorios_automaticos():
             JOIN clientes c ON c.cedula = p.cliente_cedula
             WHERE cu.estado IN ('Pendiente', 'Parcial')
               AND c.correo IS NOT NULL
-              AND cu.fecha_vencimiento::date BETWEEN CURRENT_DATE - INTERVAL '5 day' AND CURRENT_DATE + INTERVAL '3 day'
-        """)).mappings().all()
+              AND cu.fecha_vencimiento::date BETWEEN (CAST(:hoy AS date) - INTERVAL '5 day') AND (CAST(:hoy AS date) + INTERVAL '3 day')
+        """), {"hoy": hoy_local().isoformat()}).mappings().all()
         for r in rows:
-            dias = (r['fecha_vencimiento'] - date.today()).days
+            dias = (r['fecha_vencimiento'] - hoy_local()).days
             if dias not in tipos_permitidos:
                 continue
             tipo_r = tipos_permitidos[dias]
@@ -2182,7 +2205,7 @@ def procesar_recordatorios_automaticos():
             html_correo = construir_html_correo('RECORDATORIO', r['cliente'], prestamo_id=r['prestamo_id'], cuota_nro=r['nro_cuota'], fecha_vencimiento=r['fecha_vencimiento'], valor=r['valor_cuota'])
             ok, _ = enviar_correo_async(r['correo'], f"CREDDT CRNTECH | Recordatorio de pago del crédito {r['prestamo_id']}", cuerpo, html_override=html_correo)
             if ok:
-                conn.execute(text("INSERT INTO reminders_sent (id_cuota, tipo_recordatorio, fecha_envio) VALUES (:id_cuota, :tipo, :fecha_envio)"), {"id_cuota": r['id_cuota'], "tipo": tipo_r, "fecha_envio": datetime.now().isoformat(timespec='seconds')})
+                conn.execute(text("INSERT INTO reminders_sent (id_cuota, tipo_recordatorio, fecha_envio) VALUES (:id_cuota, :tipo, :fecha_envio)"), {"id_cuota": r['id_cuota'], "tipo": tipo_r, "fecha_envio": ahora_local().isoformat(timespec='seconds')})
                 enviados += 1
         conn.commit()
     clear_app_caches()
@@ -2258,7 +2281,54 @@ def actualizar_estado_prestamo(conn, prestamo_id):
     """), {"id": prestamo_id}).scalar()
     nuevo_estado = 'Cancelado' if int(pendientes or 0) == 0 else 'Activo'
     conn.execute(text("UPDATE prestamos SET estado = :estado WHERE id = :id"), {"estado": nuevo_estado, "id": prestamo_id})
+
+def obtener_cuotas_pendientes(conn, prestamo_id):
+    return conn.execute(text("""
+        SELECT id_cuota, nro_cuota, valor_cuota, fecha_vencimiento, estado
+        FROM cuotas
+        WHERE prestamo_id = :id
+          AND estado <> 'Pagada'
+        ORDER BY nro_cuota ASC
+    """), {"id": prestamo_id}).fetchall()
+
+def enviar_correo_cierre_credito(prestamo_id, nombre_cliente, correo_cliente, fecha_pago, valor_aplicado):
+    if not correo_cliente:
+        return False, "Cliente sin correo registrado"
+    cuerpo = construir_cuerpo_correo(
+        "CIERRE_CREDITO",
+        nombre_cliente,
+        prestamo_id=prestamo_id,
+        fecha_pago=fecha_pago.isoformat(),
+        valor=valor_aplicado
+    )
+    html_correo = construir_html_correo(
+        "CIERRE_CREDITO",
+        nombre_cliente,
+        prestamo_id=prestamo_id,
+        fecha_pago=fecha_pago.isoformat(),
+        valor=valor_aplicado
+    )
+    return enviar_correo_async(
+        correo_cliente,
+        f"CREDDT CRNTECH | Crédito {prestamo_id} finalizado",
+        cuerpo,
+        html_override=html_correo
+    )
+
 def registrar_pago_cuota(prestamo_id, fecha_pago):
+    return registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=1)
+
+def registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=None, valor_pago_total=None):
+    if cantidad_cuotas is None and valor_pago_total is None:
+        return {"ok": False, "error": "Debes indicar cuántas cuotas o qué valor aplicar"}
+    if cantidad_cuotas is not None:
+        cantidad_cuotas = int(cantidad_cuotas or 0)
+        if cantidad_cuotas <= 0:
+            return {"ok": False, "error": "La cantidad de cuotas debe ser mayor a cero"}
+    valor_pago_total = normalizar_decimal(valor_pago_total) if valor_pago_total is not None else None
+    if valor_pago_total is not None and valor_pago_total <= 0:
+        return {"ok": False, "error": "El valor pagado debe ser mayor a cero"}
+
     with get_conn() as conn:
         prestamo_db = conn.execute(text("""
             SELECT id, cliente_cedula, monto_original, COALESCE(saldo_capital, monto_original) AS saldo_capital,
@@ -2268,20 +2338,61 @@ def registrar_pago_cuota(prestamo_id, fecha_pago):
         """), {"id": prestamo_id}).mappings().first()
         if not prestamo_db:
             return {"ok": False, "error": "No se pudo obtener el préstamo"}
-        proxima = obtener_proxima_cuota(conn, prestamo_id)
-        if not proxima:
+        cuotas_pendientes = obtener_cuotas_pendientes(conn, prestamo_id)
+        if not cuotas_pendientes:
             return {"ok": False, "error": "Todas las cuotas ya están pagadas"}
-        id_cuota, nro_cuota, valor_cuota, fecha_vencimiento, _ = proxima
-        valor_pago = normalizar_decimal(valor_cuota)
+        aplicaciones = []
+        restante = valor_pago_total
+        if cantidad_cuotas is not None:
+            cuotas_a_aplicar = cuotas_pendientes[:cantidad_cuotas]
+            if len(cuotas_a_aplicar) < cantidad_cuotas:
+                return {"ok": False, "error": "No hay suficientes cuotas pendientes para aplicar esa cantidad"}
+            aplicaciones = [(cuota, normalizar_decimal(cuota[2]), True) for cuota in cuotas_a_aplicar]
+            valor_pago = sum((valor for _, valor, _ in aplicaciones), Decimal("0.00"))
+        else:
+            for cuota in cuotas_pendientes:
+                valor_cuota_actual = normalizar_decimal(cuota[2])
+                if restante >= valor_cuota_actual:
+                    aplicaciones.append((cuota, valor_cuota_actual, True))
+                    restante -= valor_cuota_actual
+                elif restante > 0:
+                    aplicaciones.append((cuota, restante, False))
+                    restante = Decimal("0.00")
+                    break
+                else:
+                    break
+            if not aplicaciones:
+                return {"ok": False, "error": "El valor no alcanza para aplicar a una cuota"}
+            if restante and restante > 0:
+                return {"ok": False, "error": "El valor pagado supera el saldo de cuotas pendientes"}
+            valor_pago = valor_pago_total
         saldo_capital_actual = normalizar_decimal(prestamo_db["saldo_capital"])
         tasa_mensual = Decimal(str(prestamo_db["tasa_mensual"] or 0))
-        interes_periodo = (saldo_capital_actual * tasa_mensual).quantize(Decimal("0.01")) if tasa_mensual > 0 else Decimal("0.00")
-        capital_pagado = valor_pago - interes_periodo
-        if capital_pagado < 0:
-            capital_pagado = Decimal("0.00")
-        nuevo_saldo_capital = saldo_capital_actual - capital_pagado
-        if nuevo_saldo_capital < 0:
-            nuevo_saldo_capital = Decimal("0.00")
+        saldo_iterado = saldo_capital_actual
+        interes_total = Decimal("0.00")
+        capital_total = Decimal("0.00")
+        for _, valor_aplicado, _ in aplicaciones:
+            interes_periodo = (saldo_iterado * tasa_mensual).quantize(Decimal("0.01")) if tasa_mensual > 0 else Decimal("0.00")
+            interes_aplicado = min(interes_periodo, valor_aplicado)
+            capital_aplicado = valor_aplicado - interes_aplicado
+            if capital_aplicado < 0:
+                capital_aplicado = Decimal("0.00")
+            saldo_iterado -= capital_aplicado
+            if saldo_iterado < 0:
+                saldo_iterado = Decimal("0.00")
+            interes_total += interes_aplicado
+            capital_total += capital_aplicado
+        nuevo_saldo_capital = saldo_iterado
+        primera_cuota = aplicaciones[0][0]
+        ultima_cuota = aplicaciones[-1][0]
+        cuotas_pagadas = [a[0][1] for a in aplicaciones if a[2]]
+        detalle_cuotas = (
+            f"Pago cuotas #{cuotas_pagadas[0]} a #{cuotas_pagadas[-1]}"
+            if len(cuotas_pagadas) > 1
+            else f"Pago cuota #{primera_cuota[1]}"
+        )
+        if any(not completa for _, _, completa in aplicaciones):
+            detalle_cuotas += f" y abono parcial a cuota #{ultima_cuota[1]}"
         result_pago = conn.execute(text("""
             INSERT INTO pagos (
                 prestamo_id, fecha_pago, valor, estado, tipo_movimiento, detalle,
@@ -2296,21 +2407,37 @@ def registrar_pago_cuota(prestamo_id, fecha_pago):
             "id": prestamo_id,
             "fecha": fecha_pago.isoformat(),
             "valor": valor_pago,
-            "detalle": f"Pago cuota #{nro_cuota}",
-            "interes_pagado": interes_periodo,
-            "capital_pagado": capital_pagado,
+            "detalle": detalle_cuotas,
+            "interes_pagado": interes_total,
+            "capital_pagado": capital_total,
             "saldo_capital_anterior": saldo_capital_actual,
             "saldo_capital_nuevo": nuevo_saldo_capital,
-            "cuota_numero": nro_cuota
+            "cuota_numero": primera_cuota[1]
         })
         id_pago = result_pago.fetchone()[0]
-        conn.execute(text("""
-            INSERT INTO pagos_cuotas (id_pago, id_cuota, valor_aplicado)
-            VALUES (:id_pago, :id_cuota, :valor_aplicado)
-        """), {"id_pago": id_pago, "id_cuota": id_cuota, "valor_aplicado": valor_pago})
-        conn.execute(text("UPDATE cuotas SET estado = 'Pagada' WHERE id_cuota = :id_cuota"), {"id_cuota": id_cuota})
+        for cuota, valor_aplicado, completa in aplicaciones:
+            id_cuota, _, valor_cuota_actual, _, _ = cuota
+            conn.execute(text("""
+                INSERT INTO pagos_cuotas (id_pago, id_cuota, valor_aplicado)
+                VALUES (:id_pago, :id_cuota, :valor_aplicado)
+            """), {"id_pago": id_pago, "id_cuota": id_cuota, "valor_aplicado": valor_aplicado})
+            if completa:
+                conn.execute(text("UPDATE cuotas SET estado = 'Pagada' WHERE id_cuota = :id_cuota"), {"id_cuota": id_cuota})
+            else:
+                saldo_cuota = normalizar_decimal(valor_cuota_actual) - valor_aplicado
+                conn.execute(text("""
+                    UPDATE cuotas
+                    SET estado = 'Parcial',
+                        valor_cuota = :saldo_cuota
+                    WHERE id_cuota = :id_cuota
+                """), {"id_cuota": id_cuota, "saldo_cuota": saldo_cuota})
         conn.execute(text("UPDATE prestamos SET saldo_capital = :saldo_capital WHERE id = :id"), {"saldo_capital": nuevo_saldo_capital, "id": prestamo_id})
         actualizar_estado_prestamo(conn, prestamo_id)
+        finalizado = int(conn.execute(text("""
+            SELECT COUNT(*)
+            FROM cuotas
+            WHERE prestamo_id = :id AND estado <> 'Pagada'
+        """), {"id": prestamo_id}).scalar() or 0) == 0
         conn.commit()
         clear_app_caches()
         cliente = obtener_datos_cliente(conn, prestamo_db["cliente_cedula"])
@@ -2325,7 +2452,7 @@ def registrar_pago_cuota(prestamo_id, fecha_pago):
             "RECIBO_CUOTA",
             nombre_cliente,
             prestamo_id=prestamo_id,
-            cuota_nro=nro_cuota,
+            cuota_nro=f"{primera_cuota[1]}-{ultima_cuota[1]}" if primera_cuota[1] != ultima_cuota[1] else primera_cuota[1],
             fecha_pago=fecha_pago.isoformat(),
             valor=valor_pago
         )
@@ -2340,11 +2467,16 @@ def registrar_pago_cuota(prestamo_id, fecha_pago):
                     "RECIBO_CUOTA",
                     nombre_cliente,
                     prestamo_id=prestamo_id,
-                    cuota_nro=nro_cuota,
+                    cuota_nro=f"{primera_cuota[1]}-{ultima_cuota[1]}" if primera_cuota[1] != ultima_cuota[1] else primera_cuota[1],
                     fecha_pago=fecha_pago.isoformat(),
                     valor=valor_pago
                 )
             )
+            if finalizado:
+                cierre_ok, cierre_error = enviar_correo_cierre_credito(prestamo_id, nombre_cliente, correo_cliente, fecha_pago, valor_pago)
+                correo_ok = correo_ok and cierre_ok
+                if not cierre_ok:
+                    correo_error = cierre_error
         else:
             correo_error = "Cliente sin correo registrado"
     finally:
@@ -2356,11 +2488,15 @@ def registrar_pago_cuota(prestamo_id, fecha_pago):
     return {
         "ok": True,
         "credito": prestamo_id,
-        "cuota": nro_cuota,
+        "cuota": primera_cuota[1],
+        "cuota_final": ultima_cuota[1],
+        "cuotas_aplicadas": len([1 for _, _, completa in aplicaciones if completa]),
+        "parcial": any(not completa for _, _, completa in aplicaciones),
         "valor": valor_pago,
         "correo": correo_ok,
         "tiene_correo": bool(correo_cliente),
-        "correo_error": correo_error
+        "correo_error": correo_error,
+        "finalizado": finalizado
     }
 def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
     valor_abono = normalizar_decimal(valor_abono)
@@ -2773,7 +2909,7 @@ if tab_resumen:
     st.divider()
     st.subheader("🔎 Consulta mensual (corte 02 → 02)")
     meses_disponibles = pd.date_range("2025-12-01", "2030-12-01", freq="MS").strftime("%Y-%m").tolist()
-    mes_actual = date.today().strftime("%Y-%m")
+    mes_actual = hoy_local().strftime("%Y-%m")
     index_actual = meses_disponibles.index(mes_actual) if mes_actual in meses_disponibles else 0
 
     mes_consulta = st.selectbox(
@@ -2877,7 +3013,7 @@ if tab_proyeccion:
     st.subheader("📈 Proyección mensual")
     st.caption("Planea el próximo corte sin saturar el resumen: meta de recaudo, reinversión, caja, gerencia y créditos sugeridos.")
 
-    hoy = date.today()
+    hoy = hoy_local()
     if hoy.month == 12:
         siguiente_year, siguiente_month = hoy.year + 1, 1
     else:
@@ -3126,7 +3262,7 @@ if tab_clientes:
                         "Fecha de nacimiento",
                         value=None,
                         min_value=date(1900, 1, 1),
-                        max_value=date.today(),
+                        max_value=hoy_local(),
                         format="YYYY-MM-DD"
                     )
                     cargo_new = st.text_input("Cargo")
@@ -3201,7 +3337,7 @@ if tab_clientes:
                                             "Fecha de nacimiento",
                                             value=_parse_fecha_cliente(fila["fecha_nacimiento"]),
                                             min_value=date(1900, 1, 1),
-                                            max_value=date.today(),
+                                            max_value=hoy_local(),
                                             format="YYYY-MM-DD",
                                             key="fecha_nacimiento_edit"
                                         )
@@ -3306,7 +3442,7 @@ if tab_creditos:
                         monto_normal_new = st.number_input("Monto a prestar", min_value=0.0, step=100000.0, value=1000000.0, key="nuevo_monto_normal")
                         cuotas_normal_new = st.selectbox("Número de cuotas", [12, 15], key="nuevo_cuotas_normal")
                         frecuencia_normal_new = st.selectbox("Frecuencia", ["Mensual", "Quincenal"], key="nuevo_frec_normal")
-                        fecha_inicio_normal = st.date_input("Fecha de inicio", value=date.today(), key="fecha_inicio_normal")
+                        fecha_inicio_normal = st.date_input("Fecha de inicio", value=hoy_local(), key="fecha_inicio_normal")
                         confirmar_envio_normal = st.checkbox(
                             "Confirmo que validé cliente, monto, correo y autorizo el envío del contrato",
                             key="confirmar_envio_normal"
@@ -3346,7 +3482,7 @@ if tab_creditos:
                         monto_express_new = st.number_input("Monto a prestar", min_value=0.0, step=50000.0, value=300000.0, key="nuevo_monto_express")
                         frecuencia_express_new = st.selectbox("Frecuencia", ["Mensual", "Quincenal"], key="nuevo_frec_express")
                         cuotas_express_new = 5 if frecuencia_express_new == "Mensual" else 6
-                        fecha_inicio_express = st.date_input("Fecha de inicio", value=date.today(), key="fecha_inicio_express")
+                        fecha_inicio_express = st.date_input("Fecha de inicio", value=hoy_local(), key="fecha_inicio_express")
                         confirmar_envio_express = st.checkbox(
                             "Confirmo que validé cliente, monto, correo y autorizo el envío del contrato",
                             key="confirmar_envio_express"
@@ -3682,7 +3818,7 @@ if tab_pagos:
                             </div>
                             """, unsafe_allow_html=True)
                             with st.form("form_pago_cuota", clear_on_submit=True):
-                                fecha_pago = st.date_input("📅 Fecha de movimiento", value=date.today(), key="fecha_movimiento_pago")
+                                fecha_pago = st.date_input("📅 Fecha de movimiento", value=hoy_local(), key="fecha_movimiento_pago")
                                 submit_pago_cuota = st.form_submit_button("Registrar pago de cuota", type="primary", disabled=st.session_state.get("app_busy", False))
                             if submit_pago_cuota:
                                 start_busy("Aplicando pago de cuota...")
@@ -3697,11 +3833,64 @@ if tab_pagos:
                                             st.error(f"❌ {resultado.get('error')}")
                                 finally:
                                     stop_busy()
+                            with get_conn() as conn:
+                                cuotas_pendientes_pago = obtener_cuotas_pendientes(conn, prestamo.id)
+                            total_pendiente_pago = sum((normalizar_decimal(c[2]) for c in cuotas_pendientes_pago), Decimal("0.00"))
+                            st.markdown("#### Pago de varias cuotas")
+                            st.caption("Opción adicional para aplicar varias cuotas completas o ingresar el valor recibido y que se aplique desde la cuota pendiente más antigua.")
+                            with st.form("form_pago_multiple", clear_on_submit=True):
+                                fecha_pago_multi = st.date_input("📅 Fecha de movimiento", value=hoy_local(), key="fecha_movimiento_pago_multi")
+                                modo_pago_multi = st.radio(
+                                    "Forma de aplicar",
+                                    ["Por número de cuotas", "Por valor pagado"],
+                                    horizontal=True,
+                                    key="modo_pago_multiple"
+                                )
+                                cantidad_cuotas_multi = 1
+                                valor_pago_multi = 0.0
+                                if modo_pago_multi == "Por número de cuotas":
+                                    cantidad_cuotas_multi = st.number_input(
+                                        "Cuotas a pagar",
+                                        min_value=1,
+                                        max_value=max(1, len(cuotas_pendientes_pago)),
+                                        value=1,
+                                        step=1,
+                                        key="cantidad_cuotas_pago_multi"
+                                    )
+                                    valor_estimado_multi = sum((normalizar_decimal(c[2]) for c in cuotas_pendientes_pago[:int(cantidad_cuotas_multi)]), Decimal("0.00"))
+                                    st.info(f"Se aplicará {pesos(valor_estimado_multi)} a {int(cantidad_cuotas_multi)} cuota(s).")
+                                else:
+                                    valor_pago_multi = st.number_input(
+                                        "Valor recibido",
+                                        min_value=0.0,
+                                        max_value=float(total_pendiente_pago),
+                                        step=1000.0,
+                                        value=0.0,
+                                        key="valor_pago_multi"
+                                    )
+                                    st.info(f"Saldo máximo aplicable en cuotas pendientes: {pesos(total_pendiente_pago)}.")
+                                submit_pago_multiple = st.form_submit_button("Registrar pago múltiple", disabled=st.session_state.get("app_busy", False))
+                            if submit_pago_multiple:
+                                start_busy("Aplicando pago múltiple...")
+                                try:
+                                    with st.spinner("⏳ Aplicando pago múltiple..."):
+                                        if modo_pago_multi == "Por número de cuotas":
+                                            resultado = registrar_pago_cuotas(prestamo.id, fecha_pago_multi, cantidad_cuotas=int(cantidad_cuotas_multi))
+                                        else:
+                                            resultado = registrar_pago_cuotas(prestamo.id, fecha_pago_multi, valor_pago_total=valor_pago_multi)
+                                        if resultado.get("ok"):
+                                            st.session_state.pago_msg = {"tipo": "CUOTA", **resultado}
+                                            st.session_state.reset_select_prestamo_pago = True
+                                            st.rerun()
+                                        else:
+                                            st.error(f"❌ {resultado.get('error')}")
+                                finally:
+                                    stop_busy()
 
                     with tab_abono_capital:
                         st.caption("El abono a capital reduce el saldo del préstamo y recalcula el valor de las cuotas pendientes, manteniendo el número de cuotas restantes.")
                         with st.form("form_abono_capital", clear_on_submit=True):
-                            fecha_pago = st.date_input("📅 Fecha de movimiento", value=date.today(), key="fecha_movimiento_abono")
+                            fecha_pago = st.date_input("📅 Fecha de movimiento", value=hoy_local(), key="fecha_movimiento_abono")
                             abono_capital = st.number_input(
                                 "Valor abono a capital",
                                 min_value=0.0,
@@ -3726,14 +3915,16 @@ if tab_pagos:
             if st.session_state.pago_msg:
                 m = st.session_state.pago_msg
                 if m["tipo"] == "CUOTA":
+                    cuota_txt = f"Cuotas #{m['cuota']} a #{m.get('cuota_final')}" if m.get("cuota_final") and m.get("cuota_final") != m.get("cuota") else f"Cuota #{m['cuota']}"
+                    cierre_txt = " | Crédito finalizado y cuenta cerrada" if m.get("finalizado") else ""
                     if m.get("tiene_correo") and m.get("correo"):
-                        st.success(f"✅ Pago de cuota registrado y correo enviado - Crédito {m['credito']} | Cuota #{m['cuota']}")
+                        st.success(f"✅ Pago de cuota registrado y correo enviado - Crédito {m['credito']} | {cuota_txt}{cierre_txt}")
                     elif m.get("tiene_correo") and not m.get("correo"):
-                        st.warning(f"⚠️ Pago de cuota registrado, pero el correo no se pudo enviar - Crédito {m['credito']}")
+                        st.warning(f"⚠️ Pago de cuota registrado, pero el correo no se pudo enviar - Crédito {m['credito']} | {cuota_txt}{cierre_txt}")
                         if m.get("correo_error"):
                             st.error(f"Detalle correo: {m['correo_error']}")
                     else:
-                        st.success(f"✅ Pago de cuota registrado - Crédito {m['credito']}")
+                        st.success(f"✅ Pago de cuota registrado - Crédito {m['credito']} | {cuota_txt}{cierre_txt}")
                 if m["tipo"] == "ABONO_CAPITAL":
                     if m.get("tiene_correo") and m.get("correo"):
                         st.success(f"✅ Abono a capital registrado y correo enviado - Crédito {m['credito']} | Nueva cuota: {pesos(m['nueva_cuota'])}")
@@ -3808,8 +3999,3 @@ if tab_sim:
                         f"💰 Total a pagar estimado: **{pesos(cuota * cuotas_express)}**\n\n"
                         f"📈 Tasa aplicada: **{calcular_tasa_express(frecuencia)*100:.2f}%**"
                     )
-
-
-
-
-

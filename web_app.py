@@ -1918,6 +1918,26 @@ def enviar_pdf_por_correo(destino, asunto, cuerpo, ruta_pdf, nombre_adj, html_ov
         return enviar_correo_async(destino=destino, asunto=asunto, cuerpo=cuerpo, attachment_bytes=f.read(), attachment_name=nombre_adj, html_override=html_override)
 
 
+def registrar_auditoria_contrato(prestamo_id, accion, usuario=None, motivo=None, detalle=None):
+    """Registra trazabilidad del flujo de contratos sin bloquear la operación principal."""
+    try:
+        with get_conn() as conn:
+            conn.execute(text("""
+                INSERT INTO auditoria_contratos (prestamo_id, accion, motivo, usuario, fecha, detalle)
+                VALUES (:prestamo_id, :accion, :motivo, :usuario, :fecha, :detalle)
+            """), {
+                "prestamo_id": prestamo_id,
+                "accion": accion,
+                "motivo": motivo,
+                "usuario": usuario or st.session_state.get("usuario") or "SISTEMA",
+                "fecha": ahora_local().isoformat(timespec='seconds'),
+                "detalle": detalle,
+            })
+            conn.commit()
+    except Exception:
+        pass
+
+
 def enviar_contrato_credito(prestamo_row):
     """Genera y envía el contrato del crédito.
 

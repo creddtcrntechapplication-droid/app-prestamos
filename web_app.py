@@ -92,6 +92,7 @@ def load_estado():
                 p.cuotas,
                 COALESCE(p.frecuencia, 'Mensual') AS frecuencia,
                 p.tipo,
+                COALESCE(p.modo_interes, 'Capital e interés') AS modo_interes,
                 p.cliente_cedula,
                 COALESCE(p.contrato_aceptado, 0) AS contrato_aceptado,
                 COALESCE(p.contrato_enviado, 0) AS contrato_enviado,
@@ -126,7 +127,7 @@ def load_estado():
             LEFT JOIN clientes c
                 ON c.cedula = p.cliente_cedula
             GROUP BY
-                p.id, p.estado, p.monto_original, p.valor_cuota, p.cuotas, p.frecuencia, p.tipo,
+                p.id, p.estado, p.monto_original, p.valor_cuota, p.cuotas, p.frecuencia, p.tipo, p.modo_interes,
                 p.cliente_cedula, p.contrato_aceptado, p.contrato_enviado, p.desembolso_notificado, p.contrato_cancelado,
                 p.fecha_envio_contrato, p.fecha_aceptacion, p.fecha_desembolso, p.fecha_cancelacion_contrato,
                 p.motivo_cancelacion_contrato, p.cancelado_por,
@@ -1118,6 +1119,7 @@ def asegurar_estructura_base():
                 tipo TEXT DEFAULT 'Normal',
                 saldo_capital NUMERIC(18,2),
                 tasa_mensual NUMERIC(12,6),
+                modo_interes TEXT DEFAULT 'Capital e interés',
                 contrato_aceptado INTEGER DEFAULT 0,
                 contrato_token TEXT,
                 fecha_aceptacion TEXT,
@@ -1198,6 +1200,7 @@ def asegurar_estructura_base():
             "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS fecha_cancelacion_contrato TEXT",
             "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS motivo_cancelacion_contrato TEXT",
             "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS cancelado_por TEXT",
+            "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS modo_interes TEXT DEFAULT 'Capital e interés'",
             "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS tipo_movimiento TEXT",
             "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS detalle TEXT",
             "ALTER TABLE pagos_cuotas ADD COLUMN IF NOT EXISTS valor_aplicado NUMERIC(18,2)",
@@ -1213,7 +1216,8 @@ def asegurar_estructura_base():
                 desembolso_notificado = COALESCE(desembolso_notificado, 0),
                 contrato_cancelado = COALESCE(contrato_cancelado, 0),
                 fecha_inicio = COALESCE(fecha_inicio, :hoy),
-                frecuencia = COALESCE(frecuencia, 'Mensual')
+                frecuencia = COALESCE(frecuencia, 'Mensual'),
+                modo_interes = COALESCE(modo_interes, 'Capital e interés')
             WHERE saldo_capital IS NULL
                OR tasa_mensual IS NULL
                OR contrato_aceptado IS NULL
@@ -1222,6 +1226,7 @@ def asegurar_estructura_base():
                OR contrato_cancelado IS NULL
                OR fecha_inicio IS NULL
                OR frecuencia IS NULL
+               OR modo_interes IS NULL
         """), {"hoy": hoy_local().isoformat()})
         conn.commit()
     clear_app_caches()
@@ -1231,6 +1236,7 @@ def asegurar_estructura_financiera():
         sentencias = [
             "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS saldo_capital NUMERIC(18,2)",
             "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS tasa_mensual NUMERIC(12,6)",
+            "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS modo_interes TEXT DEFAULT 'Capital e interés'",
             "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS tipo_movimiento TEXT",
             "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS detalle TEXT",
             "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS interes_pagado NUMERIC(18,2)",
@@ -1245,8 +1251,9 @@ def asegurar_estructura_financiera():
         conn.execute(text("""
             UPDATE prestamos
             SET saldo_capital = COALESCE(saldo_capital, monto_original),
-                tasa_mensual = COALESCE(tasa_mensual, 0)
-            WHERE saldo_capital IS NULL OR tasa_mensual IS NULL
+                tasa_mensual = COALESCE(tasa_mensual, 0),
+                modo_interes = COALESCE(modo_interes, 'Capital e interés')
+            WHERE saldo_capital IS NULL OR tasa_mensual IS NULL OR modo_interes IS NULL
         """))
         conn.commit()
     clear_app_caches()
@@ -1536,6 +1543,8 @@ def _resumen_items_correo(tipo_correo, **kwargs):
             ("Número de cuotas", kwargs.get("cuotas")),
             ("Valor de la cuota", pesos(kwargs.get("valor_cuota"))),
             ("Tipo de crédito", kwargs.get("tipo_credito") or kwargs.get("tipo")),
+            ("Tasa de interés", f"{float(kwargs.get('tasa_interes') or 0) * 100:.2f}%"),
+            ("Modalidad", kwargs.get("modo_interes")),
         ]
     if tipo_correo == "DESEMBOLSO":
         return [
@@ -1729,7 +1738,7 @@ def generar_recibo_pdf(prestamo_id, cliente, monto_credito, fecha_pago, valor_pa
     return ruta_pdf
 
 
-def generar_contrato_pdf(prestamo_id, cliente, monto_credito, cuotas, valor_cuota, tipo_credito, fecha_emision=None):
+def generar_contrato_pdf(prestamo_id, cliente, monto_credito, cuotas, valor_cuota, tipo_credito, fecha_emision=None, tasa_interes=None, modo_interes='Capital e interés'):
     ruta_pdf = os.path.join(tempfile.gettempdir(), f"contrato_{prestamo_id}.pdf")
     fecha_emision = fecha_emision or hoy_local().isoformat()
     doc = SimpleDocTemplate(ruta_pdf, pagesize=pagesizes.A4, rightMargin=40, leftMargin=40, topMargin=36, bottomMargin=34)
@@ -1767,7 +1776,8 @@ def generar_contrato_pdf(prestamo_id, cliente, monto_credito, cuotas, valor_cuot
         [Paragraph("Crédito", style_label), Paragraph(f"<b>{prestamo_id}</b>", style_value), Paragraph("Fecha de emisión", style_label), Paragraph(f"<b>{fecha_emision}</b>", style_value)],
         [Paragraph("Cliente", style_label), Paragraph(f"<b>{cliente}</b>", style_value), Paragraph("Tipo de crédito", style_label), Paragraph(f"<b>{tipo_credito}</b>", style_value)],
         [Paragraph("Monto aprobado", style_label), Paragraph(f"<b>{pesos(monto_credito)}</b>", style_value), Paragraph("Número de cuotas", style_label), Paragraph(f"<b>{cuotas}</b>", style_value)],
-        [Paragraph("Valor de la cuota", style_label), Paragraph(f"<b>{pesos(valor_cuota)}</b>", style_value), Paragraph("Estado inicial", style_label), Paragraph("<b>Pendiente de aceptación</b>", style_value)],
+        [Paragraph("Valor de la cuota", style_label), Paragraph(f"<b>{pesos(valor_cuota)}</b>", style_value), Paragraph("Tasa de interés", style_label), Paragraph(f"<b>{float(tasa_interes or 0) * 100:.2f}%</b>", style_value)],
+        [Paragraph("Modalidad de cobro", style_label), Paragraph(f"<b>{modo_interes}</b>", style_value), Paragraph("Estado inicial", style_label), Paragraph("<b>Pendiente de aceptación</b>", style_value)],
     ], colWidths=[doc.width * 0.18, doc.width * 0.32, doc.width * 0.18, doc.width * 0.32])
     resumen.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, -1), fondo), ('BOX', (0, 0), (-1, -1), 1, gris_claro), ('INNERGRID', (0, 0), (-1, -1), 0.5, gris_claro), ('TOPPADDING', (0, 0), (-1, -1), 9), ('BOTTOMPADDING', (0, 0), (-1, -1), 9), ('LEFTPADDING', (0, 0), (-1, -1), 10), ('RIGHTPADDING', (0, 0), (-1, -1), 10), ('VALIGN', (0, 0), (-1, -1), 'MIDDLE')]))
     story.append(resumen)
@@ -1775,7 +1785,10 @@ def generar_contrato_pdf(prestamo_id, cliente, monto_credito, cuotas, valor_cuot
     story.append(Paragraph("<b>1. Objeto de la operación</b>", style_clause_title))
     story.append(Paragraph("Mediante el presente documento, CREDDT CRNTECH deja constancia de la aprobación inicial del crédito descrito en el resumen anterior y de las condiciones base de la operación financiera ofrecida al cliente.", style_clause))
     story.append(Paragraph("<b>2. Condiciones generales de pago</b>", style_clause_title))
-    story.append(Paragraph("El cliente se compromete a atender oportunamente el pago de las cuotas pactadas en las fechas de vencimiento definidas por el sistema, de acuerdo con la frecuencia del crédito y las políticas internas aplicables.", style_clause))
+    if str(modo_interes).strip().lower() == 'solo interés':
+        story.append(Paragraph("El cliente se compromete a atender oportunamente las cuotas pactadas, las cuales corresponden únicamente al interés definido para cada periodo. El capital aprobado permanecerá como saldo pendiente hasta que el cliente realice abonos o pago total al capital.", style_clause))
+    else:
+        story.append(Paragraph("El cliente se compromete a atender oportunamente el pago de las cuotas pactadas en las fechas de vencimiento definidas por el sistema, de acuerdo con la frecuencia del crédito y las políticas internas aplicables.", style_clause))
     story.append(Paragraph("<b>3. Abonos extraordinarios y recalculo</b>", style_clause_title))
     story.append(Paragraph("Los abonos extraordinarios a capital, cuando sean aceptados y registrados, reducirán el saldo del crédito y podrán generar un recalculo del valor de las cuotas pendientes, manteniendo la estructura operativa definida por la entidad.", style_clause))
     story.append(Paragraph("<b>4. Aceptación electrónica</b>", style_clause_title))
@@ -1887,7 +1900,9 @@ def enviar_contrato_credito(prestamo_row):
             prestamo_row["monto_original"],
             prestamo_row["cuotas"],
             prestamo_row["valor_cuota"],
-            prestamo_row.get("tipo", "Normal")
+            prestamo_row.get("tipo", "Normal"),
+            tasa_interes=prestamo_row.get("tasa_mensual", 0),
+            modo_interes=prestamo_row.get("modo_interes", "Capital e interés")
         )
 
         try:
@@ -1899,6 +1914,8 @@ def enviar_contrato_credito(prestamo_row):
                 cuotas=prestamo_row["cuotas"],
                 valor_cuota=prestamo_row["valor_cuota"],
                 tipo_credito=prestamo_row.get("tipo"),
+                tasa_interes=prestamo_row.get("tasa_mensual"),
+                modo_interes=prestamo_row.get("modo_interes"),
                 link_aceptacion=enlace
             )
             html_correo = construir_html_correo(
@@ -1909,6 +1926,8 @@ def enviar_contrato_credito(prestamo_row):
                 cuotas=prestamo_row["cuotas"],
                 valor_cuota=prestamo_row["valor_cuota"],
                 tipo_credito=prestamo_row.get("tipo"),
+                tasa_interes=prestamo_row.get("tasa_mensual"),
+                modo_interes=prestamo_row.get("modo_interes"),
                 link_aceptacion=enlace
             )
 
@@ -2018,12 +2037,18 @@ def _fecha_cliente_db(valor):
     if isinstance(valor, date):
         return valor.isoformat()
     return str(valor).strip()
-def crear_credito_db(cliente_cedula, monto, cuotas, frecuencia, tipo, fecha_inicio=None):
+def crear_credito_db(cliente_cedula, monto, cuotas, frecuencia, tipo, fecha_inicio=None, tasa_interes_pct=None, modo_interes='Capital e interés'):
     fecha_inicio = fecha_inicio or hoy_local()
     monto = float(monto or 0)
     cuotas = int(cuotas or 0)
     frecuencia = str(frecuencia or "Mensual").title()
     tipo = str(tipo or "Normal").title()
+    modo_interes = str(modo_interes or "Capital e interés").strip()
+    if modo_interes not in ("Capital e interés", "Solo interés"):
+        modo_interes = "Capital e interés"
+    tasa_personalizada = None
+    if tasa_interes_pct is not None:
+        tasa_personalizada = max(float(tasa_interes_pct or 0), 0) / 100
     if monto <= 0 or cuotas <= 0:
         return False, "Monto o cuotas inválidas", None
     with get_conn() as conn:
@@ -2033,16 +2058,15 @@ def crear_credito_db(cliente_cedula, monto, cuotas, frecuencia, tipo, fecha_inic
         prestamo_id = obtener_nuevo_id_prestamo("P")
         contrato_token = uuid.uuid4().hex
         if tipo == "Express":
-            tasa_mensual = calcular_tasa_express(frecuencia)
-            valor_cuota = calcular_cuota_express(monto, cuotas, frecuencia)
+            tasa_mensual = tasa_personalizada if tasa_personalizada is not None else calcular_tasa_express(frecuencia)
         else:
-            tasa_mensual = calcular_tasa_normal(cuotas)
-            valor_cuota = calcular_cuota_normal(monto, cuotas, frecuencia)
+            tasa_mensual = tasa_personalizada if tasa_personalizada is not None else calcular_tasa_normal(cuotas)
+        valor_cuota = calcular_cuota_credito(monto, cuotas, frecuencia, tasa_mensual, modo_interes, tipo)
         conn.execute(text("""
             INSERT INTO prestamos (id, cliente_cedula, monto_original, cuotas, frecuencia, valor_cuota, estado, tipo,
-                                   saldo_capital, tasa_mensual, contrato_aceptado, contrato_token, fecha_inicio)
+                                   saldo_capital, tasa_mensual, modo_interes, contrato_aceptado, contrato_token, fecha_inicio)
             VALUES (:id, :cliente_cedula, :monto_original, :cuotas, :frecuencia, :valor_cuota, 'Pendiente', :tipo,
-                    :saldo_capital, :tasa_mensual, 0, :contrato_token, :fecha_inicio)
+                    :saldo_capital, :tasa_mensual, :modo_interes, 0, :contrato_token, :fecha_inicio)
         """), {
             "id": prestamo_id,
             "cliente_cedula": cliente_cedula,
@@ -2053,6 +2077,7 @@ def crear_credito_db(cliente_cedula, monto, cuotas, frecuencia, tipo, fecha_inic
             "tipo": tipo,
             "saldo_capital": monto,
             "tasa_mensual": tasa_mensual,
+            "modo_interes": modo_interes,
             "contrato_token": contrato_token,
             "fecha_inicio": fecha_inicio.isoformat()
         })
@@ -2078,6 +2103,8 @@ def crear_credito_db(cliente_cedula, monto, cuotas, frecuencia, tipo, fecha_inic
             "frecuencia": frecuencia,
             "valor_cuota": valor_cuota,
             "tipo": tipo,
+            "tasa_mensual": tasa_mensual,
+            "modo_interes": modo_interes,
             "contrato_token": contrato_token
         }
     ok_mail, err_mail = enviar_contrato_credito(prestamo_row)
@@ -2217,6 +2244,7 @@ def render_aceptacion_contrato(token):
     with get_conn() as conn:
         prestamo = conn.execute(text("""
             SELECT p.id, p.monto_original, p.cuotas, p.frecuencia, p.valor_cuota, p.tipo, p.estado, p.contrato_aceptado,
+                   COALESCE(p.tasa_mensual, 0) AS tasa_mensual, COALESCE(p.modo_interes, 'Capital e interés') AS modo_interes,
                    COALESCE(p.contrato_cancelado, 0) AS contrato_cancelado, p.fecha_cancelacion_contrato, p.motivo_cancelacion_contrato,
                    c.nombres || ' ' || c.apellidos AS cliente
             FROM prestamos p
@@ -2233,6 +2261,8 @@ def render_aceptacion_contrato(token):
     st.markdown(f"**Frecuencia:** {prestamo['frecuencia']}")
     st.markdown(f"**Cuotas:** {prestamo['cuotas']}")
     st.markdown(f"**Valor cuota:** {pesos(prestamo['valor_cuota'])}")
+    st.markdown(f"**Tasa de interés:** {float(prestamo['tasa_mensual'] or 0) * 100:.2f}%")
+    st.markdown(f"**Modalidad:** {prestamo.get('modo_interes', 'Capital e interés')}")
     if int(prestamo.get('contrato_cancelado', 0) or 0) == 1 or str(prestamo.get('estado') or '').strip().lower() == 'anulado':
         st.error("❌ Este contrato fue anulado y el enlace ya no es válido.")
         motivo = prestamo.get('motivo_cancelacion_contrato') or '-'
@@ -2274,12 +2304,20 @@ def enviar_recordatorio_credito(prestamo_row):
         cuerpo
     )
 def actualizar_estado_prestamo(conn, prestamo_id):
-    pendientes = conn.execute(text("""
-        SELECT COUNT(*)
-        FROM cuotas
-        WHERE prestamo_id = :id AND estado <> 'Pagada'
-    """), {"id": prestamo_id}).scalar()
-    nuevo_estado = 'Cancelado' if int(pendientes or 0) == 0 else 'Activo'
+    datos = conn.execute(text("""
+        SELECT
+            COALESCE(p.modo_interes, 'Capital e interés') AS modo_interes,
+            COALESCE(p.saldo_capital, p.monto_original) AS saldo_capital,
+            (SELECT COUNT(*) FROM cuotas WHERE prestamo_id = p.id AND estado <> 'Pagada') AS pendientes
+        FROM prestamos p
+        WHERE p.id = :id
+    """), {"id": prestamo_id}).mappings().first()
+    if not datos:
+        return
+    pendientes = int(datos["pendientes"] or 0)
+    saldo_capital = normalizar_decimal(datos["saldo_capital"])
+    es_solo_interes = str(datos["modo_interes"] or "").strip().lower() == "solo interés"
+    nuevo_estado = 'Cancelado' if pendientes == 0 and (not es_solo_interes or saldo_capital <= 0) else 'Activo'
     conn.execute(text("UPDATE prestamos SET estado = :estado WHERE id = :id"), {"estado": nuevo_estado, "id": prestamo_id})
 
 def obtener_cuotas_pendientes(conn, prestamo_id):
@@ -2332,7 +2370,8 @@ def registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=None, valor_p
     with get_conn() as conn:
         prestamo_db = conn.execute(text("""
             SELECT id, cliente_cedula, monto_original, COALESCE(saldo_capital, monto_original) AS saldo_capital,
-                   COALESCE(tasa_mensual, 0) AS tasa_mensual, valor_cuota
+                   COALESCE(tasa_mensual, 0) AS tasa_mensual, valor_cuota,
+                   COALESCE(modo_interes, 'Capital e interés') AS modo_interes
             FROM prestamos
             WHERE id = :id
         """), {"id": prestamo_id}).mappings().first()
@@ -2371,10 +2410,11 @@ def registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=None, valor_p
         saldo_iterado = saldo_capital_actual
         interes_total = Decimal("0.00")
         capital_total = Decimal("0.00")
+        es_solo_interes = str(prestamo_db.get("modo_interes") or "").strip().lower() == "solo interés"
         for _, valor_aplicado, _ in aplicaciones:
             interes_periodo = (saldo_iterado * tasa_mensual).quantize(Decimal("0.01")) if tasa_mensual > 0 else Decimal("0.00")
             interes_aplicado = min(interes_periodo, valor_aplicado)
-            capital_aplicado = valor_aplicado - interes_aplicado
+            capital_aplicado = Decimal("0.00") if es_solo_interes else valor_aplicado - interes_aplicado
             if capital_aplicado < 0:
                 capital_aplicado = Decimal("0.00")
             saldo_iterado -= capital_aplicado
@@ -2433,11 +2473,12 @@ def registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=None, valor_p
                 """), {"id_cuota": id_cuota, "saldo_cuota": saldo_cuota})
         conn.execute(text("UPDATE prestamos SET saldo_capital = :saldo_capital WHERE id = :id"), {"saldo_capital": nuevo_saldo_capital, "id": prestamo_id})
         actualizar_estado_prestamo(conn, prestamo_id)
-        finalizado = int(conn.execute(text("""
+        sin_cuotas_pendientes = int(conn.execute(text("""
             SELECT COUNT(*)
             FROM cuotas
             WHERE prestamo_id = :id AND estado <> 'Pagada'
         """), {"id": prestamo_id}).scalar() or 0) == 0
+        finalizado = sin_cuotas_pendientes and (not es_solo_interes or nuevo_saldo_capital <= 0)
         conn.commit()
         clear_app_caches()
         cliente = obtener_datos_cliente(conn, prestamo_db["cliente_cedula"])
@@ -2505,7 +2546,8 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
     with get_conn() as conn:
         prestamo_db = conn.execute(text("""
             SELECT id, cliente_cedula, monto_original, COALESCE(saldo_capital, monto_original) AS saldo_capital,
-                   COALESCE(tasa_mensual, 0) AS tasa_mensual, valor_cuota
+                   COALESCE(tasa_mensual, 0) AS tasa_mensual, valor_cuota,
+                   COALESCE(modo_interes, 'Capital e interés') AS modo_interes
             FROM prestamos
             WHERE id = :id
         """), {"id": prestamo_id}).mappings().first()
@@ -2518,14 +2560,18 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
               AND estado <> 'Pagada'
             ORDER BY nro_cuota ASC
         """), {"id": prestamo_id}).fetchall()
-        if not cuotas_pendientes:
-            return {"ok": False, "error": "No hay cuotas pendientes para recalcular"}
         saldo_capital_actual = normalizar_decimal(prestamo_db["saldo_capital"])
-        if valor_abono >= saldo_capital_actual:
-            return {"ok": False, "error": "El abono a capital no puede ser igual o mayor al saldo capital actual"}
+        if valor_abono > saldo_capital_actual:
+            return {"ok": False, "error": "El abono a capital no puede ser mayor al saldo capital actual"}
         nuevo_saldo_capital = saldo_capital_actual - valor_abono
         cuotas_restantes = len(cuotas_pendientes)
-        nueva_cuota = Decimal(str(calcular_cuota_amortizada(nuevo_saldo_capital, prestamo_db["tasa_mensual"], cuotas_restantes))).quantize(Decimal("0.01"))
+        if cuotas_restantes and nuevo_saldo_capital > 0:
+            if str(prestamo_db.get("modo_interes") or "").strip().lower() == "solo interés":
+                nueva_cuota = (nuevo_saldo_capital * Decimal(str(prestamo_db["tasa_mensual"] or 0))).quantize(Decimal("0.01"))
+            else:
+                nueva_cuota = Decimal(str(calcular_cuota_amortizada(nuevo_saldo_capital, prestamo_db["tasa_mensual"], cuotas_restantes))).quantize(Decimal("0.01"))
+        else:
+            nueva_cuota = Decimal("0.00")
         result_pago = conn.execute(text("""
             INSERT INTO pagos (
                 prestamo_id, fecha_pago, valor, estado, tipo_movimiento, detalle,
@@ -2554,10 +2600,13 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
             "id": prestamo_id
         })
         for id_cuota, _ in cuotas_pendientes:
-            conn.execute(text("UPDATE cuotas SET valor_cuota = :valor_cuota WHERE id_cuota = :id_cuota AND estado <> 'Pagada'"), {
-                "valor_cuota": nueva_cuota,
-                "id_cuota": id_cuota
-            })
+            if nuevo_saldo_capital <= 0:
+                conn.execute(text("UPDATE cuotas SET estado = 'Pagada', valor_cuota = 0 WHERE id_cuota = :id_cuota AND estado <> 'Pagada'"), {"id_cuota": id_cuota})
+            else:
+                conn.execute(text("UPDATE cuotas SET valor_cuota = :valor_cuota WHERE id_cuota = :id_cuota AND estado <> 'Pagada'"), {
+                    "valor_cuota": nueva_cuota,
+                    "id_cuota": id_cuota
+                })
         actualizar_estado_prestamo(conn, prestamo_id)
         conn.commit()
         clear_app_caches()
@@ -2745,30 +2794,31 @@ def calcular_tasa_normal(cuotas):
     return 0.0427
 def calcular_tasa_express(frecuencia):
     return 0.10 if str(frecuencia).lower() == "mensual" else 0.055
-def calcular_cuota_normal(monto, cuotas, frecuencia="Mensual"):
+def calcular_cuota_credito(monto, cuotas, frecuencia, tasa, modo_interes="Capital e interés", tipo="Normal"):
     monto = float(monto or 0)
     cuotas = int(cuotas or 0)
+    tasa = float(tasa or 0)
     if monto <= 0 or cuotas <= 0:
         return 0
-    tasa = calcular_tasa_normal(cuotas)
-    cuota_base = monto / cuotas
-    interes_total = monto * tasa
-    valor_cuota = cuota_base + interes_total
-    if str(frecuencia).lower() == "quincenal":
-        valor_cuota /= 2
-    valor_cuota = round(valor_cuota / 1000) * 1000
+    if str(modo_interes).strip().lower() == "solo interés":
+        valor_cuota = monto * tasa
+    else:
+        cuota_base = monto / cuotas
+        interes_total = monto * tasa
+        valor_cuota = cuota_base + interes_total
+        if str(tipo).lower() == "normal" and str(frecuencia).lower() == "quincenal":
+            valor_cuota /= 2
+    redondeo = 100 if str(tipo).lower() == "express" else 1000
+    valor_cuota = round(valor_cuota / redondeo) * redondeo
     return round(valor_cuota)
-def calcular_cuota_express(monto, cuotas, frecuencia):
-    monto = float(monto or 0)
-    cuotas = int(cuotas or 0)
-    if monto <= 0 or cuotas <= 0:
-        return 0
-    tasa = calcular_tasa_express(frecuencia)
-    cuota_base = monto / cuotas
-    interes_total = monto * tasa
-    valor_cuota = cuota_base + interes_total
-    valor_cuota = round(valor_cuota / 100) * 100
-    return round(valor_cuota)
+
+def calcular_cuota_normal(monto, cuotas, frecuencia="Mensual", tasa=None, modo_interes="Capital e interés"):
+    tasa = calcular_tasa_normal(cuotas) if tasa is None else float(tasa or 0)
+    return calcular_cuota_credito(monto, cuotas, frecuencia, tasa, modo_interes, "Normal")
+
+def calcular_cuota_express(monto, cuotas, frecuencia, tasa=None, modo_interes="Capital e interés"):
+    tasa = calcular_tasa_express(frecuencia) if tasa is None else float(tasa or 0)
+    return calcular_cuota_credito(monto, cuotas, frecuencia, tasa, modo_interes, "Express")
 def calcular_fecha_vencimiento(fecha_inicio, nro_cuota, frecuencia):
     dias = 30 if str(frecuencia).lower() == "mensual" else 15
     return fecha_inicio + timedelta(days=dias * nro_cuota)
@@ -3442,6 +3492,11 @@ if tab_creditos:
                         monto_normal_new = st.number_input("Monto a prestar", min_value=0.0, step=100000.0, value=1000000.0, key="nuevo_monto_normal")
                         cuotas_normal_new = st.selectbox("Número de cuotas", [12, 15], key="nuevo_cuotas_normal")
                         frecuencia_normal_new = st.selectbox("Frecuencia", ["Mensual", "Quincenal"], key="nuevo_frec_normal")
+                        st.markdown("#### Condiciones de interés")
+                        tasa_normal_pct_new = st.number_input("Tasa de interés (%)", min_value=0.0, max_value=100.0, step=0.5, value=calcular_tasa_normal(cuotas_normal_new) * 100, key="nuevo_tasa_normal_pct")
+                        modo_interes_normal_new = st.radio("Modalidad de cobro", ["Capital e interés", "Solo interés"], horizontal=True, key="nuevo_modo_interes_normal")
+                        cuota_preview_normal = calcular_cuota_normal(monto_normal_new, cuotas_normal_new, frecuencia_normal_new, tasa_normal_pct_new / 100, modo_interes_normal_new)
+                        st.info(f"Cuota estimada: {pesos(cuota_preview_normal)} · Total cuotas: {pesos(cuota_preview_normal * cuotas_normal_new)}")
                         fecha_inicio_normal = st.date_input("Fecha de inicio", value=hoy_local(), key="fecha_inicio_normal")
                         confirmar_envio_normal = st.checkbox(
                             "Confirmo que validé cliente, monto, correo y autorizo el envío del contrato",
@@ -3457,7 +3512,7 @@ if tab_creditos:
                         else:
                             start_busy("Creando crédito normal...")
                             try:
-                                ok_c, err_c, prestamo_creado = crear_credito_db(cliente_normal, monto_normal_new, cuotas_normal_new, frecuencia_normal_new, "Normal", fecha_inicio_normal)
+                                ok_c, err_c, prestamo_creado = crear_credito_db(cliente_normal, monto_normal_new, cuotas_normal_new, frecuencia_normal_new, "Normal", fecha_inicio_normal, tasa_normal_pct_new, modo_interes_normal_new)
                                 if ok_c:
                                     st.session_state["reset_cliente_normal_credito"] = True
                                     if not err_c:
@@ -3482,6 +3537,11 @@ if tab_creditos:
                         monto_express_new = st.number_input("Monto a prestar", min_value=0.0, step=50000.0, value=300000.0, key="nuevo_monto_express")
                         frecuencia_express_new = st.selectbox("Frecuencia", ["Mensual", "Quincenal"], key="nuevo_frec_express")
                         cuotas_express_new = 5 if frecuencia_express_new == "Mensual" else 6
+                        st.markdown("#### Condiciones de interés")
+                        tasa_express_pct_new = st.number_input("Tasa de interés (%)", min_value=0.0, max_value=100.0, step=0.5, value=calcular_tasa_express(frecuencia_express_new) * 100, key="nuevo_tasa_express_pct")
+                        modo_interes_express_new = st.radio("Modalidad de cobro", ["Capital e interés", "Solo interés"], horizontal=True, key="nuevo_modo_interes_express")
+                        cuota_preview_express = calcular_cuota_express(monto_express_new, cuotas_express_new, frecuencia_express_new, tasa_express_pct_new / 100, modo_interes_express_new)
+                        st.info(f"Cuota estimada: {pesos(cuota_preview_express)} · Total cuotas: {pesos(cuota_preview_express * cuotas_express_new)}")
                         fecha_inicio_express = st.date_input("Fecha de inicio", value=hoy_local(), key="fecha_inicio_express")
                         confirmar_envio_express = st.checkbox(
                             "Confirmo que validé cliente, monto, correo y autorizo el envío del contrato",
@@ -3497,7 +3557,7 @@ if tab_creditos:
                         else:
                             start_busy("Creando crédito express...")
                             try:
-                                ok_c, err_c, prestamo_creado = crear_credito_db(cliente_express, monto_express_new, cuotas_express_new, frecuencia_express_new, "Express", fecha_inicio_express)
+                                ok_c, err_c, prestamo_creado = crear_credito_db(cliente_express, monto_express_new, cuotas_express_new, frecuencia_express_new, "Express", fecha_inicio_express, tasa_express_pct_new, modo_interes_express_new)
                                 if ok_c:
                                     st.session_state["reset_cliente_express_credito"] = True
                                     if not err_c:
@@ -3627,7 +3687,7 @@ if tab_creditos:
                                         stop_busy()
                                     st.rerun()
 
-                        pendientes_show = pendientes_df[["id", "cliente", "monto_original", "valor_cuota", "cuotas", "frecuencia", "tipo", "estado", "contrato_enviado", "contrato_aceptado", "desembolso_notificado"]].copy()
+                        pendientes_show = pendientes_df[["id", "cliente", "monto_original", "valor_cuota", "cuotas", "frecuencia", "tipo", "modo_interes", "estado", "contrato_enviado", "contrato_aceptado", "desembolso_notificado"]].copy()
                         pendientes_show["monto_original"] = pendientes_show["monto_original"].apply(pesos)
                         pendientes_show["valor_cuota"] = pendientes_show["valor_cuota"].apply(pesos)
                         pendientes_show["contrato_enviado"] = pendientes_show["contrato_enviado"].apply(lambda x: "Sí" if int(x or 0) == 1 else "No")
@@ -3641,6 +3701,7 @@ if tab_creditos:
                             "cuotas": "N.° cuotas",
                             "frecuencia": "Frecuencia",
                             "tipo": "Tipo",
+                            "modo_interes": "Modalidad",
                             "estado": "Estado",
                             "contrato_enviado": "Contrato enviado",
                             "contrato_aceptado": "Aceptado",
@@ -3680,7 +3741,7 @@ if tab_detalle:
                         st.markdown(f"""
                         <div class="creddt-card" style="padding:14px 16px;margin-bottom:10px;">
                             <div class="creddt-strong" style="font-size:18px;font-weight:800;">Crédito {row['id']}</div>
-                            <div class="creddt-muted" style="font-size:13px;margin-top:4px;">{row['cliente']} · {row['tipo']} · {row['estado']} · Frecuencia: {row.get('frecuencia', 'Mensual')} · Contrato: {estado_contrato}</div>
+                            <div class="creddt-muted" style="font-size:13px;margin-top:4px;">{row['cliente']} · {row['tipo']} · {row.get('modo_interes', 'Capital e interés')} · {row['estado']} · Frecuencia: {row.get('frecuencia', 'Mensual')} · Contrato: {estado_contrato}</div>
                         </div>
                         """, unsafe_allow_html=True)
 
@@ -3695,10 +3756,11 @@ if tab_detalle:
                         c2.metric("✅ Pagado", pesos(row["total_pagado"]))
                         c3.metric("🏦 Saldo capital", pesos(row["saldo_capital"]))
                         c4.metric("⏳ Saldo pendiente", pesos(row["saldo"]))
-                        c5, c6, c7 = st.columns(3)
+                        c5, c6, c7, c8 = st.columns(4)
                         c5.metric("💳 Cuota actual", pesos(row["valor_cuota"]))
                         c6.metric("📆 N.° cuotas", int(row["cuotas"]))
-                        c7.metric("📊 Tasa mensual", f"{float(row['tasa_mensual'] or 0):.4f}")
+                        c7.metric("📊 Tasa", f"{float(row['tasa_mensual'] or 0) * 100:.2f}%")
+                        c8.metric("Modalidad", row.get("modo_interes", "Capital e interés"))
 
                         with get_conn() as conn:
                             cuotas_credito = pd.read_sql(text("""
@@ -3773,8 +3835,10 @@ if "reset_select_prestamo_pago" not in st.session_state:
     st.session_state.reset_select_prestamo_pago = False
 if tab_pagos:
             st.subheader("💰 Pagos del crédito")
-            st.caption("Aquí solo se muestran créditos activos con saldo pendiente. Los créditos cerrados siguen visibles en Resumen e Historial, pero no interfieren en la operación diaria.")
-            activos = estado[(~estado["estado"].isin(["Cancelado", "Anulado"])) & (pd.to_numeric(estado["saldo"], errors="coerce").fillna(0) > 0)].copy()
+            st.caption("Aquí se muestran créditos activos con cuotas pendientes o capital pendiente. En solo interés, el capital queda vigente hasta recibir abono o pago total al capital.")
+            saldo_cuotas_num = pd.to_numeric(estado["saldo"], errors="coerce").fillna(0)
+            saldo_capital_num = pd.to_numeric(estado["saldo_capital"], errors="coerce").fillna(0)
+            activos = estado[(~estado["estado"].isin(["Cancelado", "Anulado"])) & ((saldo_cuotas_num > 0) | (saldo_capital_num > 0))].copy()
             if activos.empty:
                 st.info("ℹ️ No hay préstamos activos con saldo pendiente.")
             else:
@@ -3802,7 +3866,8 @@ if tab_pagos:
                     info1.metric("💳 Cuota actual", pesos(prestamo.valor_cuota))
                     info2.metric("🏦 Saldo capital", pesos(prestamo.saldo_capital))
                     info3.metric("⏳ Saldo cuotas", pesos(prestamo.saldo))
-                    info4.metric("📊 Tasa mensual", f"{float(prestamo.tasa_mensual or 0):.4f}")
+                    info4.metric("📊 Tasa", f"{float(prestamo.tasa_mensual or 0) * 100:.2f}%")
+                    st.caption(f"Modalidad: {getattr(prestamo, 'modo_interes', 'Capital e interés')}")
                     st.divider()
                     tab_pago_cuota, tab_abono_capital = st.tabs(["✅ Pago de cuota", "🏦 Abono a capital"])
 
@@ -3944,9 +4009,6 @@ if tab_sim:
                 "💳 Crédito normal",
                 "⚡ Crédito express"
             ])
-            # --------------------------
-            # 💳 CRÉDITO NORMAL
-            # --------------------------
             with t1:
                 st.markdown("### 💳 Crédito normal")
                 monto_normal = st.number_input(
@@ -3961,16 +4023,33 @@ if tab_sim:
                     [12, 15],
                     key="cuotas_normal"
                 )
+                frecuencia_normal_sim = st.selectbox("Frecuencia", ["Mensual", "Quincenal"], key="frecuencia_normal_sim")
+                tasa_normal_pct = st.number_input(
+                    "Tasa de interés (%)",
+                    min_value=0.0,
+                    max_value=100.0,
+                    step=0.5,
+                    value=calcular_tasa_normal(cuotas_normal) * 100,
+                    key="tasa_normal_pct_sim"
+                )
+                modo_normal = st.radio(
+                    "Modalidad de cobro",
+                    ["Capital e interés", "Solo interés"],
+                    horizontal=True,
+                    key="modo_normal_sim"
+                )
                 if st.button("Calcular crédito normal"):
-                    cuota = calcular_cuota_normal(monto_normal, cuotas_normal)
+                    cuota = calcular_cuota_normal(monto_normal, cuotas_normal, frecuencia_normal_sim, tasa_normal_pct / 100, modo_normal)
+                    total_cuotas = cuota * cuotas_normal
+                    saldo_capital_final = monto_normal if modo_normal == "Solo interés" else 0
                     st.success(
-                        f"📌 Cuota mensual: **{pesos(cuota)}**\n\n"
+                        f"📌 Cuota {frecuencia_normal_sim.lower()}: **{pesos(cuota)}**\n\n"
                         f"📆 Total cuotas: **{cuotas_normal}**\n\n"
-                        f"💰 Total a pagar: **{pesos(cuota * cuotas_normal)}**"
+                        f"📈 Tasa aplicada: **{tasa_normal_pct:.2f}%**\n\n"
+                        f"🧾 Modalidad: **{modo_normal}**\n\n"
+                        f"💰 Total en cuotas: **{pesos(total_cuotas)}**\n\n"
+                        f"🏦 Capital pendiente al final: **{pesos(saldo_capital_final)}**"
                     )
-            # --------------------------
-            # ⚡ CRÉDITO EXPRESS
-            # --------------------------
             with t2:
                 st.markdown("### ⚡ Crédito express")
                 monto_express = st.number_input(
@@ -3986,16 +4065,35 @@ if tab_sim:
                     key="frecuencia_express"
                 )
                 cuotas_express = 5 if frecuencia == "Mensual" else 6
+                tasa_express_pct = st.number_input(
+                    "Tasa de interés (%)",
+                    min_value=0.0,
+                    max_value=100.0,
+                    step=0.5,
+                    value=calcular_tasa_express(frecuencia) * 100,
+                    key="tasa_express_pct_sim"
+                )
+                modo_express = st.radio(
+                    "Modalidad de cobro",
+                    ["Capital e interés", "Solo interés"],
+                    horizontal=True,
+                    key="modo_express_sim"
+                )
                 if st.button("Calcular crédito express"):
                     cuota = calcular_cuota_express(
                         monto_express,
                         cuotas_express,
-                        frecuencia
+                        frecuencia,
+                        tasa_express_pct / 100,
+                        modo_express
                     )
+                    total_cuotas = cuota * cuotas_express
+                    saldo_capital_final = monto_express if modo_express == "Solo interés" else 0
                     st.success(
                         f"📌 Cuota {frecuencia.lower()}: **{pesos(cuota)}**\n\n"
                         f"📆 Total cuotas: **{cuotas_express}**\n\n"
-                        f"💰 Total a pagar estimado: **{pesos(cuota * cuotas_express)}**\n\n"
-                        f"💰 Total a pagar estimado: **{pesos(cuota * cuotas_express)}**\n\n"
-                        f"📈 Tasa aplicada: **{calcular_tasa_express(frecuencia)*100:.2f}%**"
+                        f"📈 Tasa aplicada: **{tasa_express_pct:.2f}%**\n\n"
+                        f"🧾 Modalidad: **{modo_express}**\n\n"
+                        f"💰 Total en cuotas: **{pesos(total_cuotas)}**\n\n"
+                        f"🏦 Capital pendiente al final: **{pesos(saldo_capital_final)}**"
                     )

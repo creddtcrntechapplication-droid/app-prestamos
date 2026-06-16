@@ -363,6 +363,14 @@ def load_kpis_financieros():
                       AND COALESCE(pf.contrato_cancelado, 0) = 0
                 ) x
             ),
+            intereses_libres_pendientes AS (
+                SELECT COALESCE(SUM(COALESCE(pf.interes_acumulado, 0) + ROUND(COALESCE(pf.saldo_capital, pf.monto_original) * COALESCE(pf.tasa_mensual, 0), 2)), 0) AS total
+                FROM prestamos_financieros pf
+                WHERE COALESCE(pf.tipo_credito, '') = 'interes_libre'
+                  AND LOWER(TRIM(COALESCE(pf.estado, ''))) = 'activo'
+                  AND COALESCE(pf.contrato_cancelado, 0) = 0
+                  AND COALESCE(pf.contrato_aceptado, 0) = 1
+            ),
             cartera_mora AS (
                 SELECT COALESCE(SUM(total), 0) AS total
                 FROM (
@@ -398,6 +406,7 @@ def load_kpis_financieros():
                 COALESCE((SELECT SUM(COALESCE(saldo_capital, monto_original)) FROM prestamos_financieros WHERE LOWER(TRIM(COALESCE(estado, ''))) <> 'cancelado'), 0) AS capital_vivo,
                 COALESCE((SELECT SUM(valor) FROM pagos_financieros), 0) AS recaudo_acumulado,
                 COALESCE((SELECT total FROM cuotas_pendientes), 0) AS cuotas_pendientes,
+                COALESCE((SELECT total FROM intereses_libres_pendientes), 0) AS interes_libre_pendiente,
                 COALESCE((SELECT total FROM cartera_mora), 0) AS cartera_mora,
                 COALESCE((SELECT COUNT(*) FROM prestamos_financieros WHERE LOWER(TRIM(COALESCE(estado, ''))) <> 'cancelado'), 0) AS creditos_activos,
                 COALESCE((SELECT total FROM contratos_pendientes), 0) AS contratos_pendientes,
@@ -3187,6 +3196,7 @@ if tab_resumen:
     capital_vivo = float(kpis_fin.get("capital_vivo", 0) or 0)
     recaudo_acumulado = float(kpis_fin.get("recaudo_acumulado", 0) or 0)
     cuotas_pendientes_total = float(kpis_fin.get("cuotas_pendientes", 0) or 0)
+    interes_libre_pendiente = float(kpis_fin.get("interes_libre_pendiente", 0) or 0)
     cartera_mora_total = float(kpis_fin.get("cartera_mora", 0) or 0)
     creditos_activos = int(kpis_fin.get("creditos_activos", 0) or 0)
     contratos_pendientes = int(kpis_fin.get("contratos_pendientes", 0) or 0)
@@ -3237,11 +3247,12 @@ if tab_resumen:
     k4.metric("💳 Capital vivo", pesos(capital_vivo))
 
     st.markdown("### ⚙️ Indicadores operativos")
-    o1, o2, o3, o4 = st.columns(4)
+    o1, o2, o3, o4, o5 = st.columns(5)
     o1.metric("✅ Recaudo acumulado", pesos(recaudo_acumulado))
     o2.metric("⏳ Cuotas pendientes", pesos(cuotas_pendientes_total))
-    o3.metric("🚨 Cartera en mora", pesos(cartera_mora_total))
-    o4.metric("📄 Créditos activos", creditos_activos)
+    o3.metric("🧾 Interés libre pendiente", pesos(interes_libre_pendiente))
+    o4.metric("🚨 Cartera en mora", pesos(cartera_mora_total))
+    o5.metric("📄 Créditos activos", creditos_activos)
 
     if contratos_pendientes > 0:
         st.info(f"ℹ️ Tienes {contratos_pendientes} contrato(s) pendiente(s) por aceptación, equivalentes a {pesos(capital_pendiente_aprobacion)}. No se incluyen en los KPI financieros hasta que el contrato sea aceptado.")

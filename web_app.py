@@ -232,7 +232,7 @@ def load_cuotas_periodo(inicio_iso, fin_iso):
     with get_conn() as conn:
         return pd.read_sql(text("""
             SELECT
-                cu.fecha_vencimiento,
+                cu.fecha_vencimiento::date AS fecha_vencimiento,
                 cu.valor_cuota,
                 cu.estado,
                 cu.nro_cuota,
@@ -275,7 +275,7 @@ def load_cuotas_proyeccion(inicio_iso, fin_iso):
     with get_conn() as conn:
         return pd.read_sql(text("""
             SELECT
-                cu.fecha_vencimiento,
+                cu.fecha_vencimiento::date AS fecha_vencimiento,
                 cu.valor_cuota,
                 cu.estado AS estado_cuota,
                 cu.nro_cuota,

@@ -1375,6 +1375,24 @@ def asegurar_estructura_financiera():
     clear_app_caches()
 asegurar_estructura_financiera()
 
+def limpiar_cuotas_creditos_no_vigentes():
+    with get_conn() as conn:
+        conn.execute(text("""
+            UPDATE cuotas cu
+            SET estado = 'Anulada'
+            FROM prestamos p
+            WHERE p.id = cu.prestamo_id
+              AND cu.estado IN ('Pendiente', 'Parcial')
+              AND (
+                    LOWER(TRIM(COALESCE(p.estado, ''))) IN ('anulado', 'cancelado')
+                    OR COALESCE(p.contrato_cancelado, 0) = 1
+              )
+        """))
+        conn.commit()
+    clear_app_caches()
+
+limpiar_cuotas_creditos_no_vigentes()
+
 def asegurar_estructura_control_financiero():
     with get_conn() as conn:
         conn.execute(text("""
@@ -2454,6 +2472,12 @@ def cancelar_contrato_prestamo(prestamo_id, motivo, usuario=None):
             "usuario": usuario or st.session_state.get("usuario") or "SISTEMA",
             "id": prestamo_id
         })
+        conn.execute(text("""
+            UPDATE cuotas
+            SET estado = 'Anulada'
+            WHERE prestamo_id = :id
+              AND estado IN ('Pendiente', 'Parcial')
+        """), {"id": prestamo_id})
         conn.commit()
 
     clear_app_caches()
@@ -2535,6 +2559,10 @@ def procesar_recordatorios_automaticos():
             WHERE cu.estado IN ('Pendiente', 'Parcial')
               AND c.correo IS NOT NULL
               AND cu.fecha_vencimiento::date BETWEEN (CAST(:hoy AS date) - INTERVAL '5 day') AND (CAST(:hoy AS date) + INTERVAL '3 day')
+              AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
+              AND COALESCE(p.contrato_aceptado, 0) = 1
+              AND COALESCE(p.contrato_cancelado, 0) = 0
+              AND COALESCE(p.tipo_credito, '') <> 'interes_libre'
         """), {"hoy": hoy_local().isoformat()}).mappings().all()
         for r in rows:
             dias = (r['fecha_vencimiento'] - hoy_local()).days
@@ -2599,8 +2627,23 @@ def render_aceptacion_contrato(token):
 def enviar_recordatorio_credito(prestamo_row):
     if not prestamo_row.get("correo"):
         return False, "Cliente sin correo registrado"
+    estado_credito = str(prestamo_row.get("estado") or "").strip().lower()
+    if estado_credito != "activo" or int(prestamo_row.get("contrato_cancelado", 0) or 0) == 1:
+        return False, "El crédito está anulado/cancelado o no está activo; no se envía recordatorio"
     with get_conn() as conn:
-        proxima = obtener_proxima_cuota(conn, prestamo_row["id"])
+        proxima = conn.execute(text("""
+            SELECT cu.id_cuota, cu.nro_cuota, cu.valor_cuota, cu.fecha_vencimiento, cu.estado
+            FROM cuotas cu
+            JOIN prestamos p ON p.id = cu.prestamo_id
+            WHERE cu.prestamo_id = :id
+              AND cu.estado <> 'Pagada'
+              AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
+              AND COALESCE(p.contrato_aceptado, 0) = 1
+              AND COALESCE(p.contrato_cancelado, 0) = 0
+              AND COALESCE(p.tipo_credito, '') <> 'interes_libre'
+            ORDER BY cu.nro_cuota ASC
+            LIMIT 1
+        """), {"id": prestamo_row["id"]}).fetchone()
     if not proxima:
         return False, "El crédito no tiene cuotas pendientes"
     cuerpo = construir_cuerpo_correo(

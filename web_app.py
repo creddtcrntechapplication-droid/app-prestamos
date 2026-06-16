@@ -112,7 +112,7 @@ def load_estado():
                 p.fecha_cierre_manual,
                 COALESCE(SUM(pg.valor),0) AS total_pagado,
                 CASE
-                    WHEN COALESCE(p.tipo_credito, '') = 'interes_libre' THEN COALESCE(p.saldo_capital, p.monto_original) + COALESCE(p.interes_acumulado, 0)
+                    WHEN (COALESCE(p.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre')) THEN COALESCE(p.saldo_capital, p.monto_original) + COALESCE(p.interes_acumulado, 0)
                     ELSE COALESCE((
                         SELECT SUM(cu.valor_cuota)
                         FROM cuotas cu
@@ -121,7 +121,7 @@ def load_estado():
                     ),0)
                 END AS saldo,
                 COALESCE(SUM(pg.valor),0) + CASE
-                    WHEN COALESCE(p.tipo_credito, '') = 'interes_libre' THEN COALESCE(p.saldo_capital, p.monto_original) + COALESCE(p.interes_acumulado, 0)
+                    WHEN (COALESCE(p.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre')) THEN COALESCE(p.saldo_capital, p.monto_original) + COALESCE(p.interes_acumulado, 0)
                     ELSE COALESCE((
                         SELECT SUM(cu.valor_cuota)
                         FROM cuotas cu
@@ -173,13 +173,13 @@ def load_mora():
                   AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
                   AND COALESCE(p.contrato_aceptado, 0) = 1
                   AND COALESCE(p.contrato_cancelado, 0) = 0
-                  AND COALESCE(p.tipo_credito, '') <> 'interes_libre'
+                  AND NOT ((COALESCE(p.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre')) OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre'))
                 UNION ALL
                 SELECT p.id AS prestamo_id,
                        COALESCE(p.interes_acumulado, 0) + ROUND(COALESCE(p.saldo_capital, p.monto_original) * COALESCE(p.tasa_mensual, 0), 2) AS valor
                 FROM prestamos p
-                WHERE COALESCE(p.tipo_credito, '') = 'interes_libre'
-                  AND p.fecha_proximo_interes::date < :hoy
+                WHERE (COALESCE(p.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre'))
+                  AND COALESCE(p.fecha_proximo_interes::date, (COALESCE(NULLIF(p.fecha_desembolso, ''), NULLIF(p.fecha_inicio, ''))::date + INTERVAL '30 day')::date) < :hoy
                   AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
                   AND COALESCE(p.contrato_aceptado, 0) = 1
                   AND COALESCE(p.contrato_cancelado, 0) = 0
@@ -208,10 +208,9 @@ def load_detalle_mora():
             JOIN clientes c ON c.cedula = p.cliente_cedula
             WHERE cu.estado <> 'Pagada'
               AND cu.fecha_vencimiento::date < :hoy
-              AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
-              AND COALESCE(p.contrato_aceptado, 0) = 1
+              AND (LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo' OR COALESCE(p.contrato_aceptado, 0) = 1)
               AND COALESCE(p.contrato_cancelado, 0) = 0
-              AND COALESCE(p.tipo_credito, '') <> 'interes_libre'
+              AND NOT ((COALESCE(p.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre')) OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre'))
             GROUP BY p.id, c.nombres, c.apellidos
             UNION ALL
             SELECT
@@ -222,10 +221,9 @@ def load_detalle_mora():
                 COALESCE(p.saldo_capital, p.monto_original) AS exposicion_en_mora
             FROM prestamos p
             JOIN clientes c ON c.cedula = p.cliente_cedula
-            WHERE COALESCE(p.tipo_credito, '') = 'interes_libre'
-              AND p.fecha_proximo_interes::date < :hoy
-              AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
-              AND COALESCE(p.contrato_aceptado, 0) = 1
+            WHERE (COALESCE(p.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre'))
+              AND COALESCE(p.fecha_proximo_interes::date, (COALESCE(NULLIF(p.fecha_desembolso, ''), NULLIF(p.fecha_inicio, ''))::date + INTERVAL '30 day')::date) < :hoy
+              AND (LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo' OR COALESCE(p.contrato_aceptado, 0) = 1)
               AND COALESCE(p.contrato_cancelado, 0) = 0
         """), conn, params={"hoy": hoy_local().isoformat()})
 
@@ -248,13 +246,12 @@ def load_cuotas_periodo(inicio_iso, fin_iso):
             JOIN clientes c ON c.cedula = p.cliente_cedula
             WHERE cu.fecha_vencimiento::date >= :inicio
               AND cu.fecha_vencimiento::date <= :fin
-              AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
-              AND COALESCE(p.contrato_aceptado, 0) = 1
+              AND (LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo' OR COALESCE(p.contrato_aceptado, 0) = 1)
               AND COALESCE(p.contrato_cancelado, 0) = 0
-              AND COALESCE(p.tipo_credito, '') <> 'interes_libre'
+              AND NOT ((COALESCE(p.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre')) OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre'))
             UNION ALL
             SELECT
-                p.fecha_proximo_interes AS fecha_vencimiento,
+                COALESCE(p.fecha_proximo_interes::date, (COALESCE(NULLIF(p.fecha_desembolso, ''), NULLIF(p.fecha_inicio, ''))::date + INTERVAL '30 day')::date) AS fecha_vencimiento,
                 COALESCE(p.interes_acumulado, 0) + ROUND(COALESCE(p.saldo_capital, p.monto_original) * COALESCE(p.tasa_mensual, 0), 2) AS valor_cuota,
                 'Pendiente' AS estado,
                 0 AS nro_cuota,
@@ -265,11 +262,10 @@ def load_cuotas_periodo(inicio_iso, fin_iso):
                 c.nombres || ' ' || c.apellidos AS cliente
             FROM prestamos p
             JOIN clientes c ON c.cedula = p.cliente_cedula
-            WHERE COALESCE(p.tipo_credito, '') = 'interes_libre'
-              AND p.fecha_proximo_interes::date >= :inicio
-              AND p.fecha_proximo_interes::date <= :fin
-              AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
-              AND COALESCE(p.contrato_aceptado, 0) = 1
+            WHERE (COALESCE(p.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre'))
+              AND COALESCE(p.fecha_proximo_interes::date, (COALESCE(NULLIF(p.fecha_desembolso, ''), NULLIF(p.fecha_inicio, ''))::date + INTERVAL '30 day')::date) >= :inicio
+              AND COALESCE(p.fecha_proximo_interes::date, (COALESCE(NULLIF(p.fecha_desembolso, ''), NULLIF(p.fecha_inicio, ''))::date + INTERVAL '30 day')::date) <= :fin
+              AND (LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo' OR COALESCE(p.contrato_aceptado, 0) = 1)
               AND COALESCE(p.contrato_cancelado, 0) = 0
             ORDER BY fecha_vencimiento, cliente
         """), conn, params={"inicio": inicio_iso, "fin": fin_iso})
@@ -294,13 +290,12 @@ def load_cuotas_proyeccion(inicio_iso, fin_iso):
             WHERE cu.fecha_vencimiento::date >= :inicio
               AND cu.fecha_vencimiento::date <= :fin
               AND cu.estado <> 'Pagada'
-              AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
-              AND COALESCE(p.contrato_aceptado, 0) = 1
+              AND (LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo' OR COALESCE(p.contrato_aceptado, 0) = 1)
               AND COALESCE(p.contrato_cancelado, 0) = 0
-              AND COALESCE(p.tipo_credito, '') <> 'interes_libre'
+              AND NOT ((COALESCE(p.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre')) OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre'))
             UNION ALL
             SELECT
-                p.fecha_proximo_interes AS fecha_vencimiento,
+                COALESCE(p.fecha_proximo_interes::date, (COALESCE(NULLIF(p.fecha_desembolso, ''), NULLIF(p.fecha_inicio, ''))::date + INTERVAL '30 day')::date) AS fecha_vencimiento,
                 COALESCE(p.interes_acumulado, 0) + ROUND(COALESCE(p.saldo_capital, p.monto_original) * COALESCE(p.tasa_mensual, 0), 2) AS valor_cuota,
                 'Pendiente' AS estado_cuota,
                 0 AS nro_cuota,
@@ -311,11 +306,10 @@ def load_cuotas_proyeccion(inicio_iso, fin_iso):
                 c.nombres || ' ' || c.apellidos AS cliente
             FROM prestamos p
             JOIN clientes c ON c.cedula = p.cliente_cedula
-            WHERE COALESCE(p.tipo_credito, '') = 'interes_libre'
-              AND p.fecha_proximo_interes::date >= :inicio
-              AND p.fecha_proximo_interes::date <= :fin
-              AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
-              AND COALESCE(p.contrato_aceptado, 0) = 1
+            WHERE (COALESCE(p.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre'))
+              AND COALESCE(p.fecha_proximo_interes::date, (COALESCE(NULLIF(p.fecha_desembolso, ''), NULLIF(p.fecha_inicio, ''))::date + INTERVAL '30 day')::date) >= :inicio
+              AND COALESCE(p.fecha_proximo_interes::date, (COALESCE(NULLIF(p.fecha_desembolso, ''), NULLIF(p.fecha_inicio, ''))::date + INTERVAL '30 day')::date) <= :fin
+              AND (LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo' OR COALESCE(p.contrato_aceptado, 0) = 1)
               AND COALESCE(p.contrato_cancelado, 0) = 0
             ORDER BY fecha_vencimiento, cliente
         """), conn, params={"inicio": inicio_iso, "fin": fin_iso})
@@ -354,11 +348,11 @@ def load_kpis_financieros():
                     WHERE cu.estado <> 'Pagada'
                       AND LOWER(TRIM(COALESCE(pf.estado, ''))) = 'activo'
                       AND COALESCE(pf.contrato_cancelado, 0) = 0
-                      AND COALESCE(pf.tipo_credito, '') <> 'interes_libre'
+                      AND NOT ((COALESCE(pf.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(pf.tipo, ''))) IN ('interes libre', 'interés libre')) OR LOWER(TRIM(COALESCE(pf.tipo, ''))) IN ('interes libre', 'interés libre'))
                     UNION ALL
                     SELECT COALESCE(SUM(COALESCE(pf.interes_acumulado, 0) + ROUND(COALESCE(pf.saldo_capital, pf.monto_original) * COALESCE(pf.tasa_mensual, 0), 2)), 0) AS total
                     FROM prestamos_financieros pf
-                    WHERE COALESCE(pf.tipo_credito, '') = 'interes_libre'
+                    WHERE (COALESCE(pf.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(pf.tipo, ''))) IN ('interes libre', 'interés libre'))
                       AND LOWER(TRIM(COALESCE(pf.estado, ''))) = 'activo'
                       AND COALESCE(pf.contrato_cancelado, 0) = 0
                 ) x
@@ -366,10 +360,9 @@ def load_kpis_financieros():
             intereses_libres_pendientes AS (
                 SELECT COALESCE(SUM(COALESCE(pf.interes_acumulado, 0) + ROUND(COALESCE(pf.saldo_capital, pf.monto_original) * COALESCE(pf.tasa_mensual, 0), 2)), 0) AS total
                 FROM prestamos_financieros pf
-                WHERE COALESCE(pf.tipo_credito, '') = 'interes_libre'
-                  AND LOWER(TRIM(COALESCE(pf.estado, ''))) = 'activo'
+                WHERE (COALESCE(pf.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(pf.tipo, ''))) IN ('interes libre', 'interés libre'))
+                  AND (LOWER(TRIM(COALESCE(pf.estado, ''))) = 'activo' OR COALESCE(pf.contrato_aceptado, 0) = 1)
                   AND COALESCE(pf.contrato_cancelado, 0) = 0
-                  AND COALESCE(pf.contrato_aceptado, 0) = 1
             ),
             cartera_mora AS (
                 SELECT COALESCE(SUM(total), 0) AS total
@@ -381,12 +374,12 @@ def load_kpis_financieros():
                       AND cu.fecha_vencimiento::date < :hoy
                       AND LOWER(TRIM(COALESCE(pf.estado, ''))) = 'activo'
                       AND COALESCE(pf.contrato_cancelado, 0) = 0
-                      AND COALESCE(pf.tipo_credito, '') <> 'interes_libre'
+                      AND NOT ((COALESCE(pf.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(pf.tipo, ''))) IN ('interes libre', 'interés libre')) OR LOWER(TRIM(COALESCE(pf.tipo, ''))) IN ('interes libre', 'interés libre'))
                     UNION ALL
                     SELECT COALESCE(SUM(COALESCE(pf.interes_acumulado, 0) + ROUND(COALESCE(pf.saldo_capital, pf.monto_original) * COALESCE(pf.tasa_mensual, 0), 2)), 0) AS total
                     FROM prestamos_financieros pf
-                    WHERE COALESCE(pf.tipo_credito, '') = 'interes_libre'
-                      AND pf.fecha_proximo_interes::date < :hoy
+                    WHERE (COALESCE(pf.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(pf.tipo, ''))) IN ('interes libre', 'interés libre'))
+                      AND COALESCE(pf.fecha_proximo_interes::date, (COALESCE(NULLIF(pf.fecha_desembolso, ''), NULLIF(pf.fecha_inicio, ''))::date + INTERVAL '30 day')::date) < :hoy
                       AND LOWER(TRIM(COALESCE(pf.estado, ''))) = 'activo'
                       AND COALESCE(pf.contrato_cancelado, 0) = 0
                 ) x
@@ -1376,9 +1369,32 @@ def asegurar_estructura_financiera():
             UPDATE prestamos
             SET saldo_capital = COALESCE(saldo_capital, monto_original),
                 tasa_mensual = COALESCE(tasa_mensual, 0),
-                tipo_credito = COALESCE(tipo_credito, CASE WHEN LOWER(TRIM(COALESCE(tipo, ''))) = 'express' THEN 'express' ELSE 'normal' END),
+                tipo_credito = COALESCE(
+                    tipo_credito,
+                    CASE
+                        WHEN LOWER(TRIM(COALESCE(tipo, ''))) = 'express' THEN 'express'
+                        WHEN LOWER(TRIM(COALESCE(tipo, ''))) IN ('interes libre', 'interés libre') THEN 'interes_libre'
+                        ELSE 'normal'
+                    END
+                ),
                 interes_acumulado = COALESCE(interes_acumulado, 0)
             WHERE saldo_capital IS NULL OR tasa_mensual IS NULL OR tipo_credito IS NULL OR interes_acumulado IS NULL
+        """))
+        conn.execute(text("""
+            UPDATE prestamos
+            SET tipo_credito = 'interes_libre',
+                frecuencia = COALESCE(frecuencia, 'Mensual'),
+                cuotas = COALESCE(cuotas, 0),
+                fecha_ultimo_corte_interes = COALESCE(fecha_ultimo_corte_interes, fecha_desembolso, fecha_inicio),
+                fecha_proximo_interes = COALESCE(
+                    fecha_proximo_interes,
+                    ((COALESCE(NULLIF(fecha_desembolso, ''), NULLIF(fecha_inicio, ''))::date + INTERVAL '30 day')::date)::text
+                ),
+                valor_cuota = COALESCE(valor_cuota, ROUND(COALESCE(saldo_capital, monto_original) * COALESCE(tasa_mensual, 0), 2))
+            WHERE (COALESCE(tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(tipo, ''))) IN ('interes libre', 'interés libre'))
+              AND COALESCE(contrato_cancelado, 0) = 0
+              AND LOWER(TRIM(COALESCE(estado, ''))) NOT IN ('anulado', 'cancelado')
+              AND COALESCE(NULLIF(fecha_desembolso, ''), NULLIF(fecha_inicio, '')) IS NOT NULL
         """))
         conn.commit()
     clear_app_caches()
@@ -2356,7 +2372,7 @@ def registrar_pago_interes_libre(prestamo_id, fecha_pago, valor_pago):
             SELECT p.*, c.nombres || ' ' || c.apellidos AS cliente, c.correo
             FROM prestamos p
             JOIN clientes c ON c.cedula = p.cliente_cedula
-            WHERE p.id = :id AND COALESCE(p.tipo_credito, '') = 'interes_libre'
+            WHERE p.id = :id AND (COALESCE(p.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre'))
         """), {"id": prestamo_id}).mappings().first()
         if not prestamo:
             return {"ok": False, "error": "No se encontró el crédito de interés libre"}
@@ -2568,10 +2584,9 @@ def procesar_recordatorios_automaticos():
             WHERE cu.estado IN ('Pendiente', 'Parcial')
               AND c.correo IS NOT NULL
               AND cu.fecha_vencimiento::date BETWEEN (CAST(:hoy AS date) - INTERVAL '5 day') AND (CAST(:hoy AS date) + INTERVAL '3 day')
-              AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
-              AND COALESCE(p.contrato_aceptado, 0) = 1
+              AND (LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo' OR COALESCE(p.contrato_aceptado, 0) = 1)
               AND COALESCE(p.contrato_cancelado, 0) = 0
-              AND COALESCE(p.tipo_credito, '') <> 'interes_libre'
+              AND NOT ((COALESCE(p.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre')) OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre'))
         """), {"hoy": hoy_local().isoformat()}).mappings().all()
         for r in rows:
             dias = (r['fecha_vencimiento'] - hoy_local()).days
@@ -2646,10 +2661,9 @@ def enviar_recordatorio_credito(prestamo_row):
             JOIN prestamos p ON p.id = cu.prestamo_id
             WHERE cu.prestamo_id = :id
               AND cu.estado <> 'Pagada'
-              AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
-              AND COALESCE(p.contrato_aceptado, 0) = 1
+              AND (LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo' OR COALESCE(p.contrato_aceptado, 0) = 1)
               AND COALESCE(p.contrato_cancelado, 0) = 0
-              AND COALESCE(p.tipo_credito, '') <> 'interes_libre'
+              AND NOT ((COALESCE(p.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre')) OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre'))
             ORDER BY cu.nro_cuota ASC
             LIMIT 1
         """), {"id": prestamo_row["id"]}).fetchone()

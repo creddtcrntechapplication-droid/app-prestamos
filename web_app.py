@@ -92,7 +92,7 @@ def load_estado():
                 p.cuotas,
                 COALESCE(p.frecuencia, 'Mensual') AS frecuencia,
                 p.tipo,
-                COALESCE(p.tipo_credito, CASE WHEN LOWER(COALESCE(p.tipo, '')) = 'express' THEN 'express' ELSE 'normal' END) AS tipo_credito_codigo,
+                CASE WHEN COALESCE(p.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre', 'solo interes libre', 'solo interés libre') THEN 'interes_libre' WHEN LOWER(TRIM(COALESCE(p.tipo, ''))) = 'express' THEN 'express' ELSE COALESCE(NULLIF(p.tipo_credito, ''), 'normal') END AS tipo_credito_codigo,
                 p.cliente_cedula,
                 COALESCE(p.contrato_aceptado, 0) AS contrato_aceptado,
                 COALESCE(p.contrato_enviado, 0) AS contrato_enviado,
@@ -164,7 +164,22 @@ def load_estado():
 def load_mora():
     with get_conn() as conn:
         mora_df = pd.read_sql(text("""
-            WITH mora_base AS (
+            WITH interes_libre AS (
+                SELECT
+                    p.id,
+                    COALESCE(p.interes_acumulado, 0) + ROUND(COALESCE(p.saldo_capital, p.monto_original) * COALESCE(p.tasa_mensual, 0), 2) AS valor,
+                    COALESCE(
+                        NULLIF(p.fecha_proximo_interes::text, '')::date,
+                        (COALESCE(NULLIF(p.fecha_desembolso::text, ''), NULLIF(p.fecha_inicio::text, ''))::date + INTERVAL '30 day')::date
+                    ) AS fecha_vencimiento
+                FROM prestamos p
+                WHERE (COALESCE(p.tipo_credito, '') = 'interes_libre'
+                       OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre', 'solo interes libre', 'solo interés libre'))
+                  AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
+                  AND COALESCE(p.contrato_aceptado, 0) = 1
+                  AND COALESCE(p.contrato_cancelado, 0) = 0
+            ),
+            mora_base AS (
                 SELECT cu.prestamo_id, COALESCE(cu.valor_cuota, 0) AS valor
                 FROM cuotas cu
                 JOIN prestamos p ON p.id = cu.prestamo_id
@@ -173,16 +188,12 @@ def load_mora():
                   AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
                   AND COALESCE(p.contrato_aceptado, 0) = 1
                   AND COALESCE(p.contrato_cancelado, 0) = 0
-                  AND NOT ((COALESCE(p.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre')) OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre'))
+                  AND NOT (COALESCE(p.tipo_credito, '') = 'interes_libre'
+                           OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre', 'solo interes libre', 'solo interés libre'))
                 UNION ALL
-                SELECT p.id AS prestamo_id,
-                       COALESCE(p.interes_acumulado, 0) + ROUND(COALESCE(p.saldo_capital, p.monto_original) * COALESCE(p.tasa_mensual, 0), 2) AS valor
-                FROM prestamos p
-                WHERE (COALESCE(p.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre'))
-                  AND COALESCE(p.fecha_proximo_interes::date, (COALESCE(NULLIF(p.fecha_desembolso, ''), NULLIF(p.fecha_inicio, ''))::date + INTERVAL '30 day')::date) < :hoy
-                  AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
-                  AND COALESCE(p.contrato_aceptado, 0) = 1
-                  AND COALESCE(p.contrato_cancelado, 0) = 0
+                SELECT id AS prestamo_id, valor
+                FROM interes_libre
+                WHERE fecha_vencimiento < :hoy
             )
             SELECT
                 COUNT(DISTINCT prestamo_id) as clientes_mora,
@@ -197,6 +208,23 @@ def load_mora():
 def load_detalle_mora():
     with get_conn() as conn:
         return pd.read_sql(text("""
+            WITH interes_libre AS (
+                SELECT
+                    p.id,
+                    c.nombres || ' ' || c.apellidos AS cliente,
+                    COALESCE(p.interes_acumulado, 0) + ROUND(COALESCE(p.saldo_capital, p.monto_original) * COALESCE(p.tasa_mensual, 0), 2) AS monto_en_mora,
+                    COALESCE(p.saldo_capital, p.monto_original) AS exposicion_en_mora,
+                    COALESCE(
+                        NULLIF(p.fecha_proximo_interes::text, '')::date,
+                        (COALESCE(NULLIF(p.fecha_desembolso::text, ''), NULLIF(p.fecha_inicio::text, ''))::date + INTERVAL '30 day')::date
+                    ) AS fecha_vencimiento
+                FROM prestamos p
+                JOIN clientes c ON c.cedula = p.cliente_cedula
+                WHERE (COALESCE(p.tipo_credito, '') = 'interes_libre'
+                       OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre', 'solo interes libre', 'solo interés libre'))
+                  AND (LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo' OR COALESCE(p.contrato_aceptado, 0) = 1)
+                  AND COALESCE(p.contrato_cancelado, 0) = 0
+            )
             SELECT
                 p.id,
                 c.nombres || ' ' || c.apellidos AS cliente,
@@ -210,27 +238,42 @@ def load_detalle_mora():
               AND cu.fecha_vencimiento::date < :hoy
               AND (LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo' OR COALESCE(p.contrato_aceptado, 0) = 1)
               AND COALESCE(p.contrato_cancelado, 0) = 0
-              AND NOT ((COALESCE(p.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre')) OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre'))
+              AND NOT (COALESCE(p.tipo_credito, '') = 'interes_libre'
+                       OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre', 'solo interes libre', 'solo interés libre'))
             GROUP BY p.id, c.nombres, c.apellidos
             UNION ALL
             SELECT
-                p.id,
-                c.nombres || ' ' || c.apellidos AS cliente,
+                id,
+                cliente,
                 1 AS cuotas_en_mora,
-                COALESCE(p.interes_acumulado, 0) + ROUND(COALESCE(p.saldo_capital, p.monto_original) * COALESCE(p.tasa_mensual, 0), 2) AS monto_en_mora,
-                COALESCE(p.saldo_capital, p.monto_original) AS exposicion_en_mora
-            FROM prestamos p
-            JOIN clientes c ON c.cedula = p.cliente_cedula
-            WHERE (COALESCE(p.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre'))
-              AND COALESCE(p.fecha_proximo_interes::date, (COALESCE(NULLIF(p.fecha_desembolso, ''), NULLIF(p.fecha_inicio, ''))::date + INTERVAL '30 day')::date) < :hoy
-              AND (LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo' OR COALESCE(p.contrato_aceptado, 0) = 1)
-              AND COALESCE(p.contrato_cancelado, 0) = 0
+                monto_en_mora,
+                exposicion_en_mora
+            FROM interes_libre
+            WHERE fecha_vencimiento < :hoy
         """), conn, params={"hoy": hoy_local().isoformat()})
 
 @st.cache_data(ttl=45, show_spinner=False)
 def load_cuotas_periodo(inicio_iso, fin_iso):
     with get_conn() as conn:
         return pd.read_sql(text("""
+            WITH interes_libre AS (
+                SELECT
+                    COALESCE(
+                        NULLIF(p.fecha_proximo_interes::text, '')::date,
+                        (COALESCE(NULLIF(p.fecha_desembolso::text, ''), NULLIF(p.fecha_inicio::text, ''))::date + INTERVAL '30 day')::date
+                    ) AS fecha_vencimiento,
+                    COALESCE(p.interes_acumulado, 0) + ROUND(COALESCE(p.saldo_capital, p.monto_original) * COALESCE(p.tasa_mensual, 0), 2) AS valor_cuota,
+                    p.id AS credito,
+                    COALESCE(p.estado, '') AS estado_credito,
+                    COALESCE(p.contrato_cancelado, 0) AS contrato_cancelado,
+                    c.nombres || ' ' || c.apellidos AS cliente
+                FROM prestamos p
+                JOIN clientes c ON c.cedula = p.cliente_cedula
+                WHERE (COALESCE(p.tipo_credito, '') = 'interes_libre'
+                       OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre', 'solo interes libre', 'solo interés libre'))
+                  AND (LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo' OR COALESCE(p.contrato_aceptado, 0) = 1)
+                  AND COALESCE(p.contrato_cancelado, 0) = 0
+            )
             SELECT
                 cu.fecha_vencimiento::date AS fecha_vencimiento,
                 cu.valor_cuota,
@@ -248,25 +291,22 @@ def load_cuotas_periodo(inicio_iso, fin_iso):
               AND cu.fecha_vencimiento::date <= :fin
               AND (LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo' OR COALESCE(p.contrato_aceptado, 0) = 1)
               AND COALESCE(p.contrato_cancelado, 0) = 0
-              AND NOT ((COALESCE(p.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre')) OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre'))
+              AND NOT (COALESCE(p.tipo_credito, '') = 'interes_libre'
+                       OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre', 'solo interes libre', 'solo interés libre'))
             UNION ALL
             SELECT
-                COALESCE(p.fecha_proximo_interes::date, (COALESCE(NULLIF(p.fecha_desembolso, ''), NULLIF(p.fecha_inicio, ''))::date + INTERVAL '30 day')::date) AS fecha_vencimiento,
-                COALESCE(p.interes_acumulado, 0) + ROUND(COALESCE(p.saldo_capital, p.monto_original) * COALESCE(p.tasa_mensual, 0), 2) AS valor_cuota,
+                fecha_vencimiento,
+                valor_cuota,
                 'Pendiente' AS estado,
                 0 AS nro_cuota,
-                p.id AS credito,
-                COALESCE(p.estado, '') AS estado_credito,
-                COALESCE(p.contrato_cancelado, 0) AS contrato_cancelado,
+                credito,
+                estado_credito,
+                contrato_cancelado,
                 'Interés libre' AS tipo_credito,
-                c.nombres || ' ' || c.apellidos AS cliente
-            FROM prestamos p
-            JOIN clientes c ON c.cedula = p.cliente_cedula
-            WHERE (COALESCE(p.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre'))
-              AND COALESCE(p.fecha_proximo_interes::date, (COALESCE(NULLIF(p.fecha_desembolso, ''), NULLIF(p.fecha_inicio, ''))::date + INTERVAL '30 day')::date) >= :inicio
-              AND COALESCE(p.fecha_proximo_interes::date, (COALESCE(NULLIF(p.fecha_desembolso, ''), NULLIF(p.fecha_inicio, ''))::date + INTERVAL '30 day')::date) <= :fin
-              AND (LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo' OR COALESCE(p.contrato_aceptado, 0) = 1)
-              AND COALESCE(p.contrato_cancelado, 0) = 0
+                cliente
+            FROM interes_libre
+            WHERE fecha_vencimiento >= :inicio
+              AND fecha_vencimiento <= :fin
             ORDER BY fecha_vencimiento, cliente
         """), conn, params={"inicio": inicio_iso, "fin": fin_iso})
 
@@ -274,15 +314,33 @@ def load_cuotas_periodo(inicio_iso, fin_iso):
 def load_cuotas_proyeccion(inicio_iso, fin_iso):
     with get_conn() as conn:
         return pd.read_sql(text("""
+            WITH interes_libre AS (
+                SELECT
+                    COALESCE(
+                        NULLIF(p.fecha_proximo_interes::text, '')::date,
+                        (COALESCE(NULLIF(p.fecha_desembolso::text, ''), NULLIF(p.fecha_inicio::text, ''))::date + INTERVAL '30 day')::date
+                    ) AS fecha_vencimiento,
+                    COALESCE(p.interes_acumulado, 0) + ROUND(COALESCE(p.saldo_capital, p.monto_original) * COALESCE(p.tasa_mensual, 0), 2) AS valor_cuota,
+                    p.id AS credito,
+                    COALESCE(p.estado, '') AS estado_credito,
+                    COALESCE(p.contrato_cancelado, 0) AS contrato_cancelado,
+                    c.nombres || ' ' || c.apellidos AS cliente
+                FROM prestamos p
+                JOIN clientes c ON c.cedula = p.cliente_cedula
+                WHERE (COALESCE(p.tipo_credito, '') = 'interes_libre'
+                       OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre', 'solo interes libre', 'solo interés libre'))
+                  AND (LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo' OR COALESCE(p.contrato_aceptado, 0) = 1)
+                  AND COALESCE(p.contrato_cancelado, 0) = 0
+            )
             SELECT
                 cu.fecha_vencimiento::date AS fecha_vencimiento,
                 cu.valor_cuota,
                 cu.estado AS estado_cuota,
                 cu.nro_cuota,
                 p.id AS credito,
-                COALESCE(p.tipo, 'Normal') AS tipo_credito,
                 COALESCE(p.estado, '') AS estado_credito,
                 COALESCE(p.contrato_cancelado, 0) AS contrato_cancelado,
+                COALESCE(p.tipo, 'Normal') AS tipo_credito,
                 c.nombres || ' ' || c.apellidos AS cliente
             FROM cuotas cu
             JOIN prestamos p ON p.id = cu.prestamo_id
@@ -292,25 +350,22 @@ def load_cuotas_proyeccion(inicio_iso, fin_iso):
               AND cu.estado <> 'Pagada'
               AND (LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo' OR COALESCE(p.contrato_aceptado, 0) = 1)
               AND COALESCE(p.contrato_cancelado, 0) = 0
-              AND NOT ((COALESCE(p.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre')) OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre'))
+              AND NOT (COALESCE(p.tipo_credito, '') = 'interes_libre'
+                       OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre', 'solo interes libre', 'solo interés libre'))
             UNION ALL
             SELECT
-                COALESCE(p.fecha_proximo_interes::date, (COALESCE(NULLIF(p.fecha_desembolso, ''), NULLIF(p.fecha_inicio, ''))::date + INTERVAL '30 day')::date) AS fecha_vencimiento,
-                COALESCE(p.interes_acumulado, 0) + ROUND(COALESCE(p.saldo_capital, p.monto_original) * COALESCE(p.tasa_mensual, 0), 2) AS valor_cuota,
+                fecha_vencimiento,
+                valor_cuota,
                 'Pendiente' AS estado_cuota,
                 0 AS nro_cuota,
-                p.id AS credito,
+                credito,
+                estado_credito,
+                contrato_cancelado,
                 'Interés libre' AS tipo_credito,
-                COALESCE(p.estado, '') AS estado_credito,
-                COALESCE(p.contrato_cancelado, 0) AS contrato_cancelado,
-                c.nombres || ' ' || c.apellidos AS cliente
-            FROM prestamos p
-            JOIN clientes c ON c.cedula = p.cliente_cedula
-            WHERE (COALESCE(p.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre'))
-              AND COALESCE(p.fecha_proximo_interes::date, (COALESCE(NULLIF(p.fecha_desembolso, ''), NULLIF(p.fecha_inicio, ''))::date + INTERVAL '30 day')::date) >= :inicio
-              AND COALESCE(p.fecha_proximo_interes::date, (COALESCE(NULLIF(p.fecha_desembolso, ''), NULLIF(p.fecha_inicio, ''))::date + INTERVAL '30 day')::date) <= :fin
-              AND (LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo' OR COALESCE(p.contrato_aceptado, 0) = 1)
-              AND COALESCE(p.contrato_cancelado, 0) = 0
+                cliente
+            FROM interes_libre
+            WHERE fecha_vencimiento >= :inicio
+              AND fecha_vencimiento <= :fin
             ORDER BY fecha_vencimiento, cliente
         """), conn, params={"inicio": inicio_iso, "fin": fin_iso})
 
@@ -328,6 +383,11 @@ def load_kpis_financieros():
                       OR LOWER(TRIM(COALESCE(estado, ''))) IN ('activo', 'cancelado')
                   )
             ),
+            prestamos_activos AS (
+                SELECT *
+                FROM prestamos_financieros
+                WHERE LOWER(TRIM(COALESCE(estado, ''))) = 'activo'
+            ),
             pagos_financieros AS (
                 SELECT
                     pg.id_pago,
@@ -339,49 +399,48 @@ def load_kpis_financieros():
                 FROM pagos pg
                 JOIN prestamos_financieros pf ON pf.id = pg.prestamo_id
             ),
+            intereses_libres_activos AS (
+                SELECT
+                    pa.id,
+                    COALESCE(pa.saldo_capital, pa.monto_original) AS saldo_capital,
+                    COALESCE(pa.interes_acumulado, 0) + ROUND(COALESCE(pa.saldo_capital, pa.monto_original) * COALESCE(pa.tasa_mensual, 0), 2) AS interes_pendiente,
+                    COALESCE(
+                        NULLIF(pa.fecha_proximo_interes::text, '')::date,
+                        (COALESCE(NULLIF(pa.fecha_desembolso::text, ''), NULLIF(pa.fecha_inicio::text, ''))::date + INTERVAL '30 day')::date
+                    ) AS fecha_proximo_interes
+                FROM prestamos_activos pa
+                WHERE (COALESCE(pa.tipo_credito, '') = 'interes_libre'
+                       OR LOWER(TRIM(COALESCE(pa.tipo, ''))) IN ('interes libre', 'interés libre', 'solo interes libre', 'solo interés libre'))
+                  AND COALESCE(pa.contrato_cancelado, 0) = 0
+            ),
             cuotas_pendientes AS (
-                SELECT COALESCE(SUM(total), 0) AS total
-                FROM (
-                    SELECT COALESCE(SUM(cu.valor_cuota), 0) AS total
-                    FROM cuotas cu
-                    JOIN prestamos_financieros pf ON pf.id = cu.prestamo_id
-                    WHERE cu.estado <> 'Pagada'
-                      AND LOWER(TRIM(COALESCE(pf.estado, ''))) = 'activo'
-                      AND COALESCE(pf.contrato_cancelado, 0) = 0
-                      AND NOT ((COALESCE(pf.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(pf.tipo, ''))) IN ('interes libre', 'interés libre')) OR LOWER(TRIM(COALESCE(pf.tipo, ''))) IN ('interes libre', 'interés libre'))
-                    UNION ALL
-                    SELECT COALESCE(SUM(COALESCE(pf.interes_acumulado, 0) + ROUND(COALESCE(pf.saldo_capital, pf.monto_original) * COALESCE(pf.tasa_mensual, 0), 2)), 0) AS total
-                    FROM prestamos_financieros pf
-                    WHERE (COALESCE(pf.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(pf.tipo, ''))) IN ('interes libre', 'interés libre'))
-                      AND LOWER(TRIM(COALESCE(pf.estado, ''))) = 'activo'
-                      AND COALESCE(pf.contrato_cancelado, 0) = 0
-                ) x
+                SELECT COALESCE(SUM(cu.valor_cuota), 0) AS total
+                FROM cuotas cu
+                JOIN prestamos_activos pa ON pa.id = cu.prestamo_id
+                WHERE cu.estado <> 'Pagada'
+                  AND COALESCE(pa.contrato_cancelado, 0) = 0
+                  AND NOT (COALESCE(pa.tipo_credito, '') = 'interes_libre'
+                           OR LOWER(TRIM(COALESCE(pa.tipo, ''))) IN ('interes libre', 'interés libre', 'solo interes libre', 'solo interés libre'))
             ),
             intereses_libres_pendientes AS (
-                SELECT COALESCE(SUM(COALESCE(pf.interes_acumulado, 0) + ROUND(COALESCE(pf.saldo_capital, pf.monto_original) * COALESCE(pf.tasa_mensual, 0), 2)), 0) AS total
-                FROM prestamos_financieros pf
-                WHERE (COALESCE(pf.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(pf.tipo, ''))) IN ('interes libre', 'interés libre'))
-                  AND (LOWER(TRIM(COALESCE(pf.estado, ''))) = 'activo' OR COALESCE(pf.contrato_aceptado, 0) = 1)
-                  AND COALESCE(pf.contrato_cancelado, 0) = 0
+                SELECT COALESCE(SUM(interes_pendiente), 0) AS total
+                FROM intereses_libres_activos
             ),
             cartera_mora AS (
                 SELECT COALESCE(SUM(total), 0) AS total
                 FROM (
                     SELECT COALESCE(SUM(cu.valor_cuota), 0) AS total
                     FROM cuotas cu
-                    JOIN prestamos_financieros pf ON pf.id = cu.prestamo_id
+                    JOIN prestamos_activos pa ON pa.id = cu.prestamo_id
                     WHERE cu.estado <> 'Pagada'
                       AND cu.fecha_vencimiento::date < :hoy
-                      AND LOWER(TRIM(COALESCE(pf.estado, ''))) = 'activo'
-                      AND COALESCE(pf.contrato_cancelado, 0) = 0
-                      AND NOT ((COALESCE(pf.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(pf.tipo, ''))) IN ('interes libre', 'interés libre')) OR LOWER(TRIM(COALESCE(pf.tipo, ''))) IN ('interes libre', 'interés libre'))
+                      AND COALESCE(pa.contrato_cancelado, 0) = 0
+                      AND NOT (COALESCE(pa.tipo_credito, '') = 'interes_libre'
+                               OR LOWER(TRIM(COALESCE(pa.tipo, ''))) IN ('interes libre', 'interés libre', 'solo interes libre', 'solo interés libre'))
                     UNION ALL
-                    SELECT COALESCE(SUM(COALESCE(pf.interes_acumulado, 0) + ROUND(COALESCE(pf.saldo_capital, pf.monto_original) * COALESCE(pf.tasa_mensual, 0), 2)), 0) AS total
-                    FROM prestamos_financieros pf
-                    WHERE (COALESCE(pf.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(pf.tipo, ''))) IN ('interes libre', 'interés libre'))
-                      AND COALESCE(pf.fecha_proximo_interes::date, (COALESCE(NULLIF(pf.fecha_desembolso, ''), NULLIF(pf.fecha_inicio, ''))::date + INTERVAL '30 day')::date) < :hoy
-                      AND LOWER(TRIM(COALESCE(pf.estado, ''))) = 'activo'
-                      AND COALESCE(pf.contrato_cancelado, 0) = 0
+                    SELECT COALESCE(SUM(interes_pendiente), 0) AS total
+                    FROM intereses_libres_activos
+                    WHERE fecha_proximo_interes < :hoy
                 ) x
             ),
             contratos_pendientes AS (
@@ -396,12 +455,12 @@ def load_kpis_financieros():
                 COALESCE((SELECT SUM(monto_original) FROM prestamos_financieros), 0) AS capital_colocado,
                 COALESCE((SELECT SUM(capital_pagado) FROM pagos_financieros), 0) AS capital_recuperado,
                 COALESCE((SELECT SUM(interes_pagado) FROM pagos_financieros), 0) AS interes_cobrado,
-                COALESCE((SELECT SUM(COALESCE(saldo_capital, monto_original)) FROM prestamos_financieros WHERE LOWER(TRIM(COALESCE(estado, ''))) <> 'cancelado'), 0) AS capital_vivo,
+                COALESCE((SELECT SUM(COALESCE(saldo_capital, monto_original)) FROM prestamos_activos), 0) AS capital_vivo,
                 COALESCE((SELECT SUM(valor) FROM pagos_financieros), 0) AS recaudo_acumulado,
-                COALESCE((SELECT total FROM cuotas_pendientes), 0) AS cuotas_pendientes,
+                COALESCE((SELECT total FROM cuotas_pendientes), 0) + COALESCE((SELECT total FROM intereses_libres_pendientes), 0) AS cuotas_pendientes,
                 COALESCE((SELECT total FROM intereses_libres_pendientes), 0) AS interes_libre_pendiente,
                 COALESCE((SELECT total FROM cartera_mora), 0) AS cartera_mora,
-                COALESCE((SELECT COUNT(*) FROM prestamos_financieros WHERE LOWER(TRIM(COALESCE(estado, ''))) <> 'cancelado'), 0) AS creditos_activos,
+                COALESCE((SELECT COUNT(*) FROM prestamos_activos), 0) AS creditos_activos,
                 COALESCE((SELECT total FROM contratos_pendientes), 0) AS contratos_pendientes,
                 COALESCE((SELECT capital FROM contratos_pendientes), 0) AS capital_pendiente_aprobacion
         """), {"hoy": hoy_local().isoformat()}).mappings().first()
@@ -1631,6 +1690,26 @@ def pesos(valor):
         return "$0"
 def normalizar_decimal(valor):
     return Decimal(str(valor or 0)).quantize(Decimal("0.01"))
+
+
+def es_credito_interes_libre_valor(tipo_credito, tipo):
+    tipo_credito_norm = str(tipo_credito or "").strip().lower()
+    tipo_norm = str(tipo or "").strip().lower().replace("é", "e")
+    return tipo_credito_norm == "interes_libre" or tipo_norm in ["interes libre", "solo interes libre"]
+
+
+def es_credito_interes_libre_row(row):
+    if row is None:
+        return False
+    getter = row.get if hasattr(row, "get") else lambda key, default=None: getattr(row, key, default)
+    return es_credito_interes_libre_valor(getter("tipo_credito", getter("tipo_credito_codigo", "")), getter("tipo", ""))
+
+
+def tasa_pct(tasa_mensual):
+    try:
+        return f"{float(tasa_mensual or 0) * 100:.2f}%"
+    except Exception:
+        return "0.00%"
 def enviar_correo(destino, asunto, cuerpo):
     ok, error = enviar_correo_async(
         destino=destino,
@@ -1695,46 +1774,122 @@ def _intro_correo(tipo_correo):
 
 
 def _resumen_items_correo(tipo_correo, **kwargs):
+    tipo_credito = kwargs.get("tipo_credito") or kwargs.get("tipo") or "Normal"
+    es_il = es_credito_interes_libre_valor(kwargs.get("tipo_credito_codigo") or kwargs.get("tipo_credito"), kwargs.get("tipo") or tipo_credito)
     if tipo_correo == "CONTRATO":
+        if es_il:
+            return [
+                ("Crédito", kwargs.get("prestamo_id")),
+                ("Tipo de crédito", tipo_credito),
+                ("Capital aprobado", pesos(kwargs.get("monto"))),
+                ("Tasa mensual aplicada", tasa_pct(kwargs.get("tasa_interes"))),
+                ("Condición", "Este crédito no tiene cuotas de capital programadas"),
+                ("Interés estimado cada 30 días", pesos(kwargs.get("valor_cuota"))),
+                ("Próximo pago de interés", kwargs.get("fecha_proximo_interes")),
+                ("Capital vigente", pesos(kwargs.get("saldo_capital") or kwargs.get("monto"))),
+            ]
         return [
             ("Crédito", kwargs.get("prestamo_id")),
+            ("Tipo de crédito", tipo_credito),
             ("Monto aprobado", pesos(kwargs.get("monto"))),
             ("Número de cuotas", kwargs.get("cuotas")),
             ("Valor de la cuota", pesos(kwargs.get("valor_cuota"))),
-            ("Tipo de crédito", kwargs.get("tipo_credito") or kwargs.get("tipo")),
-            ("Tasa de interés", f"{float(kwargs.get('tasa_interes') or 0) * 100:.2f}%"),
-            ("Próximo pago de interés", kwargs.get("fecha_proximo_interes")),
+            ("Frecuencia", kwargs.get("frecuencia")),
+            ("Tasa de interés", tasa_pct(kwargs.get("tasa_interes"))),
         ]
     if tipo_correo == "DESEMBOLSO":
+        if es_il:
+            return [
+                ("Crédito", kwargs.get("prestamo_id")),
+                ("Tipo de crédito", tipo_credito),
+                ("Capital desembolsado", pesos(kwargs.get("monto"))),
+                ("Saldo capital", pesos(kwargs.get("saldo_capital") or kwargs.get("monto"))),
+                ("Tasa mensual aplicada", tasa_pct(kwargs.get("tasa_interes"))),
+                ("Condición", "Este crédito no tiene cuotas de capital programadas"),
+                ("Interés estimado cada 30 días", pesos(kwargs.get("valor_cuota"))),
+                ("Próximo pago de interés", kwargs.get("fecha_proximo_interes")),
+                ("Estado", kwargs.get("estado") or "Activo"),
+            ]
         return [
             ("Crédito", kwargs.get("prestamo_id")),
-            ("Tipo de crédito", kwargs.get("tipo_credito") or kwargs.get("tipo")),
+            ("Tipo de crédito", tipo_credito),
             ("Monto aprobado", pesos(kwargs.get("monto"))),
+            ("Interés aplicado", tasa_pct(kwargs.get("tasa_interes"))),
             ("Frecuencia", kwargs.get("frecuencia")),
             ("Número de cuotas", kwargs.get("cuotas")),
             ("Valor de la cuota", pesos(kwargs.get("valor_cuota"))),
+            ("Saldo pendiente", pesos(kwargs.get("saldo_pendiente"))),
+            ("Estado", kwargs.get("estado") or "Activo"),
         ]
     if tipo_correo == "RECORDATORIO":
+        if es_il:
+            return [
+                ("Crédito", kwargs.get("prestamo_id")),
+                ("Tipo de crédito", tipo_credito),
+                ("Condición", "Este crédito no tiene cuotas de capital programadas"),
+                ("Capital vigente", pesos(kwargs.get("saldo_capital"))),
+                ("Tasa mensual aplicada", tasa_pct(kwargs.get("tasa_interes"))),
+                ("Interés causado o pendiente", pesos(kwargs.get("interes_pendiente"))),
+                ("Próximo pago de interés", kwargs.get("fecha_vencimiento") or kwargs.get("fecha_proximo_interes")),
+                ("Total próximo corte", pesos(kwargs.get("valor"))),
+                ("Capital pendiente para cancelar todo", pesos(kwargs.get("saldo_capital"))),
+                ("Estado", kwargs.get("estado") or "Activo"),
+            ]
         return [
             ("Crédito", kwargs.get("prestamo_id")),
+            ("Tipo de crédito", tipo_credito),
             ("Cuota", kwargs.get("cuota_nro")),
             ("Fecha de vencimiento", kwargs.get("fecha_vencimiento")),
             ("Valor a pagar", pesos(kwargs.get("valor"))),
+            ("Cuotas pendientes", kwargs.get("cuotas_pendientes")),
+            ("Saldo pendiente", pesos(kwargs.get("saldo_pendiente"))),
+            ("Estado", kwargs.get("estado") or "Activo"),
         ]
     if tipo_correo == "RECIBO_CUOTA":
+        if es_il:
+            return [
+                ("Crédito", kwargs.get("prestamo_id")),
+                ("Tipo de crédito", tipo_credito),
+                ("Fecha de pago", kwargs.get("fecha_pago")),
+                ("Valor pagado", pesos(kwargs.get("valor"))),
+                ("Aplicado a interés", pesos(kwargs.get("interes_pagado"))),
+                ("Aplicado a capital", pesos(kwargs.get("capital_pagado"))),
+                ("Nuevo saldo capital", pesos(kwargs.get("saldo_capital"))),
+                ("Nuevo interés acumulado", pesos(kwargs.get("interes_pendiente"))),
+                ("Próxima fecha de interés", kwargs.get("fecha_proximo_interes")),
+                ("Estado", kwargs.get("estado") or "Activo"),
+            ]
         return [
             ("Crédito", kwargs.get("prestamo_id")),
+            ("Tipo de crédito", tipo_credito),
             ("Cuota aplicada", kwargs.get("cuota_nro")),
             ("Fecha de pago", kwargs.get("fecha_pago")),
             ("Valor pagado", pesos(kwargs.get("valor"))),
+            ("Cuotas pendientes actualizadas", kwargs.get("cuotas_pendientes")),
+            ("Saldo pendiente actualizado", pesos(kwargs.get("saldo_pendiente"))),
         ]
     if tipo_correo == "RECIBO_ABONO":
+        if es_il:
+            return [
+                ("Crédito", kwargs.get("prestamo_id")),
+                ("Tipo de crédito", tipo_credito),
+                ("Fecha del abono", kwargs.get("fecha_pago")),
+                ("Capital anterior", pesos(kwargs.get("capital_anterior"))),
+                ("Abono realizado", pesos(kwargs.get("valor"))),
+                ("Nuevo saldo capital", pesos(kwargs.get("saldo_capital"))),
+                ("Interés acumulado", pesos(kwargs.get("interes_pendiente"))),
+                ("Próxima fecha de interés", kwargs.get("fecha_proximo_interes")),
+                ("Condición", "No se crean cuotas; solo se actualiza el capital vigente"),
+            ]
         return [
             ("Crédito", kwargs.get("prestamo_id")),
+            ("Tipo de crédito", tipo_credito),
             ("Fecha del abono", kwargs.get("fecha_pago")),
+            ("Capital anterior", pesos(kwargs.get("capital_anterior"))),
             ("Abono a capital", pesos(kwargs.get("valor"))),
             ("Nuevo saldo capital", pesos(kwargs.get("saldo_capital"))),
             ("Nueva cuota estimada", pesos(kwargs.get("nueva_cuota"))),
+            ("Cuotas pendientes", kwargs.get("cuotas_pendientes")),
         ]
     if tipo_correo == "CIERRE_CREDITO":
         return [
@@ -1744,7 +1899,6 @@ def _resumen_items_correo(tipo_correo, **kwargs):
             ("Estado", "Cuenta cerrada"),
         ]
     return []
-
 
 def construir_cuerpo_correo(tipo_correo, nombre_cliente, **kwargs):
     area = _area_responsable(tipo_correo)
@@ -2102,6 +2256,9 @@ def enviar_contrato_credito(prestamo_row):
                 cuotas=prestamo_row["cuotas"],
                 valor_cuota=prestamo_row["valor_cuota"],
                 tipo_credito=prestamo_row.get("tipo"),
+                tipo_credito_codigo=prestamo_row.get("tipo_credito"),
+                frecuencia=prestamo_row.get("frecuencia", "Mensual"),
+                saldo_capital=prestamo_row.get("saldo_capital") or prestamo_row.get("monto_original"),
                 tasa_interes=prestamo_row.get("tasa_mensual"),
                 fecha_proximo_interes=prestamo_row.get("fecha_proximo_interes"),
                 link_aceptacion=enlace
@@ -2114,6 +2271,9 @@ def enviar_contrato_credito(prestamo_row):
                 cuotas=prestamo_row["cuotas"],
                 valor_cuota=prestamo_row["valor_cuota"],
                 tipo_credito=prestamo_row.get("tipo"),
+                tipo_credito_codigo=prestamo_row.get("tipo_credito"),
+                frecuencia=prestamo_row.get("frecuencia", "Mensual"),
+                saldo_capital=prestamo_row.get("saldo_capital") or prestamo_row.get("monto_original"),
                 tasa_interes=prestamo_row.get("tasa_mensual"),
                 fecha_proximo_interes=prestamo_row.get("fecha_proximo_interes"),
                 link_aceptacion=enlace
@@ -2162,8 +2322,24 @@ def enviar_contrato_credito(prestamo_row):
 def enviar_correo_desembolso_credito(prestamo_row):
     if not prestamo_row.get("correo"):
         return False, "Cliente sin correo registrado"
-    cuerpo = construir_cuerpo_correo("DESEMBOLSO", prestamo_row["cliente"], prestamo_id=prestamo_row["id"], tipo_credito=prestamo_row.get("tipo"), monto=prestamo_row["monto_original"], frecuencia=prestamo_row.get("frecuencia", "Mensual"), cuotas=prestamo_row["cuotas"], valor_cuota=prestamo_row["valor_cuota"])
-    html_correo = construir_html_correo("DESEMBOLSO", prestamo_row["cliente"], prestamo_id=prestamo_row["id"], tipo_credito=prestamo_row.get("tipo"), monto=prestamo_row["monto_original"], frecuencia=prestamo_row.get("frecuencia", "Mensual"), cuotas=prestamo_row["cuotas"], valor_cuota=prestamo_row["valor_cuota"])
+    es_il = es_credito_interes_libre_row(prestamo_row)
+    saldo_pendiente = (prestamo_row.get("saldo_capital") or prestamo_row.get("monto_original")) if es_il else (prestamo_row.get("monto_total_credito") or prestamo_row.get("saldo") or prestamo_row.get("monto_original"))
+    kwargs = dict(
+        prestamo_id=prestamo_row["id"],
+        tipo_credito=prestamo_row.get("tipo"),
+        tipo_credito_codigo=prestamo_row.get("tipo_credito"),
+        monto=prestamo_row["monto_original"],
+        saldo_capital=prestamo_row.get("saldo_capital") or prestamo_row.get("monto_original"),
+        tasa_interes=prestamo_row.get("tasa_mensual"),
+        frecuencia=prestamo_row.get("frecuencia", "Mensual"),
+        cuotas=prestamo_row["cuotas"],
+        valor_cuota=prestamo_row["valor_cuota"],
+        fecha_proximo_interes=prestamo_row.get("fecha_proximo_interes"),
+        saldo_pendiente=saldo_pendiente,
+        estado="Activo",
+    )
+    cuerpo = construir_cuerpo_correo("DESEMBOLSO", prestamo_row["cliente"], **kwargs)
+    html_correo = construir_html_correo("DESEMBOLSO", prestamo_row["cliente"], **kwargs)
     ok_mail, err_mail = enviar_correo_async(prestamo_row["correo"], f"CREDDT CRNTECH | Confirmación de desembolso del crédito {prestamo_row['id']}", cuerpo, html_override=html_correo)
     if ok_mail:
         with get_conn() as conn:
@@ -2372,11 +2548,13 @@ def registrar_pago_interes_libre(prestamo_id, fecha_pago, valor_pago):
             SELECT p.*, c.nombres || ' ' || c.apellidos AS cliente, c.correo
             FROM prestamos p
             JOIN clientes c ON c.cedula = p.cliente_cedula
-            WHERE p.id = :id AND (COALESCE(p.tipo_credito, '') = 'interes_libre' OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre'))
+            WHERE p.id = :id
+              AND (COALESCE(p.tipo_credito, '') = 'interes_libre'
+                   OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre', 'solo interes libre', 'solo interés libre'))
         """), {"id": prestamo_id}).mappings().first()
         if not prestamo:
             return {"ok": False, "error": "No se encontró el crédito de interés libre"}
-        if str(prestamo.get("estado") or "").strip().lower() in ("cancelado", "anulado"):
+        if int(prestamo.get("contrato_cancelado", 0) or 0) == 1 or str(prestamo.get("estado") or "").strip().lower() in ("cancelado", "anulado"):
             return {"ok": False, "error": "Este crédito no está activo para recibir pagos"}
         interes_pendiente, dias = calcular_interes_libre_a_fecha(prestamo, fecha_pago)
         saldo_capital = normalizar_decimal(prestamo["saldo_capital"])
@@ -2386,6 +2564,7 @@ def registrar_pago_interes_libre(prestamo_id, fecha_pago, valor_pago):
         nuevo_interes = interes_pendiente - interes_pagado
         nuevo_capital = saldo_capital - capital_pagado
         fecha_proximo = fecha_pago + timedelta(days=30)
+        nuevo_estado = "Cancelado" if nuevo_capital <= 0 and nuevo_interes <= 0 else "Activo"
         result = conn.execute(text("""
             INSERT INTO pagos (
                 prestamo_id, fecha_pago, valor, estado, tipo_movimiento, detalle,
@@ -2414,7 +2593,7 @@ def registrar_pago_interes_libre(prestamo_id, fecha_pago, valor_pago):
                 fecha_ultimo_corte_interes = :fecha_corte,
                 fecha_proximo_interes = :fecha_proximo,
                 valor_cuota = ROUND(:saldo_capital * tasa_mensual, 2),
-                estado = CASE WHEN estado = 'Pendiente' THEN 'Activo' ELSE estado END
+                estado = :estado
             WHERE id = :id
         """), {
             "id": prestamo_id,
@@ -2422,9 +2601,42 @@ def registrar_pago_interes_libre(prestamo_id, fecha_pago, valor_pago):
             "interes_acumulado": nuevo_interes,
             "fecha_corte": fecha_pago.isoformat(),
             "fecha_proximo": fecha_proximo.isoformat(),
+            "estado": nuevo_estado,
         })
         conn.commit()
         clear_app_caches()
+    pdf = None
+    correo_ok = False
+    correo_error = None
+    try:
+        pdf = generar_recibo_pdf(prestamo_id, prestamo["cliente"], prestamo["monto_original"], fecha_pago.isoformat(), valor_pago, titulo="RECIBO DE PAGO INTERÉS LIBRE", subtitulo="VALOR PAGADO")
+        kwargs = dict(
+            prestamo_id=prestamo_id,
+            tipo_credito="Interés libre",
+            tipo_credito_codigo="interes_libre",
+            fecha_pago=fecha_pago.isoformat(),
+            valor=valor_pago,
+            interes_pagado=interes_pagado,
+            capital_pagado=capital_pagado,
+            saldo_capital=nuevo_capital,
+            interes_pendiente=nuevo_interes,
+            fecha_proximo_interes=fecha_proximo.isoformat(),
+            tasa_interes=prestamo.get("tasa_mensual"),
+            estado=nuevo_estado,
+        )
+        cuerpo = construir_cuerpo_correo("RECIBO_CUOTA", prestamo["cliente"], **kwargs)
+        html_correo = construir_html_correo("RECIBO_CUOTA", prestamo["cliente"], **kwargs)
+        correo_cliente = (prestamo.get("correo") or "").strip()
+        if correo_cliente:
+            correo_ok, correo_error = enviar_pdf_por_correo(correo_cliente, f"CREDDT CRNTECH | Confirmación de pago del crédito {prestamo_id}", cuerpo, pdf, f"recibo_{prestamo_id}.pdf", html_override=html_correo)
+        else:
+            correo_error = "Cliente sin correo registrado"
+    finally:
+        if pdf and os.path.exists(pdf):
+            try:
+                os.remove(pdf)
+            except Exception:
+                pass
     return {
         "ok": True,
         "credito": prestamo_id,
@@ -2436,6 +2648,10 @@ def registrar_pago_interes_libre(prestamo_id, fecha_pago, valor_pago):
         "interes_pendiente": nuevo_interes,
         "dias": dias,
         "fecha_proximo_interes": fecha_proximo.isoformat(),
+        "correo": correo_ok,
+        "tiene_correo": bool(prestamo.get("correo")),
+        "correo_error": correo_error,
+        "finalizado": nuevo_estado == "Cancelado",
     }
 
 def cerrar_credito_interes_libre(prestamo_id):
@@ -2914,12 +3130,101 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
     with get_conn() as conn:
         prestamo_db = conn.execute(text("""
             SELECT id, cliente_cedula, monto_original, COALESCE(saldo_capital, monto_original) AS saldo_capital,
-                   COALESCE(tasa_mensual, 0) AS tasa_mensual, valor_cuota
+                   COALESCE(tasa_mensual, 0) AS tasa_mensual, COALESCE(interes_acumulado, 0) AS interes_acumulado,
+                   valor_cuota, tipo, tipo_credito, fecha_proximo_interes
             FROM prestamos
             WHERE id = :id
         """), {"id": prestamo_id}).mappings().first()
         if not prestamo_db:
             return {"ok": False, "error": "No se pudo obtener el préstamo"}
+        saldo_capital_actual = normalizar_decimal(prestamo_db["saldo_capital"])
+        if valor_abono >= saldo_capital_actual:
+            return {"ok": False, "error": "El abono a capital no puede ser igual o mayor al saldo capital actual"}
+        nuevo_saldo_capital = saldo_capital_actual - valor_abono
+
+        if es_credito_interes_libre_row(prestamo_db):
+            result_pago = conn.execute(text("""
+                INSERT INTO pagos (
+                    prestamo_id, fecha_pago, valor, estado, tipo_movimiento, detalle,
+                    interes_pagado, capital_pagado, saldo_capital_anterior, saldo_capital_nuevo, cuota_numero
+                )
+                VALUES (
+                    :id, :fecha, :valor, 'Pagado', 'ABONO_CAPITAL', :detalle,
+                    0, :capital_pagado, :saldo_capital_anterior, :saldo_capital_nuevo, NULL
+                )
+                RETURNING id_pago
+            """), {
+                "id": prestamo_id,
+                "fecha": fecha_pago.isoformat(),
+                "valor": valor_abono,
+                "detalle": f"Abono a capital interés libre por {valor_abono}",
+                "capital_pagado": valor_abono,
+                "saldo_capital_anterior": saldo_capital_actual,
+                "saldo_capital_nuevo": nuevo_saldo_capital,
+            })
+            id_pago = result_pago.fetchone()[0]
+            conn.execute(text("""
+                UPDATE prestamos
+                SET saldo_capital = :saldo_capital,
+                    valor_cuota = ROUND(:saldo_capital * tasa_mensual, 2)
+                WHERE id = :id
+            """), {"saldo_capital": nuevo_saldo_capital, "id": prestamo_id})
+            conn.commit()
+            clear_app_caches()
+            cliente = obtener_datos_cliente(conn, prestamo_db["cliente_cedula"])
+            nombre_cliente = cliente[0] if cliente else "Cliente"
+            correo_cliente = (cliente[1] or "").strip() if cliente else ""
+            interes_pendiente = normalizar_decimal(prestamo_db["interes_acumulado"])
+            fecha_proximo_interes = prestamo_db.get("fecha_proximo_interes")
+            nuevo_interes_30 = (nuevo_saldo_capital * Decimal(str(prestamo_db["tasa_mensual"] or 0))).quantize(Decimal("0.01"))
+
+            pdf = None
+            correo_ok = False
+            correo_error = None
+            try:
+                pdf = generar_recibo_pdf(prestamo_id, nombre_cliente, prestamo_db["monto_original"], fecha_pago.isoformat(), valor_abono, titulo="RECIBO DE ABONO A CAPITAL", subtitulo="ABONO A CAPITAL")
+                kwargs = dict(
+                    prestamo_id=prestamo_id,
+                    tipo_credito="Interés libre",
+                    tipo_credito_codigo="interes_libre",
+                    fecha_pago=fecha_pago.isoformat(),
+                    capital_anterior=saldo_capital_actual,
+                    valor=valor_abono,
+                    saldo_capital=nuevo_saldo_capital,
+                    interes_pendiente=interes_pendiente,
+                    fecha_proximo_interes=fecha_proximo_interes,
+                )
+                cuerpo = construir_cuerpo_correo("RECIBO_ABONO", nombre_cliente, **kwargs)
+                html_correo = construir_html_correo("RECIBO_ABONO", nombre_cliente, **kwargs)
+                if correo_cliente:
+                    correo_ok, correo_error = enviar_pdf_por_correo(
+                        correo_cliente,
+                        f"CREDDT CRNTECH | Abono a capital crédito {prestamo_id}",
+                        cuerpo,
+                        pdf,
+                        f"abono_capital_{prestamo_id}.pdf",
+                        html_override=html_correo
+                    )
+                else:
+                    correo_error = "Cliente sin correo registrado"
+            finally:
+                if pdf and os.path.exists(pdf):
+                    try:
+                        os.remove(pdf)
+                    except Exception:
+                        pass
+            return {
+                "ok": True,
+                "credito": prestamo_id,
+                "valor": valor_abono,
+                "nueva_cuota": nuevo_interes_30,
+                "saldo_capital": nuevo_saldo_capital,
+                "interes_libre": True,
+                "correo": correo_ok,
+                "tiene_correo": bool(correo_cliente),
+                "correo_error": correo_error
+            }
+
         cuotas_pendientes = conn.execute(text("""
             SELECT id_cuota, nro_cuota
             FROM cuotas
@@ -2929,10 +3234,6 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
         """), {"id": prestamo_id}).fetchall()
         if not cuotas_pendientes:
             return {"ok": False, "error": "No hay cuotas pendientes para recalcular"}
-        saldo_capital_actual = normalizar_decimal(prestamo_db["saldo_capital"])
-        if valor_abono >= saldo_capital_actual:
-            return {"ok": False, "error": "El abono a capital no puede ser igual o mayor al saldo capital actual"}
-        nuevo_saldo_capital = saldo_capital_actual - valor_abono
         cuotas_restantes = len(cuotas_pendientes)
         nueva_cuota = Decimal(str(calcular_cuota_amortizada(nuevo_saldo_capital, prestamo_db["tasa_mensual"], cuotas_restantes))).quantize(Decimal("0.01"))
         result_pago = conn.execute(text("""
@@ -2978,22 +3279,26 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
     correo_error = None
     try:
         pdf = generar_recibo_pdf(prestamo_id, nombre_cliente, prestamo_db["monto_original"], fecha_pago.isoformat(), valor_abono, titulo="RECIBO DE ABONO A CAPITAL", subtitulo="ABONO A CAPITAL")
-        cuerpo = construir_cuerpo_correo(
-            "RECIBO_ABONO",
-            nombre_cliente,
+        kwargs = dict(
             prestamo_id=prestamo_id,
+            tipo_credito=prestamo_db.get("tipo"),
             fecha_pago=fecha_pago.isoformat(),
+            capital_anterior=saldo_capital_actual,
             valor=valor_abono,
             saldo_capital=nuevo_saldo_capital,
-            nueva_cuota=nueva_cuota
+            nueva_cuota=nueva_cuota,
+            cuotas_pendientes=cuotas_restantes
         )
+        cuerpo = construir_cuerpo_correo("RECIBO_ABONO", nombre_cliente, **kwargs)
+        html_correo = construir_html_correo("RECIBO_ABONO", nombre_cliente, **kwargs)
         if correo_cliente:
             correo_ok, correo_error = enviar_pdf_por_correo(
                 correo_cliente,
                 f"Abono a capital crédito {prestamo_id}",
                 cuerpo,
                 pdf,
-                f"abono_capital_{prestamo_id}.pdf"
+                f"abono_capital_{prestamo_id}.pdf",
+                html_override=html_correo
             )
         else:
             correo_error = "Cliente sin correo registrado"
@@ -3012,9 +3317,7 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
         "tiene_correo": bool(correo_cliente),
         "correo_error": correo_error
     }
-# =========================
-# ENVÍO DE CORREO
-# =========================
+
 def enviar_correo_brevo(
         destino,
         asunto,

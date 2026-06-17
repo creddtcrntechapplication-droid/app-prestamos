@@ -271,7 +271,7 @@ def load_cuotas_periodo(inicio_iso, fin_iso):
                 JOIN clientes c ON c.cedula = p.cliente_cedula
                 WHERE (COALESCE(p.tipo_credito, '') = 'interes_libre'
                        OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre', 'solo interes libre', 'solo interés libre'))
-                  AND (LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo' OR COALESCE(p.contrato_aceptado, 0) = 1)
+                  AND (LOWER(TRIM(COALESCE(p.estado, ''))) IN ('activo', 'pendiente') OR COALESCE(p.contrato_aceptado, 0) = 1)
                   AND COALESCE(p.contrato_cancelado, 0) = 0
             )
             SELECT
@@ -329,7 +329,7 @@ def load_cuotas_proyeccion(inicio_iso, fin_iso):
                 JOIN clientes c ON c.cedula = p.cliente_cedula
                 WHERE (COALESCE(p.tipo_credito, '') = 'interes_libre'
                        OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre', 'solo interes libre', 'solo interés libre'))
-                  AND (LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo' OR COALESCE(p.contrato_aceptado, 0) = 1)
+                  AND (LOWER(TRIM(COALESCE(p.estado, ''))) IN ('activo', 'pendiente') OR COALESCE(p.contrato_aceptado, 0) = 1)
                   AND COALESCE(p.contrato_cancelado, 0) = 0
             )
             SELECT
@@ -408,10 +408,12 @@ def load_kpis_financieros():
                         NULLIF(pa.fecha_proximo_interes::text, '')::date,
                         (COALESCE(NULLIF(pa.fecha_desembolso::text, ''), NULLIF(pa.fecha_inicio::text, ''))::date + INTERVAL '30 day')::date
                     ) AS fecha_proximo_interes
-                FROM prestamos_activos pa
-                WHERE (COALESCE(pa.tipo_credito, '') = 'interes_libre'
-                       OR LOWER(TRIM(COALESCE(pa.tipo, ''))) IN ('interes libre', 'interés libre', 'solo interes libre', 'solo interés libre'))
+                FROM prestamos pa
+                WHERE LOWER(TRIM(COALESCE(pa.estado, ''))) IN ('activo', 'pendiente')
                   AND COALESCE(pa.contrato_cancelado, 0) = 0
+                  AND (COALESCE(pa.contrato_aceptado, 0) = 1 OR LOWER(TRIM(COALESCE(pa.estado, ''))) IN ('activo', 'pendiente'))
+                  AND (COALESCE(pa.tipo_credito, '') = 'interes_libre'
+                       OR LOWER(TRIM(COALESCE(pa.tipo, ''))) IN ('interes libre', 'interés libre', 'solo interes libre', 'solo interés libre'))
             ),
             cuotas_pendientes AS (
                 SELECT COALESCE(SUM(cu.valor_cuota), 0) AS total

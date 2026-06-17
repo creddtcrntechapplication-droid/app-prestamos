@@ -271,7 +271,8 @@ def load_cuotas_periodo(inicio_iso, fin_iso):
                 JOIN clientes c ON c.cedula = p.cliente_cedula
                 WHERE (COALESCE(p.tipo_credito, '') = 'interes_libre'
                        OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre', 'solo interes libre', 'solo interés libre'))
-                  AND (LOWER(TRIM(COALESCE(p.estado, ''))) IN ('activo', 'pendiente') OR COALESCE(p.contrato_aceptado, 0) = 1)
+                  AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
+                  AND COALESCE(p.contrato_aceptado, 0) = 1
                   AND COALESCE(p.contrato_cancelado, 0) = 0
             )
             SELECT
@@ -329,7 +330,8 @@ def load_cuotas_proyeccion(inicio_iso, fin_iso):
                 JOIN clientes c ON c.cedula = p.cliente_cedula
                 WHERE (COALESCE(p.tipo_credito, '') = 'interes_libre'
                        OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre', 'solo interes libre', 'solo interés libre'))
-                  AND (LOWER(TRIM(COALESCE(p.estado, ''))) IN ('activo', 'pendiente') OR COALESCE(p.contrato_aceptado, 0) = 1)
+                  AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
+                  AND COALESCE(p.contrato_aceptado, 0) = 1
                   AND COALESCE(p.contrato_cancelado, 0) = 0
             )
             SELECT
@@ -409,9 +411,9 @@ def load_kpis_financieros():
                         (COALESCE(NULLIF(pa.fecha_desembolso::text, ''), NULLIF(pa.fecha_inicio::text, ''))::date + INTERVAL '30 day')::date
                     ) AS fecha_proximo_interes
                 FROM prestamos pa
-                WHERE LOWER(TRIM(COALESCE(pa.estado, ''))) IN ('activo', 'pendiente')
+                WHERE LOWER(TRIM(COALESCE(pa.estado, ''))) = 'activo'
+                  AND COALESCE(pa.contrato_aceptado, 0) = 1
                   AND COALESCE(pa.contrato_cancelado, 0) = 0
-                  AND (COALESCE(pa.contrato_aceptado, 0) = 1 OR LOWER(TRIM(COALESCE(pa.estado, ''))) IN ('activo', 'pendiente'))
                   AND (COALESCE(pa.tipo_credito, '') = 'interes_libre'
                        OR LOWER(TRIM(COALESCE(pa.tipo, ''))) IN ('interes libre', 'interés libre', 'solo interes libre', 'solo interés libre'))
             ),
@@ -1478,6 +1480,42 @@ def limpiar_cuotas_creditos_no_vigentes():
     clear_app_caches()
 
 limpiar_cuotas_creditos_no_vigentes()
+
+
+def normalizar_fechas_interes_libre_aceptados():
+    """Ajusta créditos Interés libre antiguos a la regla: aceptación + 30 días.
+
+    Solo toca créditos activos/aceptados que aún conservan una fecha próxima
+    anterior a aceptación + 30 y que no tienen un corte posterior registrado.
+    No modifica créditos anulados/cancelados ni créditos ya movidos por pagos.
+    """
+    try:
+        with get_conn() as conn:
+            conn.execute(text("""
+                UPDATE prestamos
+                SET fecha_ultimo_corte_interes = fecha_aceptacion::date::text,
+                    fecha_proximo_interes = (fecha_aceptacion::date + INTERVAL '30 day')::date::text,
+                    valor_cuota = ROUND(COALESCE(saldo_capital, monto_original) * COALESCE(tasa_mensual, 0), 2)
+                WHERE (COALESCE(tipo_credito, '') = 'interes_libre'
+                       OR LOWER(TRIM(COALESCE(tipo, ''))) IN ('interes libre', 'interés libre', 'solo interes libre', 'solo interés libre'))
+                  AND LOWER(TRIM(COALESCE(estado, ''))) = 'activo'
+                  AND COALESCE(contrato_aceptado, 0) = 1
+                  AND COALESCE(contrato_cancelado, 0) = 0
+                  AND NULLIF(fecha_aceptacion::text, '') IS NOT NULL
+                  AND (
+                      NULLIF(fecha_ultimo_corte_interes::text, '') IS NULL
+                      OR NULLIF(fecha_ultimo_corte_interes::text, '')::date <= fecha_aceptacion::date
+                  )
+                  AND (
+                      NULLIF(fecha_proximo_interes::text, '') IS NULL
+                      OR NULLIF(fecha_proximo_interes::text, '')::date < (fecha_aceptacion::date + INTERVAL '30 day')::date
+                  )
+            """))
+            conn.commit()
+    except Exception:
+        pass
+
+normalizar_fechas_interes_libre_aceptados()
 
 def asegurar_estructura_control_financiero():
     with get_conn() as conn:
@@ -2769,12 +2807,13 @@ def aceptar_contrato_por_token(token):
                 fecha_desembolso = COALESCE(fecha_desembolso, :fecha)
             WHERE id = :id
         """), {"fecha": ahora_local().isoformat(timespec='seconds'), "id": prestamo["id"]})
-        if str(prestamo.get("tipo_credito") or "").strip().lower() == "interes_libre":
+        if es_credito_interes_libre_valor(prestamo.get("tipo_credito"), prestamo.get("tipo")):
             fecha_base = hoy_local()
             conn.execute(text("""
                 UPDATE prestamos
-                SET fecha_ultimo_corte_interes = COALESCE(fecha_ultimo_corte_interes, :fecha_base),
-                    fecha_proximo_interes = COALESCE(fecha_proximo_interes, :fecha_proximo)
+                SET fecha_ultimo_corte_interes = :fecha_base,
+                    fecha_proximo_interes = :fecha_proximo,
+                    valor_cuota = ROUND(COALESCE(saldo_capital, monto_original) * COALESCE(tasa_mensual, 0), 2)
                 WHERE id = :id
             """), {"fecha_base": fecha_base.isoformat(), "fecha_proximo": (fecha_base + timedelta(days=30)).isoformat(), "id": prestamo["id"]})
         conn.commit()

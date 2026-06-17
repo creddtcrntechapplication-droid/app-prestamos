@@ -1531,6 +1531,13 @@ def normalizar_fechas_interes_libre_aceptados():
                 UPDATE prestamos
                 SET tipo_credito = 'interes_libre',
                     tipo = 'Interés Libre',
+                    estado = CASE
+                        WHEN LOWER(TRIM(COALESCE(estado, ''))) = 'cancelado'
+                             AND COALESCE(saldo_capital, monto_original, 0) > 0
+                             AND fecha_cierre_manual IS NULL
+                        THEN 'Activo'
+                        ELSE estado
+                    END,
                     saldo_capital = COALESCE(saldo_capital, monto_original),
                     interes_acumulado = COALESCE(interes_acumulado, 0),
                     fecha_inicio = COALESCE(NULLIF(fecha_inicio::text, ''), NULLIF(fecha_desembolso::text, ''), NULLIF(fecha_aceptacion::text, ''), CURRENT_DATE::text),
@@ -1544,7 +1551,7 @@ def normalizar_fechas_interes_libre_aceptados():
                     OR LOWER(TRANSLATE(TRIM(COALESCE(tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
                     OR LOWER(TRANSLATE(TRIM(COALESCE(tipo, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
                 )
-                  AND LOWER(TRIM(COALESCE(estado, ''))) NOT IN ('anulado', 'cancelado')
+                  AND LOWER(TRIM(COALESCE(estado, ''))) <> 'anulado'
                   AND COALESCE(contrato_cancelado, 0) = 0
             """))
             conn.commit()
@@ -2613,38 +2620,69 @@ def calcular_interes_libre_a_fecha(prestamo_row, fecha_pago):
     interes_nuevo = (saldo_capital * tasa_mensual * Decimal(dias) / Decimal(30)).quantize(Decimal("0.01"))
     return (acumulado + interes_nuevo).quantize(Decimal("0.01")), dias
 
-def registrar_pago_interes_libre(prestamo_id, fecha_pago, valor_pago):
+def registrar_pago_interes_libre(prestamo_id, fecha_pago, valor_pago, modo_pago="interes"):
     valor_pago = normalizar_decimal(valor_pago)
+    modo_pago = str(modo_pago or "interes").strip().lower()
     if valor_pago <= 0:
         return {"ok": False, "error": "El valor pagado debe ser mayor a cero"}
+    if modo_pago not in ("interes", "finalizar"):
+        return {"ok": False, "error": "Modo de pago de interés libre inválido"}
+
     with get_conn() as conn:
         prestamo = conn.execute(text("""
             SELECT p.*, c.nombres || ' ' || c.apellidos AS cliente, c.correo
             FROM prestamos p
             JOIN clientes c ON c.cedula = p.cliente_cedula
             WHERE p.id = :id
-              AND (LOWER(REPLACE(REPLACE(TRIM(COALESCE(p.tipo_credito, '')), 'é', 'e'), 'É', 'e')) = 'interes_libre' OR LOWER(REPLACE(REPLACE(TRIM(COALESCE(p.tipo_credito, '')), 'é', 'e'), 'É', 'e')) IN ('interes libre', 'solo interes libre') OR LOWER(REPLACE(REPLACE(TRIM(COALESCE(p.tipo, '')), 'é', 'e'), 'É', 'e')) IN ('interes libre', 'solo interes libre'))
+              AND (
+                    LOWER(TRANSLATE(TRIM(COALESCE(p.tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) = 'interes_libre'
+                    OR LOWER(TRANSLATE(TRIM(COALESCE(p.tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
+                    OR LOWER(TRANSLATE(TRIM(COALESCE(p.tipo, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
+              )
         """), {"id": prestamo_id}).mappings().first()
         if not prestamo:
             return {"ok": False, "error": "No se encontró el crédito de interés libre"}
         if int(prestamo.get("contrato_cancelado", 0) or 0) == 1 or str(prestamo.get("estado") or "").strip().lower() in ("cancelado", "anulado"):
             return {"ok": False, "error": "Este crédito no está activo para recibir pagos"}
+
         interes_pendiente, dias = calcular_interes_libre_a_fecha(prestamo, fecha_pago)
         saldo_capital = normalizar_decimal(prestamo["saldo_capital"])
-        interes_pagado = min(valor_pago, interes_pendiente)
-        restante = valor_pago - interes_pagado
-        capital_pagado = min(restante, saldo_capital)
-        nuevo_interes = interes_pendiente - interes_pagado
-        nuevo_capital = saldo_capital - capital_pagado
-        fecha_proximo = fecha_pago + timedelta(days=30)
-        nuevo_estado = "Cancelado" if nuevo_capital <= 0 and nuevo_interes <= 0 else "Activo"
+
+        if modo_pago == "interes":
+            if interes_pendiente <= 0:
+                return {"ok": False, "error": "Este crédito no tiene interés pendiente para la fecha seleccionada"}
+            if valor_pago != interes_pendiente:
+                return {"ok": False, "error": f"Para pagar solo interés el valor debe ser exactamente {pesos(interes_pendiente)}. El capital no se abona desde esta opción."}
+            interes_pagado = interes_pendiente
+            capital_pagado = Decimal("0.00")
+            nuevo_interes = Decimal("0.00")
+            nuevo_capital = saldo_capital
+            nuevo_estado = "Activo"
+            fecha_proximo = fecha_pago + timedelta(days=30)
+            tipo_movimiento = "INTERES_LIBRE"
+            detalle = f"Pago cuota interés libre por {interes_pagado}"
+            fecha_cierre_manual = None
+        else:
+            total_esperado = (interes_pendiente + saldo_capital).quantize(Decimal("0.01"))
+            if valor_pago != total_esperado:
+                return {"ok": False, "error": f"Para finalizar la deuda el valor debe ser exactamente {pesos(total_esperado)}: interés {pesos(interes_pendiente)} + capital {pesos(saldo_capital)}."}
+            interes_pagado = interes_pendiente
+            capital_pagado = saldo_capital
+            nuevo_interes = Decimal("0.00")
+            nuevo_capital = Decimal("0.00")
+            nuevo_estado = "Cancelado"
+            fecha_proximo = None
+            tipo_movimiento = "CIERRE_INTERES_LIBRE"
+            detalle = f"Pago final interés libre: interés {interes_pagado}, capital {capital_pagado}"
+            fecha_cierre_manual = ahora_local().isoformat(timespec='seconds')
+
         result = conn.execute(text("""
             INSERT INTO pagos (
                 prestamo_id, fecha_pago, valor, estado, tipo_movimiento, detalle,
                 interes_pagado, capital_pagado, saldo_capital_anterior, saldo_capital_nuevo, cuota_numero
             )
             VALUES (
-                :id, :fecha, :valor, 'Pagado', 'INTERES_LIBRE', :detalle,
+                :id, :fecha, :valor, 'Pagado', :tipo_movimiento, :detalle,
                 :interes_pagado, :capital_pagado, :saldo_capital_anterior, :saldo_capital_nuevo, NULL
             )
             RETURNING id_pago
@@ -2652,7 +2690,8 @@ def registrar_pago_interes_libre(prestamo_id, fecha_pago, valor_pago):
             "id": prestamo_id,
             "fecha": fecha_pago.isoformat(),
             "valor": valor_pago,
-            "detalle": f"Pago interés libre: interés {interes_pagado}, capital {capital_pagado}",
+            "tipo_movimiento": tipo_movimiento,
+            "detalle": detalle,
             "interes_pagado": interes_pagado,
             "capital_pagado": capital_pagado,
             "saldo_capital_anterior": saldo_capital,
@@ -2666,23 +2705,27 @@ def registrar_pago_interes_libre(prestamo_id, fecha_pago, valor_pago):
                 fecha_ultimo_corte_interes = :fecha_corte,
                 fecha_proximo_interes = :fecha_proximo,
                 valor_cuota = ROUND(:saldo_capital * tasa_mensual, 2),
-                estado = :estado
+                estado = :estado,
+                fecha_cierre_manual = COALESCE(:fecha_cierre_manual, fecha_cierre_manual)
             WHERE id = :id
         """), {
             "id": prestamo_id,
             "saldo_capital": nuevo_capital,
             "interes_acumulado": nuevo_interes,
             "fecha_corte": fecha_pago.isoformat(),
-            "fecha_proximo": fecha_proximo.isoformat(),
+            "fecha_proximo": fecha_proximo.isoformat() if fecha_proximo else None,
             "estado": nuevo_estado,
+            "fecha_cierre_manual": fecha_cierre_manual,
         })
         conn.commit()
         clear_app_caches()
+
     pdf = None
     correo_ok = False
     correo_error = None
     try:
-        pdf = generar_recibo_pdf(prestamo_id, prestamo["cliente"], prestamo["monto_original"], fecha_pago.isoformat(), valor_pago, titulo="RECIBO DE PAGO INTERÉS LIBRE", subtitulo="VALOR PAGADO")
+        titulo_pdf = "RECIBO DE PAGO INTERÉS LIBRE" if modo_pago == "interes" else "RECIBO DE CIERRE INTERÉS LIBRE"
+        pdf = generar_recibo_pdf(prestamo_id, prestamo["cliente"], prestamo["monto_original"], fecha_pago.isoformat(), valor_pago, titulo=titulo_pdf, subtitulo="VALOR PAGADO")
         kwargs = dict(
             prestamo_id=prestamo_id,
             tipo_credito="Interés libre",
@@ -2693,7 +2736,7 @@ def registrar_pago_interes_libre(prestamo_id, fecha_pago, valor_pago):
             capital_pagado=capital_pagado,
             saldo_capital=nuevo_capital,
             interes_pendiente=nuevo_interes,
-            fecha_proximo_interes=fecha_proximo.isoformat(),
+            fecha_proximo_interes=fecha_proximo.isoformat() if fecha_proximo else "Crédito finalizado",
             tasa_interes=prestamo.get("tasa_mensual"),
             estado=nuevo_estado,
         )
@@ -2710,6 +2753,7 @@ def registrar_pago_interes_libre(prestamo_id, fecha_pago, valor_pago):
                 os.remove(pdf)
             except Exception:
                 pass
+
     return {
         "ok": True,
         "credito": prestamo_id,
@@ -2720,11 +2764,12 @@ def registrar_pago_interes_libre(prestamo_id, fecha_pago, valor_pago):
         "saldo_capital": nuevo_capital,
         "interes_pendiente": nuevo_interes,
         "dias": dias,
-        "fecha_proximo_interes": fecha_proximo.isoformat(),
+        "fecha_proximo_interes": fecha_proximo.isoformat() if fecha_proximo else "Finalizado",
+        "modo_pago": modo_pago,
         "correo": correo_ok,
         "tiene_correo": bool(prestamo.get("correo")),
         "correo_error": correo_error,
-        "finalizado": nuevo_estado == "Cancelado",
+        "finalizado": modo_pago == "finalizar",
     }
 
 def cerrar_credito_interes_libre(prestamo_id):
@@ -4653,14 +4698,30 @@ if tab_pagos:
                                 <div class='creddt-muted' style='font-size:13px;margin-top:4px;'>Interés estimado 30 días: {pesos(interes_30)} · Interés acumulado: {pesos(interes_acum)}</div>
                             </div>
                             """, unsafe_allow_html=True)
+                            interes_sugerido = float(interes_acum + interes_30)
+                            total_cierre = float((prestamo.saldo_capital or 0) + interes_sugerido)
                             with st.form("form_pago_interes_libre", clear_on_submit=True):
-                                fecha_pago_il = st.date_input("📅 Fecha de pago", value=hoy_local(), key="fecha_pago_interes_libre")
-                                valor_pago_il = st.number_input("Valor recibido", min_value=0.0, step=1000.0, value=0.0, key="valor_pago_interes_libre")
-                                submit_pago_il = st.form_submit_button("Registrar pago interés libre", type="primary", disabled=st.session_state.get("app_busy", False))
+                                fecha_pago_il = st.date_input("Fecha de pago", value=hoy_local(), key="fecha_pago_interes_libre")
+                                modo_pago_il = st.radio(
+                                    "Movimiento",
+                                    ["Pagar cuota interés", "Finalizar deuda"],
+                                    horizontal=True,
+                                    key="modo_pago_interes_libre"
+                                )
+                                if modo_pago_il == "Pagar cuota interés":
+                                    st.info(f"Se pagará solo el interés. Capital vigente: {pesos(prestamo.saldo_capital)}")
+                                    valor_default_il = interes_sugerido
+                                    modo_backend_il = "interes"
+                                else:
+                                    st.warning(f"Se pagará interés + capital y el crédito quedará cerrado. Total: {pesos(total_cierre)}")
+                                    valor_default_il = total_cierre
+                                    modo_backend_il = "finalizar"
+                                valor_pago_il = st.number_input("Valor recibido", min_value=0.0, step=1000.0, value=float(valor_default_il), key="valor_pago_interes_libre")
+                                submit_pago_il = st.form_submit_button("Registrar movimiento interés libre", type="primary", disabled=st.session_state.get("app_busy", False))
                             if submit_pago_il:
-                                start_busy("Aplicando pago interés libre...")
+                                start_busy("Aplicando movimiento interés libre...")
                                 try:
-                                    resultado = registrar_pago_interes_libre(prestamo.id, fecha_pago_il, valor_pago_il)
+                                    resultado = registrar_pago_interes_libre(prestamo.id, fecha_pago_il, valor_pago_il, modo_pago=modo_backend_il)
                                     if resultado.get("ok"):
                                         st.session_state.pago_msg = {"tipo": "INTERES_LIBRE", **resultado}
                                         st.session_state.reset_select_prestamo_pago = True
@@ -4669,15 +4730,6 @@ if tab_pagos:
                                         st.error(f"❌ {resultado.get('error')}")
                                 finally:
                                     stop_busy()
-                            if float(prestamo.saldo_capital or 0) <= 0 and interes_acum <= 0:
-                                if st.button("Cerrar crédito interés libre", key=f"cerrar_il_{prestamo.id}", disabled=st.session_state.get("app_busy", False)):
-                                    ok_cierre, msg_cierre = cerrar_credito_interes_libre(prestamo.id)
-                                    if ok_cierre:
-                                        st.success(f"✅ {msg_cierre}")
-                                        st.session_state.reset_select_prestamo_pago = True
-                                        st.rerun()
-                                    else:
-                                        st.warning(msg_cierre)
                         elif not proxima_cuota:
                             st.info("ℹ️ Este crédito no tiene cuotas pendientes.")
                         else:

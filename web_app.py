@@ -2617,7 +2617,11 @@ def calcular_interes_libre_a_fecha(prestamo_row, fecha_pago):
     acumulado = normalizar_decimal(prestamo_row.get("interes_acumulado", 0))
     fecha_base = _fecha_iso_a_date(prestamo_row.get("fecha_ultimo_corte_interes") or prestamo_row.get("fecha_inicio"), fecha_pago)
     dias = max((fecha_pago - fecha_base).days, 0)
-    interes_nuevo = (saldo_capital * tasa_mensual * Decimal(dias) / Decimal(30)).quantize(Decimal("0.01"))
+    # El interés NO se prorratea por días de mora ni se reduce por pago anticipado:
+    # se cobra siempre la tasa mensual pactada sobre el saldo de capital, sin importar
+    # si el pago cae exactamente a los 30 días, antes o después. "dias" se conserva solo
+    # como dato informativo (para mostrar cuántos días han pasado), no participa en el cálculo.
+    interes_nuevo = (saldo_capital * tasa_mensual).quantize(Decimal("0.01"))
     return (acumulado + interes_nuevo).quantize(Decimal("0.01")), dias
 
 def registrar_pago_interes_libre(prestamo_id, fecha_pago, valor_pago, modo_pago="interes"):
@@ -2648,13 +2652,19 @@ def registrar_pago_interes_libre(prestamo_id, fecha_pago, valor_pago, modo_pago=
         interes_pendiente, dias = calcular_interes_libre_a_fecha(prestamo, fecha_pago)
         saldo_capital = normalizar_decimal(prestamo["saldo_capital"])
 
+        # El ciclo de pago se mantiene fijo cada 30 días desde el cronograma original
+        # (fecha_proximo_interes ya programada), y NO desde la fecha real de pago.
+        # Así, pagar tarde no corre el calendario hacia adelante ni genera un cobro
+        # adicional por los días de mora: el interés siempre es la tasa mensual plana.
+        fecha_ciclo_programado = _fecha_iso_a_date(prestamo.get("fecha_proximo_interes"), fecha_pago)
+
         tolerancia = Decimal("1.00")  # tolerancia de redondeo en pesos para absorber diferencias float/Decimal
 
         if modo_pago == "interes":
             if interes_pendiente <= 0:
                 return {"ok": False, "error": "Este crédito no tiene interés pendiente para la fecha seleccionada"}
             if abs(valor_pago - interes_pendiente) > tolerancia:
-                return {"ok": False, "error": f"Para pagar solo interés el valor debe ser aproximadamente {pesos(interes_pendiente)} (interés calculado a la fecha de pago). El capital no se abona desde esta opción."}
+                return {"ok": False, "error": f"Para pagar solo interés el valor debe ser aproximadamente {pesos(interes_pendiente)} (tasa mensual pactada sobre el capital vigente). El capital no se abona desde esta opción."}
             # Se usa el interés calculado por el sistema (fuente de verdad) y no el valor tecleado,
             # para evitar que pequeñas diferencias de redondeo dejen saldos de centavos sueltos.
             valor_pago = interes_pendiente
@@ -2663,7 +2673,7 @@ def registrar_pago_interes_libre(prestamo_id, fecha_pago, valor_pago, modo_pago=
             nuevo_interes = Decimal("0.00")
             nuevo_capital = saldo_capital
             nuevo_estado = "Activo"
-            fecha_proximo = fecha_pago + timedelta(days=30)
+            fecha_proximo = fecha_ciclo_programado + timedelta(days=30)
             tipo_movimiento = "INTERES_LIBRE"
             detalle = f"Pago cuota interés libre por {interes_pagado}"
             fecha_cierre_manual = None
@@ -2718,7 +2728,7 @@ def registrar_pago_interes_libre(prestamo_id, fecha_pago, valor_pago, modo_pago=
             "id": prestamo_id,
             "saldo_capital": nuevo_capital,
             "interes_acumulado": nuevo_interes,
-            "fecha_corte": fecha_pago.isoformat(),
+            "fecha_corte": fecha_ciclo_programado.isoformat(),
             "fecha_proximo": fecha_proximo.isoformat() if fecha_proximo else None,
             "estado": nuevo_estado,
             "fecha_cierre_manual": fecha_cierre_manual,
@@ -2918,7 +2928,9 @@ def procesar_recordatorios_automaticos():
     with get_conn() as conn:
         rows = conn.execute(text("""
             SELECT cu.id_cuota, cu.prestamo_id, cu.nro_cuota, cu.fecha_vencimiento::date AS fecha_vencimiento, cu.valor_cuota,
-                   c.nombres || ' ' || c.apellidos AS cliente, c.correo
+                   c.nombres || ' ' || c.apellidos AS cliente, c.correo,
+                   (SELECT COUNT(*) FROM cuotas cu2 WHERE cu2.prestamo_id = cu.prestamo_id AND cu2.estado <> 'Pagada') AS cuotas_pendientes,
+                   (SELECT COALESCE(SUM(cu2.valor_cuota), 0) FROM cuotas cu2 WHERE cu2.prestamo_id = cu.prestamo_id AND cu2.estado <> 'Pagada') AS saldo_pendiente
             FROM cuotas cu
             JOIN prestamos p ON p.id = cu.prestamo_id
             JOIN clientes c ON c.cedula = p.cliente_cedula
@@ -2937,8 +2949,8 @@ def procesar_recordatorios_automaticos():
             ya = conn.execute(text("SELECT COUNT(*) FROM reminders_sent WHERE id_cuota = :id_cuota AND tipo_recordatorio = :tipo"), {"id_cuota": r['id_cuota'], "tipo": tipo_r}).scalar()
             if int(ya or 0) > 0:
                 continue
-            cuerpo = construir_cuerpo_correo('RECORDATORIO', r['cliente'], prestamo_id=r['prestamo_id'], cuota_nro=r['nro_cuota'], fecha_vencimiento=r['fecha_vencimiento'], valor=r['valor_cuota'])
-            html_correo = construir_html_correo('RECORDATORIO', r['cliente'], prestamo_id=r['prestamo_id'], cuota_nro=r['nro_cuota'], fecha_vencimiento=r['fecha_vencimiento'], valor=r['valor_cuota'])
+            cuerpo = construir_cuerpo_correo('RECORDATORIO', r['cliente'], prestamo_id=r['prestamo_id'], cuota_nro=r['nro_cuota'], fecha_vencimiento=r['fecha_vencimiento'], valor=r['valor_cuota'], cuotas_pendientes=r['cuotas_pendientes'], saldo_pendiente=r['saldo_pendiente'])
+            html_correo = construir_html_correo('RECORDATORIO', r['cliente'], prestamo_id=r['prestamo_id'], cuota_nro=r['nro_cuota'], fecha_vencimiento=r['fecha_vencimiento'], valor=r['valor_cuota'], cuotas_pendientes=r['cuotas_pendientes'], saldo_pendiente=r['saldo_pendiente'])
             ok, _ = enviar_correo_async(r['correo'], f"CREDDT CRNTECH | Recordatorio de pago del crédito {r['prestamo_id']}", cuerpo, html_override=html_correo)
             if ok:
                 conn.execute(text("INSERT INTO reminders_sent (id_cuota, tipo_recordatorio, fecha_envio) VALUES (:id_cuota, :tipo, :fecha_envio)"), {"id_cuota": r['id_cuota'], "tipo": tipo_r, "fecha_envio": ahora_local().isoformat(timespec='seconds')})
@@ -3058,7 +3070,9 @@ def enviar_recordatorio_credito(prestamo_row):
         )
     with get_conn() as conn:
         proxima = conn.execute(text("""
-            SELECT cu.id_cuota, cu.nro_cuota, cu.valor_cuota, cu.fecha_vencimiento, cu.estado
+            SELECT cu.id_cuota, cu.nro_cuota, cu.valor_cuota, cu.fecha_vencimiento, cu.estado,
+                   (SELECT COUNT(*) FROM cuotas cu2 WHERE cu2.prestamo_id = cu.prestamo_id AND cu2.estado <> 'Pagada') AS cuotas_pendientes,
+                   (SELECT COALESCE(SUM(cu2.valor_cuota), 0) FROM cuotas cu2 WHERE cu2.prestamo_id = cu.prestamo_id AND cu2.estado <> 'Pagada') AS saldo_pendiente
             FROM cuotas cu
             JOIN prestamos p ON p.id = cu.prestamo_id
             WHERE cu.prestamo_id = :id
@@ -3077,7 +3091,9 @@ def enviar_recordatorio_credito(prestamo_row):
         prestamo_id=prestamo_row["id"],
         cuota_nro=proxima[1],
         fecha_vencimiento=proxima[3],
-        valor=proxima[2]
+        valor=proxima[2],
+        cuotas_pendientes=proxima[5],
+        saldo_pendiente=proxima[6]
     )
     return enviar_correo_async(
         prestamo_row["correo"],
@@ -4779,10 +4795,9 @@ if tab_pagos:
                             </div>
                             """, unsafe_allow_html=True)
 
-                            # Fecha y tipo de movimiento van FUERA del form para que sean reactivos:
-                            # al cambiarlos, la app recalcula el interés exacto con la misma fórmula
-                            # que usa el backend (prorrateada por días reales), evitando que el valor
-                            # sugerido en pantalla no coincida con el que exige el registro del pago.
+                            # Fecha y tipo de movimiento van FUERA del form para que sean reactivos.
+                            # El interés es SIEMPRE la tasa mensual pactada sobre el capital vigente:
+                            # no se prorratea por días de mora ni se reduce por pago anticipado.
                             fecha_pago_il = st.date_input("Fecha de pago", value=hoy_local(), key="fecha_pago_interes_libre")
                             modo_pago_il = st.radio(
                                 "Movimiento",
@@ -4797,12 +4812,17 @@ if tab_pagos:
                                 "interes_acumulado": getattr(prestamo, "interes_acumulado", 0),
                                 "fecha_ultimo_corte_interes": getattr(prestamo, "fecha_ultimo_corte_interes", None),
                             }
-                            interes_exacto, dias_exactos = calcular_interes_libre_a_fecha(prestamo_calc, fecha_pago_il)
+                            interes_exacto, _dias_informativos = calcular_interes_libre_a_fecha(prestamo_calc, fecha_pago_il)
                             saldo_capital_dec = normalizar_decimal(prestamo.saldo_capital)
                             total_cierre_exacto = (interes_exacto + saldo_capital_dec).quantize(Decimal("0.01"))
 
+                            fecha_prox_date = _fecha_iso_a_date(getattr(prestamo, "fecha_proximo_interes", None), fecha_pago_il)
+                            dias_mora = (fecha_pago_il - fecha_prox_date).days
+                            if dias_mora > 0:
+                                st.caption(f"⚠️ {dias_mora} día(s) en mora frente a la fecha programada ({fecha_prox_date.isoformat()}). El interés no aumenta por la mora, se mantiene fijo en la tasa mensual pactada.")
+
                             if modo_pago_il == "Pagar cuota interés":
-                                st.info(f"Se pagará solo el interés calculado a {dias_exactos} día(s): {pesos(interes_exacto)}. Capital vigente: {pesos(prestamo.saldo_capital)}")
+                                st.info(f"Se pagará el interés fijo del ciclo (tasa mensual sobre el capital vigente): {pesos(interes_exacto)}. Capital vigente: {pesos(prestamo.saldo_capital)}")
                                 valor_a_pagar = interes_exacto
                                 modo_backend_il = "interes"
                             else:

@@ -3265,6 +3265,16 @@ def registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=None, valor_p
             FROM cuotas
             WHERE prestamo_id = :id AND estado <> 'Pagada'
         """), {"id": prestamo_id}).scalar() or 0) == 0
+        cuotas_pendientes_restantes = conn.execute(text("""
+            SELECT COUNT(*)
+            FROM cuotas
+            WHERE prestamo_id = :id AND estado <> 'Pagada'
+        """), {"id": prestamo_id}).scalar() or 0
+        saldo_pendiente_restante = conn.execute(text("""
+            SELECT COALESCE(SUM(valor_cuota), 0)
+            FROM cuotas
+            WHERE prestamo_id = :id AND estado <> 'Pagada'
+        """), {"id": prestamo_id}).scalar() or 0
         conn.commit()
         clear_app_caches()
         cliente = obtener_datos_cliente(conn, prestamo_db["cliente_cedula"])
@@ -3281,7 +3291,9 @@ def registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=None, valor_p
             prestamo_id=prestamo_id,
             cuota_nro=f"{primera_cuota[1]}-{ultima_cuota[1]}" if primera_cuota[1] != ultima_cuota[1] else primera_cuota[1],
             fecha_pago=fecha_pago.isoformat(),
-            valor=valor_pago
+            valor=valor_pago,
+            cuotas_pendientes=cuotas_pendientes_restantes,
+            saldo_pendiente=saldo_pendiente_restante
         )
         if correo_cliente:
             correo_ok, correo_error = enviar_pdf_por_correo(
@@ -3296,7 +3308,9 @@ def registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=None, valor_p
                     prestamo_id=prestamo_id,
                     cuota_nro=f"{primera_cuota[1]}-{ultima_cuota[1]}" if primera_cuota[1] != ultima_cuota[1] else primera_cuota[1],
                     fecha_pago=fecha_pago.isoformat(),
-                    valor=valor_pago
+                    valor=valor_pago,
+                    cuotas_pendientes=cuotas_pendientes_restantes,
+                    saldo_pendiente=saldo_pendiente_restante
                 )
             )
             if finalizado:

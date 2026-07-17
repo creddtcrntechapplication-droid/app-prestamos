@@ -4,6 +4,7 @@ import os
 import hashlib
 import hmac
 import secrets
+import threading
 from streamlit.errors import StreamlitSecretNotFoundError
 import tempfile
 import base64
@@ -3768,7 +3769,7 @@ def enviar_correo_brevo(
             "https://api.brevo.com/v3/smtp/email",
             headers=headers,
             json=payload,
-            timeout=30
+            timeout=10
         )
 
         if response.status_code in (200, 201, 202):
@@ -3814,11 +3815,22 @@ if token_aceptar:
 # CARGAR ESTADO GENERAL
 # ==========================
 estado = load_estado().copy()
-if "recordatorios_auto" not in st.session_state:
-    try:
-        st.session_state.recordatorios_auto = procesar_recordatorios_automaticos()
-    except Exception:
-        st.session_state.recordatorios_auto = 0
+if "recordatorios_auto_lanzado" not in st.session_state:
+    st.session_state.recordatorios_auto_lanzado = True
+    st.session_state.recordatorios_auto = 0
+
+    def _procesar_recordatorios_en_segundo_plano():
+        # Antes esto se ejecutaba de forma sincrónica al cargar "Resumen",
+        # enviando los correos uno por uno y esperando hasta 30s por cada
+        # uno antes de poder mostrar la página. Ahora corre en un hilo
+        # aparte para que la app responda de inmediato; los recordatorios
+        # se siguen enviando igual, solo que sin congelar la pantalla.
+        try:
+            procesar_recordatorios_automaticos()
+        except Exception as e:
+            print(f"[recordatorios-segundo-plano] Error procesando recordatorios: {e}")
+
+    threading.Thread(target=_procesar_recordatorios_en_segundo_plano, daemon=True).start()
 # ==========================
 # CALCULAR ALERTAS
 # ==========================
@@ -3880,9 +3892,8 @@ tab_usuarios = SECCION_ACTIVA == "👤 Usuarios"
 # ==========================
 if tab_resumen:
     st.subheader("📊 Resumen general")
-    if st.session_state.get("recordatorios_auto", 0):
-        enviados_auto = st.session_state.get("recordatorios_auto", 0)
-        st.success(f"✅ Recordatorios automáticos enviados en esta sesión: {enviados_auto}")
+    if st.session_state.get("recordatorios_auto_lanzado"):
+        st.caption("🔔 Revisando y enviando recordatorios pendientes en segundo plano (no bloquea la app).")
 
     show_flash("sistema_msg")
     kpis_fin = load_kpis_financieros()

@@ -1,6 +1,9 @@
 import streamlit as st
 import pandas as pd
 import os
+import hashlib
+import hmac
+import secrets
 from streamlit.errors import StreamlitSecretNotFoundError
 import tempfile
 import base64
@@ -68,6 +71,28 @@ def get_conn():
     """Devuelve una conexión activa a la base de datos"""
     return engine.connect()
 
+def asegurar_funcion_es_interes_libre():
+    """Crea/actualiza la función SQL es_interes_libre(tipo_credito, tipo).
+    Se llama muy temprano en el arranque porque varias funciones de
+    estructura (asegurar_estructura_financiera, asegurar_estructura_control_financiero)
+    la usan en sus propias consultas."""
+    with get_conn() as conn:
+        conn.execute(text("""
+            CREATE OR REPLACE FUNCTION es_interes_libre(p_tipo_credito text, p_tipo text)
+            RETURNS boolean
+            LANGUAGE sql
+            IMMUTABLE
+            AS $$
+                SELECT
+                    LOWER(TRANSLATE(TRIM(COALESCE(p_tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) = 'interes_libre'
+                    OR LOWER(TRANSLATE(TRIM(COALESCE(p_tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
+                    OR LOWER(TRANSLATE(TRIM(COALESCE(p_tipo, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
+            $$;
+        """))
+        conn.commit()
+
+asegurar_funcion_es_interes_libre()
+
 def clear_app_caches():
     try:
         load_estado.cache_clear()
@@ -94,9 +119,7 @@ def load_estado():
                 p.tipo,
                 CASE
                     WHEN (
-                    LOWER(TRANSLATE(TRIM(COALESCE(p.tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) = 'interes_libre'
-                    OR LOWER(TRANSLATE(TRIM(COALESCE(p.tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
-                    OR LOWER(TRANSLATE(TRIM(COALESCE(p.tipo, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
+                    es_interes_libre(p.tipo_credito, p.tipo)
                 ) THEN 'interes_libre'
                     WHEN LOWER(TRIM(COALESCE(p.tipo, ''))) = 'express' THEN 'express'
                     ELSE COALESCE(NULLIF(p.tipo_credito, ''), 'normal')
@@ -121,9 +144,7 @@ def load_estado():
                 COALESCE(SUM(pg.valor),0) AS total_pagado,
                 CASE
                     WHEN (
-                    LOWER(TRANSLATE(TRIM(COALESCE(p.tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) = 'interes_libre'
-                    OR LOWER(TRANSLATE(TRIM(COALESCE(p.tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
-                    OR LOWER(TRANSLATE(TRIM(COALESCE(p.tipo, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
+                    es_interes_libre(p.tipo_credito, p.tipo)
                 )
                     THEN COALESCE(p.saldo_capital, p.monto_original) + COALESCE(p.interes_acumulado, 0)
                     ELSE COALESCE((
@@ -135,9 +156,7 @@ def load_estado():
                 END AS saldo,
                 COALESCE(SUM(pg.valor),0) + CASE
                     WHEN (
-                    LOWER(TRANSLATE(TRIM(COALESCE(p.tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) = 'interes_libre'
-                    OR LOWER(TRANSLATE(TRIM(COALESCE(p.tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
-                    OR LOWER(TRANSLATE(TRIM(COALESCE(p.tipo, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
+                    es_interes_libre(p.tipo_credito, p.tipo)
                 )
                     THEN COALESCE(p.saldo_capital, p.monto_original) + COALESCE(p.interes_acumulado, 0)
                     ELSE COALESCE((
@@ -191,7 +210,7 @@ def load_mora():
                         (COALESCE(NULLIF(p.fecha_desembolso::text, ''), NULLIF(p.fecha_inicio::text, ''))::date + INTERVAL '30 day')::date
                     ) AS fecha_vencimiento
                 FROM prestamos p
-                WHERE (LOWER(REPLACE(REPLACE(TRIM(COALESCE(p.tipo_credito, '')), 'é', 'e'), 'É', 'e')) = 'interes_libre' OR LOWER(REPLACE(REPLACE(TRIM(COALESCE(p.tipo_credito, '')), 'é', 'e'), 'É', 'e')) IN ('interes libre', 'solo interes libre') OR LOWER(REPLACE(REPLACE(TRIM(COALESCE(p.tipo, '')), 'é', 'e'), 'É', 'e')) IN ('interes libre', 'solo interes libre'))
+                WHERE (es_interes_libre(p.tipo_credito, p.tipo))
                   AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
                   AND COALESCE(p.contrato_aceptado, 0) = 1
                   AND COALESCE(p.contrato_cancelado, 0) = 0
@@ -205,7 +224,7 @@ def load_mora():
                   AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
                   AND COALESCE(p.contrato_aceptado, 0) = 1
                   AND COALESCE(p.contrato_cancelado, 0) = 0
-                  AND NOT (LOWER(REPLACE(REPLACE(TRIM(COALESCE(p.tipo_credito, '')), 'é', 'e'), 'É', 'e')) = 'interes_libre' OR LOWER(REPLACE(REPLACE(TRIM(COALESCE(p.tipo_credito, '')), 'é', 'e'), 'É', 'e')) IN ('interes libre', 'solo interes libre') OR LOWER(REPLACE(REPLACE(TRIM(COALESCE(p.tipo, '')), 'é', 'e'), 'É', 'e')) IN ('interes libre', 'solo interes libre'))
+                  AND NOT (es_interes_libre(p.tipo_credito, p.tipo))
                 UNION ALL
                 SELECT id AS prestamo_id, valor
                 FROM interes_libre
@@ -236,7 +255,7 @@ def load_detalle_mora():
                     ) AS fecha_vencimiento
                 FROM prestamos p
                 JOIN clientes c ON c.cedula = p.cliente_cedula
-                WHERE (LOWER(REPLACE(REPLACE(TRIM(COALESCE(p.tipo_credito, '')), 'é', 'e'), 'É', 'e')) = 'interes_libre' OR LOWER(REPLACE(REPLACE(TRIM(COALESCE(p.tipo_credito, '')), 'é', 'e'), 'É', 'e')) IN ('interes libre', 'solo interes libre') OR LOWER(REPLACE(REPLACE(TRIM(COALESCE(p.tipo, '')), 'é', 'e'), 'É', 'e')) IN ('interes libre', 'solo interes libre'))
+                WHERE (es_interes_libre(p.tipo_credito, p.tipo))
                   AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
                   AND COALESCE(p.contrato_cancelado, 0) = 0
             )
@@ -253,7 +272,7 @@ def load_detalle_mora():
               AND cu.fecha_vencimiento::date < :hoy
               AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
               AND COALESCE(p.contrato_cancelado, 0) = 0
-              AND NOT (LOWER(REPLACE(REPLACE(TRIM(COALESCE(p.tipo_credito, '')), 'é', 'e'), 'É', 'e')) = 'interes_libre' OR LOWER(REPLACE(REPLACE(TRIM(COALESCE(p.tipo_credito, '')), 'é', 'e'), 'É', 'e')) IN ('interes libre', 'solo interes libre') OR LOWER(REPLACE(REPLACE(TRIM(COALESCE(p.tipo, '')), 'é', 'e'), 'É', 'e')) IN ('interes libre', 'solo interes libre'))
+              AND NOT (es_interes_libre(p.tipo_credito, p.tipo))
             GROUP BY p.id, c.nombres, c.apellidos
             UNION ALL
             SELECT
@@ -287,9 +306,7 @@ def load_cuotas_periodo(inicio_iso, fin_iso):
                 FROM prestamos p
                 JOIN clientes c ON c.cedula = p.cliente_cedula
                 WHERE (
-                    LOWER(TRANSLATE(TRIM(COALESCE(p.tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) = 'interes_libre'
-                    OR LOWER(TRANSLATE(TRIM(COALESCE(p.tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
-                    OR LOWER(TRANSLATE(TRIM(COALESCE(p.tipo, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
+                    es_interes_libre(p.tipo_credito, p.tipo)
                 )
                   AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
                   AND COALESCE(p.contrato_cancelado, 0) = 0
@@ -313,9 +330,7 @@ def load_cuotas_periodo(inicio_iso, fin_iso):
               AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
               AND COALESCE(p.contrato_cancelado, 0) = 0
               AND NOT (
-                    LOWER(TRANSLATE(TRIM(COALESCE(p.tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) = 'interes_libre'
-                    OR LOWER(TRANSLATE(TRIM(COALESCE(p.tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
-                    OR LOWER(TRANSLATE(TRIM(COALESCE(p.tipo, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
+                    es_interes_libre(p.tipo_credito, p.tipo)
                 )
             UNION ALL
             SELECT
@@ -355,9 +370,7 @@ def load_cuotas_proyeccion(inicio_iso, fin_iso):
                 FROM prestamos p
                 JOIN clientes c ON c.cedula = p.cliente_cedula
                 WHERE (
-                    LOWER(TRANSLATE(TRIM(COALESCE(p.tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) = 'interes_libre'
-                    OR LOWER(TRANSLATE(TRIM(COALESCE(p.tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
-                    OR LOWER(TRANSLATE(TRIM(COALESCE(p.tipo, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
+                    es_interes_libre(p.tipo_credito, p.tipo)
                 )
                   AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
                   AND COALESCE(p.contrato_cancelado, 0) = 0
@@ -382,9 +395,7 @@ def load_cuotas_proyeccion(inicio_iso, fin_iso):
               AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
               AND COALESCE(p.contrato_cancelado, 0) = 0
               AND NOT (
-                    LOWER(TRANSLATE(TRIM(COALESCE(p.tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) = 'interes_libre'
-                    OR LOWER(TRANSLATE(TRIM(COALESCE(p.tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
-                    OR LOWER(TRANSLATE(TRIM(COALESCE(p.tipo, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
+                    es_interes_libre(p.tipo_credito, p.tipo)
                 )
             UNION ALL
             SELECT
@@ -444,9 +455,7 @@ def load_kpis_financieros():
                     ) AS fecha_proximo_interes
                 FROM prestamos pa
                 WHERE (
-                    LOWER(TRANSLATE(TRIM(COALESCE(pa.tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) = 'interes_libre'
-                    OR LOWER(TRANSLATE(TRIM(COALESCE(pa.tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
-                    OR LOWER(TRANSLATE(TRIM(COALESCE(pa.tipo, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
+                    es_interes_libre(pa.tipo_credito, pa.tipo)
                 )
                   AND LOWER(TRIM(COALESCE(pa.estado, ''))) = 'activo'
                   AND COALESCE(pa.contrato_cancelado, 0) = 0
@@ -459,9 +468,7 @@ def load_kpis_financieros():
                 WHERE cu.estado <> 'Pagada'
                   AND COALESCE(pa.contrato_cancelado, 0) = 0
                   AND NOT (
-                    LOWER(TRANSLATE(TRIM(COALESCE(pa.tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) = 'interes_libre'
-                    OR LOWER(TRANSLATE(TRIM(COALESCE(pa.tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
-                    OR LOWER(TRANSLATE(TRIM(COALESCE(pa.tipo, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
+                    es_interes_libre(pa.tipo_credito, pa.tipo)
                 )
             ),
             intereses_libres_pendientes AS (
@@ -478,9 +485,7 @@ def load_kpis_financieros():
                       AND cu.fecha_vencimiento::date < :hoy
                       AND COALESCE(pa.contrato_cancelado, 0) = 0
                       AND NOT (
-                    LOWER(TRANSLATE(TRIM(COALESCE(pa.tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) = 'interes_libre'
-                    OR LOWER(TRANSLATE(TRIM(COALESCE(pa.tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
-                    OR LOWER(TRANSLATE(TRIM(COALESCE(pa.tipo, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
+                    es_interes_libre(pa.tipo_credito, pa.tipo)
                 )
                     UNION ALL
                     SELECT COALESCE(SUM(interes_pendiente), 0) AS total
@@ -542,6 +547,111 @@ def ejecutar_sql(query, params=None, fetch=False):
 # ==========================
 # 🔐 USUARIO ADMIN
 # ==========================
+def _hash_password(password, salt=None):
+    """PBKDF2-HMAC-SHA256 con sal aleatoria. No requiere librerías externas."""
+    if salt is None:
+        salt = secrets.token_hex(16)
+    hash_hex = hashlib.pbkdf2_hmac(
+        "sha256", str(password).encode("utf-8"), salt.encode("utf-8"), 200_000
+    ).hex()
+    return hash_hex, salt
+
+def _verificar_password(password, hash_guardado, salt_guardado):
+    if not hash_guardado or not salt_guardado:
+        return False
+    hash_calculado, _ = _hash_password(password, salt_guardado)
+    return hmac.compare_digest(hash_calculado, hash_guardado)
+
+def cambiar_password(usuario, password_actual, password_nueva):
+    if not password_nueva or len(password_nueva) < 8:
+        return False, "La nueva contraseña debe tener al menos 8 caracteres"
+    with get_conn() as conn:
+        fila = conn.execute(text("""
+            SELECT password_hash, password_salt FROM usuarios WHERE usuario = :usuario
+        """), {"usuario": usuario}).mappings().first()
+        if not fila or not _verificar_password(password_actual, fila["password_hash"], fila["password_salt"]):
+            return False, "La contraseña actual no es correcta"
+        hash_hex, salt = _hash_password(password_nueva)
+        conn.execute(text("""
+            UPDATE usuarios SET password_hash = :hash_hex, password_salt = :salt, password = NULL
+            WHERE usuario = :usuario
+        """), {"hash_hex": hash_hex, "salt": salt, "usuario": usuario})
+        conn.commit()
+    return True, "Contraseña actualizada correctamente"
+
+ROLES_DISPONIBLES = ["ADMIN", "ASESOR", "CONSULTA"]
+
+def listar_usuarios():
+    with get_conn() as conn:
+        return conn.execute(text("""
+            SELECT usuario, rol FROM usuarios ORDER BY usuario
+        """)).mappings().all()
+
+def crear_usuario(usuario, password_inicial, rol):
+    usuario = (usuario or "").strip()
+    rol = (rol or "").strip().upper()
+    if not usuario:
+        return False, "Debes indicar un nombre de usuario"
+    if not password_inicial or len(password_inicial) < 8:
+        return False, "La contraseña inicial debe tener al menos 8 caracteres"
+    if rol not in ROLES_DISPONIBLES:
+        return False, "Rol inválido"
+    with get_conn() as conn:
+        existe = conn.execute(text("SELECT 1 FROM usuarios WHERE usuario = :usuario"), {"usuario": usuario}).first()
+        if existe:
+            return False, "Ese nombre de usuario ya existe"
+        hash_hex, salt = _hash_password(password_inicial)
+        conn.execute(text("""
+            INSERT INTO usuarios (usuario, password, password_hash, password_salt, rol)
+            VALUES (:usuario, NULL, :hash_hex, :salt, :rol)
+        """), {"usuario": usuario, "hash_hex": hash_hex, "salt": salt, "rol": rol})
+        conn.commit()
+    return True, f"Usuario '{usuario}' creado con rol {rol}"
+
+def actualizar_rol_usuario(usuario, nuevo_rol, usuario_actual):
+    nuevo_rol = (nuevo_rol or "").strip().upper()
+    if nuevo_rol not in ROLES_DISPONIBLES:
+        return False, "Rol inválido"
+    with get_conn() as conn:
+        if usuario == usuario_actual and nuevo_rol != "ADMIN":
+            admins_restantes = conn.execute(text("""
+                SELECT COUNT(*) FROM usuarios WHERE rol = 'ADMIN' AND usuario <> :usuario
+            """), {"usuario": usuario}).scalar()
+            if int(admins_restantes or 0) == 0:
+                return False, "No puedes quitarte el rol ADMIN: eres el único administrador"
+        conn.execute(text("UPDATE usuarios SET rol = :rol WHERE usuario = :usuario"), {"rol": nuevo_rol, "usuario": usuario})
+        conn.commit()
+    return True, f"Rol de '{usuario}' actualizado a {nuevo_rol}"
+
+def resetear_password_usuario(usuario, password_nueva):
+    if not password_nueva or len(password_nueva) < 8:
+        return False, "La nueva contraseña debe tener al menos 8 caracteres"
+    hash_hex, salt = _hash_password(password_nueva)
+    with get_conn() as conn:
+        conn.execute(text("""
+            UPDATE usuarios SET password_hash = :hash_hex, password_salt = :salt, password = NULL
+            WHERE usuario = :usuario
+        """), {"hash_hex": hash_hex, "salt": salt, "usuario": usuario})
+        conn.commit()
+    return True, f"Contraseña de '{usuario}' restablecida"
+
+def eliminar_usuario(usuario, usuario_actual):
+    if usuario == usuario_actual:
+        return False, "No puedes eliminar tu propio usuario mientras tienes la sesión abierta"
+    with get_conn() as conn:
+        fila = conn.execute(text("SELECT rol FROM usuarios WHERE usuario = :usuario"), {"usuario": usuario}).mappings().first()
+        if not fila:
+            return False, "Ese usuario no existe"
+        if fila["rol"] == "ADMIN":
+            admins_restantes = conn.execute(text("""
+                SELECT COUNT(*) FROM usuarios WHERE rol = 'ADMIN' AND usuario <> :usuario
+            """), {"usuario": usuario}).scalar()
+            if int(admins_restantes or 0) == 0:
+                return False, "No puedes eliminar al único administrador"
+        conn.execute(text("DELETE FROM usuarios WHERE usuario = :usuario"), {"usuario": usuario})
+        conn.commit()
+    return True, f"Usuario '{usuario}' eliminado"
+
 def init_usuario_admin():
     with get_conn() as conn:
         conn.execute(text("""
@@ -549,19 +659,51 @@ def init_usuario_admin():
                 id SERIAL PRIMARY KEY,
                 usuario TEXT UNIQUE,
                 password TEXT,
+                password_hash TEXT,
+                password_salt TEXT,
                 rol TEXT
             )
         """))
-        # Insertar admin si no existe
-        conn.execute(text("""
-            INSERT INTO usuarios (usuario, password, rol)
-            VALUES ('admin', 'Sandra*123', 'ADMIN')
-            ON CONFLICT (usuario) DO NOTHING
-        """))
- 
+        # Columnas nuevas si la tabla ya existía de antes
+        conn.execute(text("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS password_hash TEXT"))
+        conn.execute(text("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS password_salt TEXT"))
+
+        existe_admin = conn.execute(text("SELECT 1 FROM usuarios WHERE usuario = 'admin'")).first()
+        if not existe_admin:
+            # Solo se crea el admin la primera vez, con la clave tomada de la
+            # variable de entorno ADMIN_PASSWORD (nunca escrita en el código).
+            clave_inicial = get_config("ADMIN_PASSWORD", "")
+            if not clave_inicial:
+                st.error(
+                    "❌ No existe el usuario admin y no hay una variable de entorno "
+                    "ADMIN_PASSWORD configurada para crearlo. Configúrala en Render "
+                    "(Environment) y vuelve a intentar."
+                )
+                st.stop()
+            hash_hex, salt = _hash_password(clave_inicial)
+            conn.execute(text("""
+                INSERT INTO usuarios (usuario, password, password_hash, password_salt, rol)
+                VALUES ('admin', NULL, :hash_hex, :salt, 'ADMIN')
+                ON CONFLICT (usuario) DO NOTHING
+            """), {"hash_hex": hash_hex, "salt": salt})
+
+        # Migración de cualquier usuario que todavía tenga contraseña en texto
+        # plano en la columna vieja "password": se convierte a hash y se borra
+        # el texto plano, para que nunca quede una clave legible en la base.
+        pendientes_migrar = conn.execute(text("""
+            SELECT id, password FROM usuarios
+            WHERE password IS NOT NULL AND password <> '' AND password_hash IS NULL
+        """)).mappings().all()
+        for fila in pendientes_migrar:
+            hash_hex, salt = _hash_password(fila["password"])
+            conn.execute(text("""
+                UPDATE usuarios SET password_hash = :hash_hex, password_salt = :salt, password = NULL
+                WHERE id = :id
+            """), {"hash_hex": hash_hex, "salt": salt, "id": fila["id"]})
+
         conn.commit()
     clear_app_caches()
-  
+
 init_usuario_admin()
 # ==========================
 # 🔐 ACCESO OBLIGATORIO
@@ -800,16 +942,16 @@ if not st.session_state.auth and not token_aceptar:
         with get_conn() as conn:
             user = conn.execute(
                 text("""
-                    SELECT usuario, rol 
-                    FROM usuarios 
-                    WHERE usuario=:usuario AND password=:password
+                    SELECT usuario, rol, password_hash, password_salt
+                    FROM usuarios
+                    WHERE usuario=:usuario
                 """),
-                {"usuario": usuario, "password": clave}
-            ).fetchone()
-        if user:
+                {"usuario": usuario}
+            ).mappings().first()
+        if user and _verificar_password(clave, user["password_hash"], user["password_salt"]):
             st.session_state.auth = True
-            st.session_state.usuario = user[0]
-            st.session_state.rol = user[1]
+            st.session_state.usuario = user["usuario"]
+            st.session_state.rol = user["rol"]
             st.rerun()
         else:
             st.error("❌ Usuario o contraseña incorrectos")
@@ -857,6 +999,9 @@ if PUEDE_REGISTRAR_PAGOS:
 if PUEDE_USAR_SIMULADOR:
     MENU_LABELS.append("📈 Proyección")
     MENU_LABELS.append("🧮 Simulador")
+if ES_ADMIN:
+    MENU_LABELS.append("👤 Usuarios")
+MENU_LABELS.append("🔒 Mi cuenta")
 
 if "menu_activo" not in st.session_state or st.session_state.menu_activo not in MENU_LABELS:
     st.session_state.menu_activo = MENU_LABELS[0]
@@ -1495,7 +1640,7 @@ def asegurar_estructura_financiera():
                     ((COALESCE(NULLIF(fecha_desembolso, ''), NULLIF(fecha_inicio, ''))::date + INTERVAL '30 day')::date)::text
                 ),
                 valor_cuota = COALESCE(valor_cuota, ROUND(COALESCE(saldo_capital, monto_original) * COALESCE(tasa_mensual, 0), 2))
-            WHERE (LOWER(REPLACE(REPLACE(TRIM(COALESCE(tipo_credito, '')), 'é', 'e'), 'É', 'e')) = 'interes_libre' OR LOWER(REPLACE(REPLACE(TRIM(COALESCE(tipo_credito, '')), 'é', 'e'), 'É', 'e')) IN ('interes libre', 'solo interes libre') OR LOWER(REPLACE(REPLACE(TRIM(COALESCE(tipo, '')), 'é', 'e'), 'É', 'e')) IN ('interes libre', 'solo interes libre'))
+            WHERE es_interes_libre(tipo_credito, tipo)
               AND COALESCE(contrato_cancelado, 0) = 0
               AND LOWER(TRIM(COALESCE(estado, ''))) NOT IN ('anulado', 'cancelado')
               AND COALESCE(NULLIF(fecha_desembolso, ''), NULLIF(fecha_inicio, '')) IS NOT NULL
@@ -1546,11 +1691,7 @@ def normalizar_fechas_interes_libre_aceptados():
                         (COALESCE(NULLIF(fecha_inicio::text, ''), NULLIF(fecha_desembolso::text, ''), NULLIF(fecha_aceptacion::text, ''), CURRENT_DATE::text)::date + INTERVAL '30 day')::date::text
                     ),
                     valor_cuota = ROUND(COALESCE(saldo_capital, monto_original) * COALESCE(tasa_mensual, 0), 2)
-                WHERE (
-                    LOWER(TRANSLATE(TRIM(COALESCE(tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) = 'interes_libre'
-                    OR LOWER(TRANSLATE(TRIM(COALESCE(tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
-                    OR LOWER(TRANSLATE(TRIM(COALESCE(tipo, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
-                )
+                WHERE es_interes_libre(tipo_credito, tipo)
                   AND LOWER(TRIM(COALESCE(estado, ''))) <> 'anulado'
                   AND COALESCE(contrato_cancelado, 0) = 0
             """))
@@ -1741,7 +1882,7 @@ def show_flash(key):
         st.info(texto)
     st.session_state[key] = None
 
-for _flash_key in ["clientes_msg", "credito_msg", "detalle_msg", "contrato_msg", "recordatorios_msg", "sistema_msg"]:
+for _flash_key in ["clientes_msg", "credito_msg", "detalle_msg", "contrato_msg", "recordatorios_msg", "sistema_msg", "cuenta_msg", "usuarios_msg"]:
     if _flash_key not in st.session_state:
         st.session_state[_flash_key] = None
 
@@ -2652,9 +2793,7 @@ def registrar_pago_interes_libre(prestamo_id, fecha_pago, valor_pago, modo_pago=
             JOIN clientes c ON c.cedula = p.cliente_cedula
             WHERE p.id = :id
               AND (
-                    LOWER(TRANSLATE(TRIM(COALESCE(p.tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) = 'interes_libre'
-                    OR LOWER(TRANSLATE(TRIM(COALESCE(p.tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
-                    OR LOWER(TRANSLATE(TRIM(COALESCE(p.tipo, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
+                    es_interes_libre(p.tipo_credito, p.tipo)
               )
         """), {"id": prestamo_id}).mappings().first()
         if not prestamo:
@@ -2806,7 +2945,7 @@ def cerrar_credito_interes_libre(prestamo_id):
         prestamo = conn.execute(text("""
             SELECT id, COALESCE(saldo_capital, monto_original) AS saldo_capital, COALESCE(interes_acumulado, 0) AS interes_acumulado
             FROM prestamos
-            WHERE id = :id AND LOWER(REPLACE(REPLACE(TRIM(COALESCE(tipo_credito, '')), 'é', 'e'), 'É', 'e')) = 'interes_libre'
+            WHERE id = :id AND es_interes_libre(tipo_credito, tipo)
         """), {"id": prestamo_id}).mappings().first()
         if not prestamo:
             return False, "No se encontró el crédito de interés libre"
@@ -2952,7 +3091,7 @@ def procesar_recordatorios_automaticos():
               AND cu.fecha_vencimiento::date BETWEEN (CAST(:hoy AS date) - INTERVAL '5 day') AND (CAST(:hoy AS date) + INTERVAL '3 day')
               AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
               AND COALESCE(p.contrato_cancelado, 0) = 0
-              AND NOT ((LOWER(REPLACE(REPLACE(TRIM(COALESCE(p.tipo_credito, '')), 'é', 'e'), 'É', 'e')) = 'interes_libre' OR LOWER(REPLACE(REPLACE(TRIM(COALESCE(p.tipo_credito, '')), 'é', 'e'), 'É', 'e')) IN ('interes libre', 'solo interes libre') OR LOWER(REPLACE(REPLACE(TRIM(COALESCE(p.tipo, '')), 'é', 'e'), 'É', 'e')) IN ('interes libre', 'solo interes libre')) OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre'))
+              AND NOT ((es_interes_libre(p.tipo_credito, p.tipo)) OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre'))
         """), {"hoy": hoy_local().isoformat()}).mappings().all()
         for r in rows:
             dias = (r['fecha_vencimiento'] - hoy_local()).days
@@ -2987,7 +3126,7 @@ def procesar_recordatorios_automaticos():
               AND p.fecha_proximo_interes::date BETWEEN (CAST(:hoy AS date) - INTERVAL '5 day') AND (CAST(:hoy AS date) + INTERVAL '3 day')
               AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
               AND COALESCE(p.contrato_cancelado, 0) = 0
-              AND (LOWER(REPLACE(REPLACE(TRIM(COALESCE(p.tipo_credito, '')), 'é', 'e'), 'É', 'e')) = 'interes_libre' OR LOWER(REPLACE(REPLACE(TRIM(COALESCE(p.tipo_credito, '')), 'é', 'e'), 'É', 'e')) IN ('interes libre', 'solo interes libre') OR LOWER(REPLACE(REPLACE(TRIM(COALESCE(p.tipo, '')), 'é', 'e'), 'É', 'e')) IN ('interes libre', 'solo interes libre') OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre'))
+              AND (es_interes_libre(p.tipo_credito, p.tipo))
         """), {"hoy": hoy_local().isoformat()}).mappings().all()
         for r in rows_il:
             dias = (r['fecha_proximo_interes'] - hoy_local()).days
@@ -3092,7 +3231,7 @@ def enviar_recordatorio_credito(prestamo_row):
               AND cu.estado <> 'Pagada'
               AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
               AND COALESCE(p.contrato_cancelado, 0) = 0
-              AND NOT ((LOWER(REPLACE(REPLACE(TRIM(COALESCE(p.tipo_credito, '')), 'é', 'e'), 'É', 'e')) = 'interes_libre' OR LOWER(REPLACE(REPLACE(TRIM(COALESCE(p.tipo_credito, '')), 'é', 'e'), 'É', 'e')) IN ('interes libre', 'solo interes libre') OR LOWER(REPLACE(REPLACE(TRIM(COALESCE(p.tipo, '')), 'é', 'e'), 'É', 'e')) IN ('interes libre', 'solo interes libre')) OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre'))
+              AND NOT ((es_interes_libre(p.tipo_credito, p.tipo)) OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre'))
             ORDER BY cu.nro_cuota ASC
             LIMIT 1
         """), {"id": prestamo_row["id"]}).fetchone()
@@ -3734,6 +3873,8 @@ tab_detalle = SECCION_ACTIVA == "📄 Detalle por crédito"
 tab_pagos = SECCION_ACTIVA == "💰 Pagos"
 tab_proyeccion = SECCION_ACTIVA == "📈 Proyección"
 tab_sim = SECCION_ACTIVA == "🧮 Simulador"
+tab_cuenta = SECCION_ACTIVA == "🔒 Mi cuenta"
+tab_usuarios = SECCION_ACTIVA == "👤 Usuarios"
 # ==========================
 # 📊 RESUMEN
 # ==========================
@@ -4394,7 +4535,7 @@ if tab_creditos:
                             format_func=nombre_cliente,
                             index=0
                         )
-                        monto_normal_new = st.number_input("Monto a prestar", min_value=0.0, step=100000.0, value=1000000.0, key="nuevo_monto_normal")
+                        monto_normal_new = st.number_input("Monto a prestar", min_value=0.0, step=100000.0, value=0.0, key="nuevo_monto_normal", help="Escribe el valor exacto a prestar. El campo inicia en 0 para evitar confusiones.")
                         cuotas_normal_new = st.selectbox("Número de cuotas", [12, 15], key="nuevo_cuotas_normal")
                         frecuencia_normal_new = st.selectbox("Frecuencia", ["Mensual", "Quincenal"], key="nuevo_frec_normal")
                         fecha_inicio_normal = st.date_input("Fecha de inicio", value=hoy_local(), key="fecha_inicio_normal")
@@ -4434,7 +4575,7 @@ if tab_creditos:
                             format_func=nombre_cliente,
                             index=0
                         )
-                        monto_express_new = st.number_input("Monto a prestar", min_value=0.0, step=50000.0, value=300000.0, key="nuevo_monto_express")
+                        monto_express_new = st.number_input("Monto a prestar", min_value=0.0, step=50000.0, value=0.0, key="nuevo_monto_express", help="Escribe el valor exacto a prestar. El campo inicia en 0 para evitar confusiones.")
                         frecuencia_express_new = st.selectbox("Frecuencia", ["Mensual", "Quincenal"], key="nuevo_frec_express")
                         cuotas_express_new = 5 if frecuencia_express_new == "Mensual" else 6
                         fecha_inicio_express = st.date_input("Fecha de inicio", value=hoy_local(), key="fecha_inicio_express")
@@ -4476,8 +4617,8 @@ if tab_creditos:
                             format_func=nombre_cliente,
                             index=0
                         )
-                        monto_interes_libre = st.number_input("Capital a prestar", min_value=0.0, step=100000.0, value=1000000.0, key="nuevo_monto_interes_libre")
-                        tasa_interes_libre_pct = st.number_input("Tasa de interés cada 30 días (%)", min_value=0.0, max_value=100.0, step=0.5, value=10.0, key="nuevo_tasa_interes_libre")
+                        monto_interes_libre = st.number_input("Capital a prestar", min_value=0.0, step=100000.0, value=0.0, key="nuevo_monto_interes_libre", help="Escribe el valor exacto a prestar. El campo inicia en 0 para evitar confusiones.")
+                        tasa_interes_libre_pct = st.number_input("Tasa de interés cada 30 días (%)", min_value=0.0, max_value=100.0, step=0.5, value=0.0, key="nuevo_tasa_interes_libre", help="Escribe la tasa pactada. El campo inicia en 0 para evitar confusiones.")
                         fecha_inicio_interes_libre = st.date_input("Fecha de desembolso/inicio", value=hoy_local(), key="fecha_inicio_interes_libre")
                         interes_30 = monto_interes_libre * (tasa_interes_libre_pct / 100)
                         proximo_interes = fecha_inicio_interes_libre + timedelta(days=30)
@@ -5108,6 +5249,138 @@ if tab_sim:
                         f"🏦 Capital vigente hasta abono/pago: **{pesos(monto_il_sim)}**"
                     )
 
+
+# ==========================
+# 🔒 MI CUENTA
+# ==========================
+if tab_cuenta:
+    st.subheader("🔒 Mi cuenta")
+    show_flash("cuenta_msg")
+    st.markdown(f"**Usuario:** {st.session_state.get('usuario', '-')}")
+    st.markdown(f"**Rol:** {st.session_state.get('rol', '-')}")
+    st.divider()
+    st.markdown("### Cambiar contraseña")
+    with st.form("form_cambiar_password", clear_on_submit=True):
+        clave_actual = st.text_input("Contraseña actual", type="password", key="clave_actual_cuenta")
+        clave_nueva = st.text_input("Nueva contraseña", type="password", key="clave_nueva_cuenta", help="Mínimo 8 caracteres.")
+        clave_nueva_confirmar = st.text_input("Confirma la nueva contraseña", type="password", key="clave_nueva_confirmar_cuenta")
+        submit_cambiar_clave = st.form_submit_button("Actualizar contraseña", type="primary", disabled=st.session_state.get("app_busy", False))
+    if submit_cambiar_clave:
+        if not clave_actual or not clave_nueva or not clave_nueva_confirmar:
+            st.warning("ℹ️ Completa los tres campos para actualizar la contraseña.")
+        elif clave_nueva != clave_nueva_confirmar:
+            st.error("❌ La nueva contraseña y su confirmación no coinciden.")
+        elif clave_nueva == clave_actual:
+            st.warning("ℹ️ La nueva contraseña debe ser diferente a la actual.")
+        else:
+            start_busy("Actualizando contraseña...")
+            try:
+                ok_clave, msg_clave = cambiar_password(st.session_state.get("usuario", ""), clave_actual, clave_nueva)
+                if ok_clave:
+                    set_flash("cuenta_msg", "success", f"✅ {msg_clave}")
+                else:
+                    set_flash("cuenta_msg", "error", f"❌ {msg_clave}")
+                st.rerun()
+            finally:
+                stop_busy()
+
+# ==========================
+# 👤 GESTIÓN DE USUARIOS (solo ADMIN)
+# ==========================
+if tab_usuarios:
+    st.subheader("👤 Gestión de usuarios")
+    if not ES_ADMIN:
+        st.error("❌ No tienes permiso para ver esta sección.")
+    else:
+        show_flash("usuarios_msg")
+
+        with st.expander("ℹ️ Qué puede hacer cada rol", expanded=False):
+            st.markdown("""
+- **ADMIN**: acceso total — clientes, créditos, pagos, detalle, proyección/simulador,
+  borrar clientes, reconciliar histórico financiero y gestión de usuarios.
+- **ASESOR**: ver y registrar/gestionar clientes, crear créditos, ver contratos
+  pendientes, ver detalle por crédito, registrar pagos y usar el simulador.
+  No puede borrar clientes ni gestionar usuarios ni reconciliar el histórico financiero.
+- **CONSULTA**: solo lectura — ver clientes, ver detalle por crédito y usar el
+  simulador. No puede crear créditos, registrar pagos ni modificar nada.
+            """)
+
+        st.markdown("### Usuarios existentes")
+        usuarios_actuales = listar_usuarios()
+        if usuarios_actuales:
+            df_usuarios = pd.DataFrame(usuarios_actuales, columns=["usuario", "rol"])
+            st.dataframe(df_usuarios, use_container_width=True, hide_index=True)
+        else:
+            st.info("No hay usuarios registrados todavía.")
+
+        st.divider()
+        st.markdown("### ➕ Crear nuevo usuario")
+        with st.form("form_crear_usuario", clear_on_submit=True):
+            nuevo_usuario_nombre = st.text_input("Nombre de usuario", key="nuevo_usuario_nombre")
+            nuevo_usuario_password = st.text_input("Contraseña inicial", type="password", key="nuevo_usuario_password", help="Mínimo 8 caracteres. El usuario podrá cambiarla luego desde 'Mi cuenta'.")
+            nuevo_usuario_rol = st.selectbox("Rol", ROLES_DISPONIBLES, index=1, key="nuevo_usuario_rol")
+            submit_crear_usuario = st.form_submit_button("Crear usuario", type="primary", disabled=st.session_state.get("app_busy", False))
+        if submit_crear_usuario:
+            start_busy("Creando usuario...")
+            try:
+                ok_u, msg_u = crear_usuario(nuevo_usuario_nombre, nuevo_usuario_password, nuevo_usuario_rol)
+                set_flash("usuarios_msg", "success" if ok_u else "error", ("✅ " if ok_u else "❌ ") + msg_u)
+                st.rerun()
+            finally:
+                stop_busy()
+
+        st.divider()
+        st.markdown("### ✏️ Editar usuario existente")
+        nombres_usuarios = [u["usuario"] for u in usuarios_actuales]
+        if nombres_usuarios:
+            usuario_seleccionado = st.selectbox("Selecciona un usuario", nombres_usuarios, key="usuario_editar_sel")
+            rol_actual_sel = next((u["rol"] for u in usuarios_actuales if u["usuario"] == usuario_seleccionado), ROLES_DISPONIBLES[0])
+
+            ecol1, ecol2 = st.columns(2)
+            with ecol1:
+                st.markdown("**Cambiar rol**")
+                nuevo_rol_sel = st.selectbox(
+                    "Nuevo rol",
+                    ROLES_DISPONIBLES,
+                    index=ROLES_DISPONIBLES.index(rol_actual_sel) if rol_actual_sel in ROLES_DISPONIBLES else 0,
+                    key="rol_editar_sel"
+                )
+                if st.button("Actualizar rol", key="btn_actualizar_rol", disabled=st.session_state.get("app_busy", False)):
+                    start_busy("Actualizando rol...")
+                    try:
+                        ok_r, msg_r = actualizar_rol_usuario(usuario_seleccionado, nuevo_rol_sel, st.session_state.get("usuario", ""))
+                        set_flash("usuarios_msg", "success" if ok_r else "error", ("✅ " if ok_r else "❌ ") + msg_r)
+                        st.rerun()
+                    finally:
+                        stop_busy()
+
+            with ecol2:
+                st.markdown("**Restablecer contraseña**")
+                password_reset = st.text_input("Nueva contraseña", type="password", key="password_reset_admin")
+                if st.button("Restablecer contraseña", key="btn_reset_password", disabled=st.session_state.get("app_busy", False)):
+                    start_busy("Restableciendo contraseña...")
+                    try:
+                        ok_p, msg_p = resetear_password_usuario(usuario_seleccionado, password_reset)
+                        set_flash("usuarios_msg", "success" if ok_p else "error", ("✅ " if ok_p else "❌ ") + msg_p)
+                        st.rerun()
+                    finally:
+                        stop_busy()
+
+            st.markdown("**Eliminar usuario**")
+            confirmar_eliminar_usuario = st.checkbox(f"Confirmo que quiero eliminar a '{usuario_seleccionado}'", key="confirmar_eliminar_usuario")
+            if st.button("🗑️ Eliminar usuario", key="btn_eliminar_usuario", disabled=st.session_state.get("app_busy", False)):
+                if not confirmar_eliminar_usuario:
+                    st.warning("ℹ️ Marca la casilla de confirmación antes de eliminar.")
+                else:
+                    start_busy("Eliminando usuario...")
+                    try:
+                        ok_e, msg_e = eliminar_usuario(usuario_seleccionado, st.session_state.get("usuario", ""))
+                        set_flash("usuarios_msg", "success" if ok_e else "error", ("✅ " if ok_e else "❌ ") + msg_e)
+                        st.rerun()
+                    finally:
+                        stop_busy()
+        else:
+            st.info("No hay usuarios para editar todavía.")
 
 # Nota técnica:
 # - Crédito Normal y Crédito Express conservan su cálculo original de cuotas.

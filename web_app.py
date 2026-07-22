@@ -3801,14 +3801,25 @@ def enviar_correo_brevo(
 
         key_fingerprint = f"{BREVO_API_KEY[:6]}...{BREVO_API_KEY[-4:]}" if BREVO_API_KEY else "(vacía)"
         tam_adjunto = len(attachment_bytes) if attachment_bytes else 0
-        print(f"[brevo] -> Enviando a {destino} | asunto={asunto!r} | adjunto_bytes={tam_adjunto} | api_key={key_fingerprint} | from={BREVO_FROM_EMAIL}")
 
-        response = requests.post(
-            "https://api.brevo.com/v3/smtp/email",
-            headers=headers,
-            json=payload,
-            timeout=10
-        )
+        response = None
+        ultimo_timeout = None
+        for intento in (1, 2):
+            try:
+                print(f"[brevo] -> Intento {intento}: Enviando a {destino} | asunto={asunto!r} | adjunto_bytes={tam_adjunto} | api_key={key_fingerprint} | from={BREVO_FROM_EMAIL}")
+                response = requests.post(
+                    "https://api.brevo.com/v3/smtp/email",
+                    headers=headers,
+                    json=payload,
+                    timeout=30
+                )
+                break
+            except requests.Timeout:
+                ultimo_timeout = True
+                print(f"[brevo] TIMEOUT en intento {intento} enviando a {destino} | asunto={asunto!r}")
+                if intento == 2:
+                    return False, "Timeout conectando con Brevo (2 intentos, 30s cada uno)"
+                continue
 
         print(f"[brevo] <- Respuesta {response.status_code} para {destino} | asunto={asunto!r} | body={response.text[:500]}")
 

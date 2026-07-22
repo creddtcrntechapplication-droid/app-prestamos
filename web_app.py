@@ -2449,16 +2449,22 @@ def enviar_contrato_credito(prestamo_row):
     error de envío al usuario.
     """
     if not prestamo_row.get("correo"):
+        print(f"[contrato] Crédito {prestamo_row.get('id')}: sin correo registrado, no se envía")
         return False, "Cliente sin correo registrado"
 
     if int(prestamo_row.get("contrato_cancelado", 0) or 0) == 1 or str(prestamo_row.get("estado") or "").strip().lower() == "anulado":
+        print(f"[contrato] Crédito {prestamo_row.get('id')}: contrato anulado, no se reenvía")
         return False, "El contrato está anulado y no puede reenviarse"
 
     if int(prestamo_row.get("contrato_aceptado", 0) or 0) == 1:
+        print(f"[contrato] Crédito {prestamo_row.get('id')}: ya aceptado, no corresponde reenviar")
         return False, "El contrato ya fue aceptado y no corresponde reenviarlo"
 
     if not APP_BASE_URL:
+        print(f"[contrato] Crédito {prestamo_row.get('id')}: falta APP_BASE_URL")
         return False, "Falta configurar APP_BASE_URL para generar el enlace de aceptación"
+
+    print(f"[contrato] Crédito {prestamo_row.get('id')}: iniciando envío a {prestamo_row.get('correo')}")
 
     token = prestamo_row.get("contrato_token")
     try:
@@ -2525,6 +2531,8 @@ def enviar_contrato_credito(prestamo_row):
                     html_override=html_correo
                 )
 
+            print(f"[contrato] Crédito {prestamo_row.get('id')}: enviar_correo_async devolvió ok={ok_mail}, ref={mail_ref}")
+
             if not ok_mail:
                 return False, mail_ref
 
@@ -2553,6 +2561,7 @@ def enviar_contrato_credito(prestamo_row):
                     pass
 
     except Exception as e:
+        print(f"[contrato] Crédito {prestamo_row.get('id')}: EXCEPCIÓN antes de completar el envío: {e}")
         return False, f"Error enviando contrato: {e}"
 
 
@@ -3790,12 +3799,18 @@ def enviar_correo_brevo(
             "content-type": "application/json"
         }
 
+        key_fingerprint = f"{BREVO_API_KEY[:6]}...{BREVO_API_KEY[-4:]}" if BREVO_API_KEY else "(vacía)"
+        tam_adjunto = len(attachment_bytes) if attachment_bytes else 0
+        print(f"[brevo] -> Enviando a {destino} | asunto={asunto!r} | adjunto_bytes={tam_adjunto} | api_key={key_fingerprint} | from={BREVO_FROM_EMAIL}")
+
         response = requests.post(
             "https://api.brevo.com/v3/smtp/email",
             headers=headers,
             json=payload,
             timeout=10
         )
+
+        print(f"[brevo] <- Respuesta {response.status_code} para {destino} | asunto={asunto!r} | body={response.text[:500]}")
 
         if response.status_code in (200, 201, 202):
             message_id = None
@@ -3815,10 +3830,13 @@ def enviar_correo_brevo(
         return False, f"Brevo {response.status_code}: {detalle}"
 
     except requests.Timeout:
+        print(f"[brevo] TIMEOUT enviando a {destino} | asunto={asunto!r}")
         return False, "Timeout conectando con Brevo"
     except requests.RequestException as e:
+        print(f"[brevo] ERROR DE RED enviando a {destino} | asunto={asunto!r} | {e}")
         return False, f"Error de red con Brevo: {e}"
     except Exception as e:
+        print(f"[brevo] ERROR GENERAL enviando a {destino} | asunto={asunto!r} | {e}")
         return False, f"Error general enviando correo: {e}"
 
 def enviar_correo_async(

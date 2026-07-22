@@ -1193,43 +1193,44 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-with st.sidebar:
-    st.markdown("<div class='sidebar-logo-wrap'>", unsafe_allow_html=True)
-    if os.path.exists("logo_creddt.png"):
-        st.image("logo_creddt.png", width=112)
-    st.markdown("<div class='sidebar-brand'>CREDDT | <span class='sidebar-brand-accent'>CRNTECH</span></div>", unsafe_allow_html=True)
-    st.markdown("<div class='sidebar-sub'>Gestión principal de créditos, clientes, pagos y seguimiento operativo.</div>", unsafe_allow_html=True)
-    st.markdown("<div class='sidebar-menu-title'>Menú principal</div>", unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
+if not token_aceptar:
+    with st.sidebar:
+        st.markdown("<div class='sidebar-logo-wrap'>", unsafe_allow_html=True)
+        if os.path.exists("logo_creddt.png"):
+            st.image("logo_creddt.png", width=112)
+        st.markdown("<div class='sidebar-brand'>CREDDT | <span class='sidebar-brand-accent'>CRNTECH</span></div>", unsafe_allow_html=True)
+        st.markdown("<div class='sidebar-sub'>Gestión principal de créditos, clientes, pagos y seguimiento operativo.</div>", unsafe_allow_html=True)
+        st.markdown("<div class='sidebar-menu-title'>Menú principal</div>", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
-    st.session_state.menu_activo = st.radio(
-        "Opciones",
-        MENU_LABELS,
-        index=MENU_LABELS.index(st.session_state.menu_activo),
-        label_visibility="collapsed"
-    )
+        st.session_state.menu_activo = st.radio(
+            "Opciones",
+            MENU_LABELS,
+            index=MENU_LABELS.index(st.session_state.menu_activo),
+            label_visibility="collapsed"
+        )
 
-    st.markdown(
-        f"<div class='sidebar-user-card'>"
-        f"<div class='sidebar-user-top'>"
-        f"<div class='sidebar-avatar'>👤</div>"
-        f"<div>"
-        f"<div class='sidebar-user-pill'>Sesión activa</div>"
-        f"<div class='sidebar-user-name'>{st.session_state.get('usuario','-')}</div>"
-        f"<div class='sidebar-user-role'>Rol: {st.session_state.get('rol','-')}</div>"
-        f"</div>"
-        f"</div>"
-        f"</div>",
-        unsafe_allow_html=True
-    )
+        st.markdown(
+            f"<div class='sidebar-user-card'>"
+            f"<div class='sidebar-user-top'>"
+            f"<div class='sidebar-avatar'>👤</div>"
+            f"<div>"
+            f"<div class='sidebar-user-pill'>Sesión activa</div>"
+            f"<div class='sidebar-user-name'>{st.session_state.get('usuario','-')}</div>"
+            f"<div class='sidebar-user-role'>Rol: {st.session_state.get('rol','-')}</div>"
+            f"</div>"
+            f"</div>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
 
-    if st.button("↪ Cerrar sesión", key="btn_logout_sidebar"):
-        for k in ["auth", "usuario", "rol", "menu_activo", "pago_msg", "detalle", "detalle_mora"]:
-            if k in st.session_state:
-                del st.session_state[k]
-        st.rerun()
+        if st.button("↪ Cerrar sesión", key="btn_logout_sidebar"):
+            for k in ["auth", "usuario", "rol", "menu_activo", "pago_msg", "detalle", "detalle_mora"]:
+                if k in st.session_state:
+                    del st.session_state[k]
+            st.rerun()
 
-    st.markdown("<div class='sidebar-foot'>v1.0.0 • CREDDT | CRNTECH</div>", unsafe_allow_html=True)
+        st.markdown("<div class='sidebar-foot'>v1.0.0 • CREDDT | CRNTECH</div>", unsafe_allow_html=True)
 
 SECCION_ACTIVA = st.session_state.menu_activo
 
@@ -1443,24 +1444,25 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"]{
 usuario_hdr = st.session_state.get("usuario", "-")
 rol_hdr = st.session_state.get("rol", "-")
 
-with st.container():
-    st.markdown("<div class='home-hero-wrap'></div>", unsafe_allow_html=True)
-    col_logo, col_centro, col_derecha = st.columns([1.15, 4.4, 2.2], gap="small")
-    with col_logo:
-        st.image("logo_creddt.png", width=138)
-    with col_centro:
-        st.markdown("<div class='home-title'>CREDDT | CRNTECH</div>", unsafe_allow_html=True)
-        st.markdown("<div class='home-subtitle'>Plataforma inteligente de gestión de créditos</div>", unsafe_allow_html=True)
-    with col_derecha:
-        st.markdown(
-            f"<div style='text-align:right; padding-top:12px;'>"
-            f"<span class='home-chip'>Usuario: <strong>{usuario_hdr}</strong></span>"
-            f"<span class='home-chip'>Rol: <strong>{rol_hdr}</strong></span>"
-            f"</div>",
-            unsafe_allow_html=True
-        )
+if not token_aceptar:
+    with st.container():
+        st.markdown("<div class='home-hero-wrap'></div>", unsafe_allow_html=True)
+        col_logo, col_centro, col_derecha = st.columns([1.15, 4.4, 2.2], gap="small")
+        with col_logo:
+            st.image("logo_creddt.png", width=138)
+        with col_centro:
+            st.markdown("<div class='home-title'>CREDDT | CRNTECH</div>", unsafe_allow_html=True)
+            st.markdown("<div class='home-subtitle'>Plataforma inteligente de gestión de créditos</div>", unsafe_allow_html=True)
+        with col_derecha:
+            st.markdown(
+                f"<div style='text-align:right; padding-top:12px;'>"
+                f"<span class='home-chip'>Usuario: <strong>{usuario_hdr}</strong></span>"
+                f"<span class='home-chip'>Rol: <strong>{rol_hdr}</strong></span>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
 
-st.markdown("<div class='home-blue-line'></div>", unsafe_allow_html=True)
+    st.markdown("<div class='home-blue-line'></div>", unsafe_allow_html=True)
 
 if st.session_state.get("app_busy") and st.session_state.get("app_busy_label"):
     st.info(f"⏳ {st.session_state.get('app_busy_label')}")

@@ -3077,7 +3077,10 @@ def aceptar_contrato_por_token(token):
 
 def procesar_recordatorios_automaticos():
     enviados = 0
-    tipos_permitidos = {-3: "D-3", -1: "D-1", 0: "D0", 1: "D+1", 5: "D+5"}
+    fallidos = 0
+    detalle_fallos = []
+    # Esquema: D+5 (aviso 5 días antes del vencimiento), D0 (el día), D-3/D-7/D-15 (mora, espaciada y no invasiva)
+    tipos_permitidos = {5: "D+5", 0: "D0", -3: "D-3", -7: "D-7", -15: "D-15"}
     with get_conn() as conn:
         rows = conn.execute(text("""
             SELECT cu.id_cuota, cu.prestamo_id, cu.nro_cuota, cu.fecha_vencimiento::date AS fecha_vencimiento, cu.valor_cuota,
@@ -3089,7 +3092,7 @@ def procesar_recordatorios_automaticos():
             JOIN clientes c ON c.cedula = p.cliente_cedula
             WHERE cu.estado IN ('Pendiente', 'Parcial')
               AND c.correo IS NOT NULL
-              AND cu.fecha_vencimiento::date BETWEEN (CAST(:hoy AS date) - INTERVAL '5 day') AND (CAST(:hoy AS date) + INTERVAL '3 day')
+              AND cu.fecha_vencimiento::date BETWEEN (CAST(:hoy AS date) - INTERVAL '15 day') AND (CAST(:hoy AS date) + INTERVAL '5 day')
               AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
               AND COALESCE(p.contrato_cancelado, 0) = 0
               AND NOT ((es_interes_libre(p.tipo_credito, p.tipo)) OR LOWER(TRIM(COALESCE(p.tipo, ''))) IN ('interes libre', 'interés libre'))
@@ -3104,15 +3107,25 @@ def procesar_recordatorios_automaticos():
                 continue
             cuerpo = construir_cuerpo_correo('RECORDATORIO', r['cliente'], prestamo_id=r['prestamo_id'], cuota_nro=r['nro_cuota'], fecha_vencimiento=r['fecha_vencimiento'], valor=r['valor_cuota'], cuotas_pendientes=r['cuotas_pendientes'], saldo_pendiente=r['saldo_pendiente'])
             html_correo = construir_html_correo('RECORDATORIO', r['cliente'], prestamo_id=r['prestamo_id'], cuota_nro=r['nro_cuota'], fecha_vencimiento=r['fecha_vencimiento'], valor=r['valor_cuota'], cuotas_pendientes=r['cuotas_pendientes'], saldo_pendiente=r['saldo_pendiente'])
-            ok, _ = enviar_correo_async(r['correo'], f"CREDDT CRNTECH | Recordatorio de pago del crédito {r['prestamo_id']}", cuerpo, html_override=html_correo)
+            asunto_r = (
+                f"CREDDT CRNTECH | Aviso de mora del crédito {r['prestamo_id']}"
+                if dias < 0 else
+                f"CREDDT CRNTECH | Recordatorio de pago del crédito {r['prestamo_id']}"
+            )
+            ok, err = enviar_correo_async(r['correo'], asunto_r, cuerpo, html_override=html_correo)
             if ok:
                 conn.execute(text("INSERT INTO reminders_sent (id_cuota, tipo_recordatorio, fecha_envio) VALUES (:id_cuota, :tipo, :fecha_envio)"), {"id_cuota": r['id_cuota'], "tipo": tipo_r, "fecha_envio": ahora_local().isoformat(timespec='seconds')})
                 enviados += 1
+            else:
+                fallidos += 1
+                msg = f"[recordatorios] Crédito {r['prestamo_id']} cuota {r['nro_cuota']} ({tipo_r}) -> {err}"
+                print(msg)
+                detalle_fallos.append(msg)
 
         # --- Créditos de interés libre ---
         # Estos créditos no generan filas en "cuotas"; su próximo vencimiento vive en
         # prestamos.fecha_proximo_interes. Antes quedaban excluidos de los recordatorios
-        # por completo; aquí se agrega el mismo esquema D-3/D-1/D0/D+1/D+5 para ellos.
+        # por completo; aquí se agrega el mismo esquema D+5/D0/D-3/D-7/D-15 para ellos.
         rows_il = conn.execute(text("""
             SELECT p.id AS prestamo_id, p.fecha_proximo_interes::date AS fecha_proximo_interes,
                    COALESCE(p.saldo_capital, p.monto_original) AS saldo_capital,
@@ -3124,7 +3137,7 @@ def procesar_recordatorios_automaticos():
             JOIN clientes c ON c.cedula = p.cliente_cedula
             WHERE p.fecha_proximo_interes IS NOT NULL
               AND c.correo IS NOT NULL
-              AND p.fecha_proximo_interes::date BETWEEN (CAST(:hoy AS date) - INTERVAL '5 day') AND (CAST(:hoy AS date) + INTERVAL '3 day')
+              AND p.fecha_proximo_interes::date BETWEEN (CAST(:hoy AS date) - INTERVAL '15 day') AND (CAST(:hoy AS date) + INTERVAL '5 day')
               AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
               AND COALESCE(p.contrato_cancelado, 0) = 0
               AND (es_interes_libre(p.tipo_credito, p.tipo))
@@ -3145,14 +3158,25 @@ def procesar_recordatorios_automaticos():
             interes_estimado, _dias_calc = calcular_interes_libre_a_fecha(dict(r), r['fecha_proximo_interes'])
             cuerpo = construir_cuerpo_correo('RECORDATORIO', r['cliente'], prestamo_id=r['prestamo_id'], cuota_nro='Interés libre', fecha_vencimiento=r['fecha_proximo_interes'], valor=interes_estimado)
             html_correo = construir_html_correo('RECORDATORIO', r['cliente'], prestamo_id=r['prestamo_id'], cuota_nro='Interés libre', fecha_vencimiento=r['fecha_proximo_interes'], valor=interes_estimado)
-            ok, _ = enviar_correo_async(r['correo'], f"CREDDT CRNTECH | Recordatorio de pago de interés del crédito {r['prestamo_id']}", cuerpo, html_override=html_correo)
+            asunto_il = (
+                f"CREDDT CRNTECH | Aviso de mora de interés del crédito {r['prestamo_id']}"
+                if dias < 0 else
+                f"CREDDT CRNTECH | Recordatorio de pago de interés del crédito {r['prestamo_id']}"
+            )
+            ok, err = enviar_correo_async(r['correo'], asunto_il, cuerpo, html_override=html_correo)
             if ok:
                 conn.execute(text("INSERT INTO reminders_sent (id_cuota, tipo_recordatorio, fecha_envio) VALUES (:id_cuota, :tipo, :fecha_envio)"), {"id_cuota": id_cuota_sintetico, "tipo": tipo_recordatorio_il, "fecha_envio": ahora_local().isoformat(timespec='seconds')})
                 enviados += 1
+            else:
+                fallidos += 1
+                msg = f"[recordatorios] Crédito interés libre {r['prestamo_id']} ({tipo_r}) -> {err}"
+                print(msg)
+                detalle_fallos.append(msg)
 
         conn.commit()
     clear_app_caches()
-    return enviados
+    print(f"[recordatorios] Resumen: {enviados} enviados, {fallidos} fallidos")
+    return enviados, fallidos, detalle_fallos
 
 def render_aceptacion_contrato(token):
     st.markdown("<h2 style='text-align:center;'>CREDDT | CRNTECH</h2>", unsafe_allow_html=True)
@@ -5292,6 +5316,30 @@ if tab_cuenta:
                 else:
                     set_flash("cuenta_msg", "error", f"❌ {msg_clave}")
                 st.rerun()
+            finally:
+                stop_busy()
+
+    if ES_ADMIN:
+        st.divider()
+        st.markdown("### 🔔 Diagnóstico de recordatorios")
+        st.caption(
+            "Corre el proceso de recordatorios/mora ahora mismo (de forma síncrona) y muestra "
+            "el resultado en pantalla — útil para confirmar que Brevo esté entregando los correos "
+            "sin tener que revisar los logs de Render."
+        )
+        if st.button("▶️ Ejecutar recordatorios ahora", disabled=st.session_state.get("app_busy", False)):
+            start_busy("Procesando recordatorios...")
+            try:
+                enviados_r, fallidos_r, detalle_r = procesar_recordatorios_automaticos()
+                if enviados_r == 0 and fallidos_r == 0:
+                    st.info("ℹ️ No había recordatorios pendientes para enviar en este momento.")
+                else:
+                    if enviados_r:
+                        st.success(f"✅ {enviados_r} recordatorio(s) enviado(s) correctamente.")
+                    if fallidos_r:
+                        st.error(f"❌ {fallidos_r} recordatorio(s) fallaron al enviarse:")
+                        for linea in detalle_r:
+                            st.write(f"- {linea}")
             finally:
                 stop_busy()
 

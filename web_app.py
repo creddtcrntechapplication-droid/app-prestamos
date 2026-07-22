@@ -2231,7 +2231,7 @@ def construir_html_correo(tipo_correo, nombre_cliente, **kwargs):
 
 
 def generar_recibo_pdf(prestamo_id, cliente, monto_credito, fecha_pago, valor_pagado, titulo="RECIBO DE PAGO", subtitulo="VALOR PAGADO"):
-    ruta_pdf = os.path.join(tempfile.gettempdir(), f"recibo_{prestamo_id}.pdf")
+    ruta_pdf = os.path.join(tempfile.gettempdir(), f"recibo_{prestamo_id}_{uuid.uuid4().hex[:8]}.pdf")
     doc = SimpleDocTemplate(ruta_pdf, pagesize=pagesizes.A4, rightMargin=42, leftMargin=42, topMargin=38, bottomMargin=34)
     estilos = getSampleStyleSheet()
     azul_oscuro = colors.HexColor("#0F172A")
@@ -2288,7 +2288,7 @@ def generar_recibo_pdf(prestamo_id, cliente, monto_credito, fecha_pago, valor_pa
 
 
 def generar_contrato_pdf(prestamo_id, cliente, monto_credito, cuotas, valor_cuota, tipo_credito, fecha_emision=None, tasa_interes=None, fecha_proximo_interes=None):
-    ruta_pdf = os.path.join(tempfile.gettempdir(), f"contrato_{prestamo_id}.pdf")
+    ruta_pdf = os.path.join(tempfile.gettempdir(), f"contrato_{prestamo_id}_{uuid.uuid4().hex[:8]}.pdf")
     fecha_emision = fecha_emision or hoy_local().isoformat()
     doc = SimpleDocTemplate(ruta_pdf, pagesize=pagesizes.A4, rightMargin=40, leftMargin=40, topMargin=36, bottomMargin=34)
     estilos = getSampleStyleSheet()
@@ -2516,7 +2516,7 @@ def enviar_contrato_credito(prestamo_row):
             )
 
             with open(ruta_pdf, "rb") as f:
-                ok_mail, err_mail = enviar_correo_async(
+                ok_mail, mail_ref = enviar_correo_async(
                     prestamo_row["correo"],
                     "CREDDT CRNTECH | Contrato de crédito para aceptación",
                     cuerpo,
@@ -2526,7 +2526,7 @@ def enviar_contrato_credito(prestamo_row):
                 )
 
             if not ok_mail:
-                return False, err_mail
+                return False, mail_ref
 
             try:
                 with get_conn() as conn:
@@ -2538,7 +2538,8 @@ def enviar_contrato_credito(prestamo_row):
                     """), {"fecha": ahora_local().isoformat(timespec='seconds'), "id": prestamo_row["id"]})
                     conn.commit()
                 clear_app_caches()
-                registrar_auditoria_contrato(prestamo_row["id"], "ENVIO_CONTRATO", detalle=f"Contrato enviado a {prestamo_row.get('correo')}")
+                ref_txt = f" (Brevo messageId: {mail_ref})" if mail_ref else ""
+                registrar_auditoria_contrato(prestamo_row["id"], "ENVIO_CONTRATO", detalle=f"Contrato enviado a {prestamo_row.get('correo')}{ref_txt}")
             except Exception as e_bd:
                 registrar_auditoria_contrato(prestamo_row["id"], "ENVIO_CONTRATO", detalle=f"Correo enviado a {prestamo_row.get('correo')}, pero falló el update de BD: {e_bd}")
                 return True, f"Correo enviado, pero no se pudo marcar el contrato como enviado en BD: {e_bd}"
@@ -3797,7 +3798,12 @@ def enviar_correo_brevo(
         )
 
         if response.status_code in (200, 201, 202):
-            return True, None
+            message_id = None
+            try:
+                message_id = response.json().get("messageId")
+            except Exception:
+                pass
+            return True, message_id
 
         detalle = response.text
         try:

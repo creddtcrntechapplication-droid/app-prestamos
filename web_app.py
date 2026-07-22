@@ -72,25 +72,52 @@ def get_conn():
     """Devuelve una conexión activa a la base de datos"""
     return engine.connect()
 
+_es_interes_libre_listo = False
+_es_interes_libre_lock = threading.Lock()
+
 def asegurar_funcion_es_interes_libre():
     """Crea/actualiza la función SQL es_interes_libre(tipo_credito, tipo).
     Se llama muy temprano en el arranque porque varias funciones de
     estructura (asegurar_estructura_financiera, asegurar_estructura_control_financiero)
-    la usan en sus propias consultas."""
-    with get_conn() as conn:
-        conn.execute(text("""
-            CREATE OR REPLACE FUNCTION es_interes_libre(p_tipo_credito text, p_tipo text)
-            RETURNS boolean
-            LANGUAGE sql
-            IMMUTABLE
-            AS $$
-                SELECT
-                    LOWER(TRANSLATE(TRIM(COALESCE(p_tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) = 'interes_libre'
-                    OR LOWER(TRANSLATE(TRIM(COALESCE(p_tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
-                    OR LOWER(TRANSLATE(TRIM(COALESCE(p_tipo, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
-            $$;
-        """))
-        conn.commit()
+    la usan en sus propias consultas.
+
+    Protegida con un flag + lock a nivel de proceso: antes se ejecutaba el
+    CREATE OR REPLACE en cada recarga de Streamlit (cada clic, de cualquier
+    usuario), lo que provocaba errores de PostgreSQL ("tuple concurrently
+    updated") cuando dos sesiones lo disparaban casi al mismo tiempo. Ahora
+    solo corre una vez por proceso; si aun así choca con otro proceso, se
+    reintenta un par de veces antes de rendirse.
+    """
+    global _es_interes_libre_listo
+    if _es_interes_libre_listo:
+        return
+    with _es_interes_libre_lock:
+        if _es_interes_libre_listo:
+            return
+        for intento in (1, 2, 3):
+            try:
+                with get_conn() as conn:
+                    conn.execute(text("""
+                        CREATE OR REPLACE FUNCTION es_interes_libre(p_tipo_credito text, p_tipo text)
+                        RETURNS boolean
+                        LANGUAGE sql
+                        IMMUTABLE
+                        AS $$
+                            SELECT
+                                LOWER(TRANSLATE(TRIM(COALESCE(p_tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) = 'interes_libre'
+                                OR LOWER(TRANSLATE(TRIM(COALESCE(p_tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
+                                OR LOWER(TRANSLATE(TRIM(COALESCE(p_tipo, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
+                        $$;
+                    """))
+                    conn.commit()
+                _es_interes_libre_listo = True
+                return
+            except Exception as e:
+                print(f"[startup] Intento {intento} fallido creando es_interes_libre: {e}")
+                if intento == 3:
+                    print("[startup] No se pudo crear es_interes_libre tras 3 intentos; la app continúa igual si la función ya existía de antes.")
+                    return
+                time.sleep(0.5)
 
 asegurar_funcion_es_interes_libre()
 
@@ -1444,7 +1471,20 @@ BREVO_API_KEY = get_config("BREVO_API_KEY")
 BREVO_FROM_EMAIL = get_config("BREVO_FROM_EMAIL")
 BREVO_FROM_NAME = get_config("BREVO_FROM_NAME", "CREDDT CRNTECH APPLICATION")
 APP_BASE_URL = get_config("APP_BASE_URL").rstrip("/")
+_estructura_base_lista = False
+_estructura_base_lock = threading.Lock()
+
 def asegurar_estructura_base():
+    global _estructura_base_lista
+    if _estructura_base_lista:
+        return
+    with _estructura_base_lock:
+        if _estructura_base_lista:
+            return
+        _asegurar_estructura_base_impl()
+        _estructura_base_lista = True
+
+def _asegurar_estructura_base_impl():
     with get_conn() as conn:
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS clientes (
@@ -1594,7 +1634,20 @@ def asegurar_estructura_base():
         conn.commit()
     clear_app_caches()
 asegurar_estructura_base()
+_estructura_financiera_lista = False
+_estructura_financiera_lock = threading.Lock()
+
 def asegurar_estructura_financiera():
+    global _estructura_financiera_lista
+    if _estructura_financiera_lista:
+        return
+    with _estructura_financiera_lock:
+        if _estructura_financiera_lista:
+            return
+        _asegurar_estructura_financiera_impl()
+        _estructura_financiera_lista = True
+
+def _asegurar_estructura_financiera_impl():
     with get_conn() as conn:
         sentencias = [
             "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS saldo_capital NUMERIC(18,2)",
@@ -1669,7 +1722,20 @@ def limpiar_cuotas_creditos_no_vigentes():
 limpiar_cuotas_creditos_no_vigentes()
 
 
+_fechas_interes_libre_normalizadas = False
+_fechas_interes_libre_lock = threading.Lock()
+
 def normalizar_fechas_interes_libre_aceptados():
+    global _fechas_interes_libre_normalizadas
+    if _fechas_interes_libre_normalizadas:
+        return
+    with _fechas_interes_libre_lock:
+        if _fechas_interes_libre_normalizadas:
+            return
+        _normalizar_fechas_interes_libre_aceptados_impl()
+        _fechas_interes_libre_normalizadas = True
+
+def _normalizar_fechas_interes_libre_aceptados_impl():
     """Normaliza datos base de Interés libre sin crear cuotas."""
     try:
         with get_conn() as conn:
@@ -1700,7 +1766,20 @@ def normalizar_fechas_interes_libre_aceptados():
     except Exception:
         pass
 
+_estructura_control_financiero_lista = False
+_estructura_control_financiero_lock = threading.Lock()
+
 def asegurar_estructura_control_financiero():
+    global _estructura_control_financiero_lista
+    if _estructura_control_financiero_lista:
+        return
+    with _estructura_control_financiero_lock:
+        if _estructura_control_financiero_lista:
+            return
+        _asegurar_estructura_control_financiero_impl()
+        _estructura_control_financiero_lista = True
+
+def _asegurar_estructura_control_financiero_impl():
     with get_conn() as conn:
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS app_meta (

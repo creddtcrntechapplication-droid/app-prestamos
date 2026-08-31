@@ -72,52 +72,45 @@ def get_conn():
     """Devuelve una conexión activa a la base de datos"""
     return engine.connect()
 
-_es_interes_libre_listo = False
-_es_interes_libre_lock = threading.Lock()
-
+@st.cache_resource(show_spinner=False)
 def asegurar_funcion_es_interes_libre():
     """Crea/actualiza la función SQL es_interes_libre(tipo_credito, tipo).
     Se llama muy temprano en el arranque porque varias funciones de
     estructura (asegurar_estructura_financiera, asegurar_estructura_control_financiero)
     la usan en sus propias consultas.
 
-    Protegida con un flag + lock a nivel de proceso: antes se ejecutaba el
-    CREATE OR REPLACE en cada recarga de Streamlit (cada clic, de cualquier
-    usuario), lo que provocaba errores de PostgreSQL ("tuple concurrently
-    updated") cuando dos sesiones lo disparaban casi al mismo tiempo. Ahora
-    solo corre una vez por proceso; si aun así choca con otro proceso, se
-    reintenta un par de veces antes de rendirse.
+    IMPORTANTE: antes esto se protegía con una variable normal
+    (_es_interes_libre_listo = False). El comentario decía "solo corre una
+    vez por proceso", pero esa variable se declara a nivel de módulo, y
+    Streamlit vuelve a ejecutar el script completo (incluida esa línea) en
+    cada clic del usuario -- así que en la práctica el CREATE OR REPLACE se
+    seguía ejecutando en cada clic, de cualquier usuario, tal como pasaba
+    antes de "arreglarlo". @st.cache_resource sí persiste entre reruns,
+    así que ahora sí corre una sola vez por proceso de verdad.
     """
-    global _es_interes_libre_listo
-    if _es_interes_libre_listo:
-        return
-    with _es_interes_libre_lock:
-        if _es_interes_libre_listo:
-            return
-        for intento in (1, 2, 3):
-            try:
-                with get_conn() as conn:
-                    conn.execute(text("""
-                        CREATE OR REPLACE FUNCTION es_interes_libre(p_tipo_credito text, p_tipo text)
-                        RETURNS boolean
-                        LANGUAGE sql
-                        IMMUTABLE
-                        AS $$
-                            SELECT
-                                LOWER(TRANSLATE(TRIM(COALESCE(p_tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) = 'interes_libre'
-                                OR LOWER(TRANSLATE(TRIM(COALESCE(p_tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
-                                OR LOWER(TRANSLATE(TRIM(COALESCE(p_tipo, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
-                        $$;
-                    """))
-                    conn.commit()
-                _es_interes_libre_listo = True
-                return
-            except Exception as e:
-                print(f"[startup] Intento {intento} fallido creando es_interes_libre: {e}")
-                if intento == 3:
-                    print("[startup] No se pudo crear es_interes_libre tras 3 intentos; la app continúa igual si la función ya existía de antes.")
-                    return
-                time.sleep(0.5)
+    for intento in (1, 2, 3):
+        try:
+            with get_conn() as conn:
+                conn.execute(text("""
+                    CREATE OR REPLACE FUNCTION es_interes_libre(p_tipo_credito text, p_tipo text)
+                    RETURNS boolean
+                    LANGUAGE sql
+                    IMMUTABLE
+                    AS $$
+                        SELECT
+                            LOWER(TRANSLATE(TRIM(COALESCE(p_tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) = 'interes_libre'
+                            OR LOWER(TRANSLATE(TRIM(COALESCE(p_tipo_credito, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
+                            OR LOWER(TRANSLATE(TRIM(COALESCE(p_tipo, '')), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')) IN ('interes libre', 'solo interes libre')
+                    $$;
+                """))
+                conn.commit()
+            return True
+        except Exception as e:
+            print(f"[startup] Intento {intento} fallido creando es_interes_libre: {e}")
+            if intento == 3:
+                print("[startup] No se pudo crear es_interes_libre tras 3 intentos; la app continúa igual si la función ya existía de antes.")
+                return False
+            time.sleep(0.5)
 
 asegurar_funcion_es_interes_libre()
 
@@ -680,7 +673,12 @@ def eliminar_usuario(usuario, usuario_actual):
         conn.commit()
     return True, f"Usuario '{usuario}' eliminado"
 
+@st.cache_resource(show_spinner=False)
 def init_usuario_admin():
+    """Antes corría sin ningún candado: en CADA clic de cualquier usuario se
+    volvían a ejecutar el CREATE TABLE, los dos ALTER TABLE y las consultas
+    de verificación/migración del usuario admin. @st.cache_resource hace que
+    esto corra una sola vez por proceso, no en cada clic."""
     with get_conn() as conn:
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS usuarios (
@@ -1473,18 +1471,19 @@ BREVO_API_KEY = get_config("BREVO_API_KEY")
 BREVO_FROM_EMAIL = get_config("BREVO_FROM_EMAIL")
 BREVO_FROM_NAME = get_config("BREVO_FROM_NAME", "CREDDT CRNTECH APPLICATION")
 APP_BASE_URL = get_config("APP_BASE_URL").rstrip("/")
-_estructura_base_lista = False
-_estructura_base_lock = threading.Lock()
 
+@st.cache_resource(show_spinner=False)
 def asegurar_estructura_base():
-    global _estructura_base_lista
-    if _estructura_base_lista:
-        return
-    with _estructura_base_lock:
-        if _estructura_base_lista:
-            return
-        _asegurar_estructura_base_impl()
-        _estructura_base_lista = True
+    """
+    Se ejecuta UNA SOLA VEZ por proceso (gracias a @st.cache_resource, que sí
+    persiste entre reruns de Streamlit) en lugar de en cada clic. Antes usaba
+    una variable normal (_estructura_base_lista) que Streamlit reseteaba en
+    cada rerun del script, así que en la práctica el "candado" nunca servía
+    y las ~29 instrucciones ALTER/CREATE TABLE de aquí abajo se repetían en
+    cada clic del usuario, sumando latencia a toda la app.
+    """
+    _asegurar_estructura_base_impl()
+    return True
 
 def _asegurar_estructura_base_impl():
     with get_conn() as conn:
@@ -1636,18 +1635,13 @@ def _asegurar_estructura_base_impl():
         conn.commit()
     clear_app_caches()
 asegurar_estructura_base()
-_estructura_financiera_lista = False
-_estructura_financiera_lock = threading.Lock()
 
+@st.cache_resource(show_spinner=False)
 def asegurar_estructura_financiera():
-    global _estructura_financiera_lista
-    if _estructura_financiera_lista:
-        return
-    with _estructura_financiera_lock:
-        if _estructura_financiera_lista:
-            return
-        _asegurar_estructura_financiera_impl()
-        _estructura_financiera_lista = True
+    """Ver comentario en asegurar_estructura_base: mismo arreglo (cache_resource
+    en vez de una variable normal que Streamlit reseteaba en cada clic)."""
+    _asegurar_estructura_financiera_impl()
+    return True
 
 def _asegurar_estructura_financiera_impl():
     with get_conn() as conn:
@@ -1768,18 +1762,11 @@ def _normalizar_fechas_interes_libre_aceptados_impl():
     except Exception:
         pass
 
-_estructura_control_financiero_lista = False
-_estructura_control_financiero_lock = threading.Lock()
-
+@st.cache_resource(show_spinner=False)
 def asegurar_estructura_control_financiero():
-    global _estructura_control_financiero_lista
-    if _estructura_control_financiero_lista:
-        return
-    with _estructura_control_financiero_lock:
-        if _estructura_control_financiero_lista:
-            return
-        _asegurar_estructura_control_financiero_impl()
-        _estructura_control_financiero_lista = True
+    """Ver comentario en asegurar_estructura_base: mismo arreglo."""
+    _asegurar_estructura_control_financiero_impl()
+    return True
 
 def _asegurar_estructura_control_financiero_impl():
     with get_conn() as conn:
@@ -2000,6 +1987,111 @@ def show_flash(key):
 # ==========================
 # UTILIDADES
 # ==========================
+_TABLA_MODERNA_CSS_INYECTADO = False
+
+def render_tabla_moderna(df, columna_estado=None):
+    """
+    Renderiza un DataFrame como tabla HTML con estilo moderno (encabezado
+    oscuro, filas alternadas, bordes redondeados) en vez del grid gris por
+    defecto de st.dataframe.
+
+    Se usa solo en tablas de resumen/lectura (Resumen general, Alertas de
+    cartera) donde no hace falta ordenar columnas ni buscar en vivo. Las
+    tablas donde sí se necesita esa interactividad (Clientes, Detalle por
+    crédito, Usuarios, etc.) se dejan con st.dataframe.
+
+    columna_estado: nombre opcional de una columna cuyo valor se pinta como
+    una "pastilla" de color (verde/rojo/gris) en vez de texto plano -- por
+    ejemplo la columna "Estado" (Activo/Cancelado/Anulado).
+    """
+    global _TABLA_MODERNA_CSS_INYECTADO
+    if not _TABLA_MODERNA_CSS_INYECTADO:
+        st.markdown("""
+        <style>
+        .creddt-tabla-wrap{
+            border-radius: 14px;
+            overflow: hidden;
+            border: 1px solid #e2e8f0;
+            box-shadow: 0 6px 18px rgba(15,23,42,.06);
+            margin-bottom: 0.5rem;
+        }
+        table.creddt-tabla{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+            font-family: inherit;
+        }
+        table.creddt-tabla thead th{
+            background: linear-gradient(135deg, #0b1633 0%, #173266 55%, #2563eb 100%);
+            color: #ffffff;
+            font-weight: 700;
+            text-align: left;
+            padding: 11px 14px;
+            white-space: nowrap;
+        }
+        table.creddt-tabla tbody td{
+            padding: 9px 14px;
+            border-top: 1px solid #eef2f7;
+            color: #1f2937;
+        }
+        table.creddt-tabla tbody tr:nth-child(even){
+            background: #f8fafc;
+        }
+        table.creddt-tabla tbody tr:hover{
+            background: #eff6ff;
+        }
+        .creddt-pill{
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 999px;
+            font-size: 12.5px;
+            font-weight: 700;
+        }
+        .creddt-pill-activo{ background:#dcfce7; color:#15803d; }
+        .creddt-pill-cancelado{ background:#dbeafe; color:#1d4ed8; }
+        .creddt-pill-anulado{ background:#fee2e2; color:#b91c1c; }
+        .creddt-pill-otro{ background:#f1f5f9; color:#475569; }
+        @media (prefers-color-scheme: dark){
+            .creddt-tabla-wrap{ border-color:#334155; box-shadow: 0 6px 18px rgba(2,6,23,.35); }
+            table.creddt-tabla tbody td{ border-top-color:#1e293b; color:#e2e8f0; }
+            table.creddt-tabla tbody tr:nth-child(even){ background:#111827; }
+            table.creddt-tabla tbody tr:hover{ background:#1e293b; }
+        }
+        </style>
+        """, unsafe_allow_html=True)
+        _TABLA_MODERNA_CSS_INYECTADO = True
+
+    def _pill(valor):
+        v = str(valor).strip().lower()
+        clase = {
+            "activo": "creddt-pill-activo",
+            "cancelado": "creddt-pill-cancelado",
+            "anulado": "creddt-pill-anulado",
+        }.get(v, "creddt-pill-otro")
+        return f'<span class="creddt-pill {clase}">{valor}</span>'
+
+    encabezados = "".join(f"<th>{col}</th>" for col in df.columns)
+    filas_html = []
+    for _, fila in df.iterrows():
+        celdas = []
+        for col in df.columns:
+            valor = fila[col]
+            if columna_estado and col == columna_estado:
+                celdas.append(f"<td>{_pill(valor)}</td>")
+            else:
+                celdas.append(f"<td>{valor}</td>")
+        filas_html.append(f"<tr>{''.join(celdas)}</tr>")
+
+    html = f"""
+    <div class="creddt-tabla-wrap">
+        <table class="creddt-tabla">
+            <thead><tr>{encabezados}</tr></thead>
+            <tbody>{''.join(filas_html)}</tbody>
+        </table>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
 def pesos(valor):
     try:
         return f"${float(valor):,.0f}".replace(",", ".")
@@ -2500,6 +2592,50 @@ def construir_html_anulacion_contrato(nombre_cliente, prestamo_id, motivo):
 def enviar_pdf_por_correo(destino, asunto, cuerpo, ruta_pdf, nombre_adj, html_override=None):
     with open(ruta_pdf, "rb") as f:
         return enviar_correo_async(destino=destino, asunto=asunto, cuerpo=cuerpo, attachment_bytes=f.read(), attachment_name=nombre_adj, html_override=html_override)
+
+
+def enviar_pdf_por_correo_en_segundo_plano(destino, asunto, cuerpo, ruta_pdf, nombre_adj, html_override=None):
+    """
+    Igual que enviar_pdf_por_correo, pero no bloquea la pantalla del usuario.
+
+    enviar_correo_brevo puede tardar hasta 60s (2 reintentos x 30s) si Brevo
+    está lento. Antes, registrar_pago_cuotas/registrar_abono_capital
+    esperaban ese resultado antes de devolverle la respuesta a la pantalla,
+    lo que congelaba la UI y en algunos casos hacía que la sesión pareciera
+    "caerse" y regresara al login. Ahora el correo se manda en un hilo
+    aparte (mismo patrón que ya usa procesar_recordatorios_automaticos) y el
+    registro del pago se confirma de inmediato.
+
+    Lee los bytes del PDF ANTES de lanzar el hilo (para poder borrar el
+    archivo temporal enseguida) y borra el archivo dentro del hilo una vez
+    enviado el correo.
+    """
+    try:
+        with open(ruta_pdf, "rb") as f:
+            adjunto_bytes = f.read()
+    except Exception as e:
+        print(f"[correo-segundo-plano] No se pudo leer el PDF {ruta_pdf}: {e}")
+        return
+
+    def _enviar():
+        try:
+            ok, err = enviar_correo_async(
+                destino=destino, asunto=asunto, cuerpo=cuerpo,
+                attachment_bytes=adjunto_bytes, attachment_name=nombre_adj,
+                html_override=html_override
+            )
+            if not ok:
+                print(f"[correo-segundo-plano] Error enviando a {destino} | asunto={asunto!r} | {err}")
+        except Exception as e:
+            print(f"[correo-segundo-plano] Excepción enviando a {destino} | asunto={asunto!r} | {e}")
+        finally:
+            if os.path.exists(ruta_pdf):
+                try:
+                    os.remove(ruta_pdf)
+                except Exception:
+                    pass
+
+    threading.Thread(target=_enviar, daemon=True).start()
 
 
 def registrar_auditoria_contrato(prestamo_id, accion, usuario=None, motivo=None, detalle=None):
@@ -3558,8 +3694,8 @@ def registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=None, valor_p
     nombre_cliente = cliente[0] if cliente else "Cliente"
     correo_cliente = (cliente[1] or "").strip() if cliente else ""
     pdf = None
-    correo_ok = False
     correo_error = None
+    correo_en_segundo_plano = False
     try:
         pdf = generar_recibo_pdf(prestamo_id, nombre_cliente, prestamo_db["monto_original"], fecha_pago.isoformat(), valor_pago)
         cuerpo = construir_cuerpo_correo(
@@ -3573,7 +3709,11 @@ def registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=None, valor_p
             saldo_pendiente=saldo_pendiente_restante
         )
         if correo_cliente:
-            correo_ok, correo_error = enviar_pdf_por_correo(
+            # Antes esto esperaba (hasta 60s) la respuesta de Brevo antes de
+            # devolver el resultado a la pantalla. Ahora se manda en un hilo
+            # aparte: el pago queda registrado y confirmado de inmediato, y
+            # el correo (recibo + cierre si aplica) sigue su curso solo.
+            enviar_pdf_por_correo_en_segundo_plano(
                 correo_cliente,
                 f"CREDDT CRNTECH | Confirmación de pago del crédito {prestamo_id}",
                 cuerpo,
@@ -3590,11 +3730,17 @@ def registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=None, valor_p
                     saldo_pendiente=saldo_pendiente_restante
                 )
             )
+            pdf = None  # el hilo en segundo plano se encarga de borrarlo
+            correo_en_segundo_plano = True
             if finalizado:
-                cierre_ok, cierre_error = enviar_correo_cierre_credito(prestamo_id, nombre_cliente, correo_cliente, fecha_pago, valor_pago)
-                correo_ok = correo_ok and cierre_ok
-                if not cierre_ok:
-                    correo_error = cierre_error
+                def _enviar_cierre():
+                    try:
+                        ok_cierre, err_cierre = enviar_correo_cierre_credito(prestamo_id, nombre_cliente, correo_cliente, fecha_pago, valor_pago)
+                        if not ok_cierre:
+                            print(f"[correo-segundo-plano] Error enviando cierre crédito {prestamo_id}: {err_cierre}")
+                    except Exception as e:
+                        print(f"[correo-segundo-plano] Excepción enviando cierre crédito {prestamo_id}: {e}")
+                threading.Thread(target=_enviar_cierre, daemon=True).start()
         else:
             correo_error = "Cliente sin correo registrado"
     finally:
@@ -3611,7 +3757,7 @@ def registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=None, valor_p
         "cuotas_aplicadas": len([1 for _, _, completa in aplicaciones if completa]),
         "parcial": any(not completa for _, _, completa in aplicaciones),
         "valor": valor_pago,
-        "correo": correo_ok,
+        "correo": correo_en_segundo_plano,
         "tiene_correo": bool(correo_cliente),
         "correo_error": correo_error,
         "finalizado": finalizado
@@ -3672,8 +3818,8 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
             nuevo_interes_30 = (nuevo_saldo_capital * Decimal(str(prestamo_db["tasa_mensual"] or 0))).quantize(Decimal("0.01"))
 
             pdf = None
-            correo_ok = False
             correo_error = None
+            correo_en_segundo_plano = False
             try:
                 pdf = generar_recibo_pdf(prestamo_id, nombre_cliente, prestamo_db["monto_original"], fecha_pago.isoformat(), valor_abono, titulo="RECIBO DE ABONO A CAPITAL", subtitulo="ABONO A CAPITAL")
                 kwargs = dict(
@@ -3690,7 +3836,7 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
                 cuerpo = construir_cuerpo_correo("RECIBO_ABONO", nombre_cliente, **kwargs)
                 html_correo = construir_html_correo("RECIBO_ABONO", nombre_cliente, **kwargs)
                 if correo_cliente:
-                    correo_ok, correo_error = enviar_pdf_por_correo(
+                    enviar_pdf_por_correo_en_segundo_plano(
                         correo_cliente,
                         f"CREDDT CRNTECH | Abono a capital crédito {prestamo_id}",
                         cuerpo,
@@ -3698,6 +3844,8 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
                         f"abono_capital_{prestamo_id}.pdf",
                         html_override=html_correo
                     )
+                    pdf = None
+                    correo_en_segundo_plano = True
                 else:
                     correo_error = "Cliente sin correo registrado"
             finally:
@@ -3713,7 +3861,7 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
                 "nueva_cuota": nuevo_interes_30,
                 "saldo_capital": nuevo_saldo_capital,
                 "interes_libre": True,
-                "correo": correo_ok,
+                "correo": correo_en_segundo_plano,
                 "tiene_correo": bool(correo_cliente),
                 "correo_error": correo_error
             }
@@ -4123,7 +4271,7 @@ if tab_resumen:
         "tipo": "Tipo de crédito",
         "estado": "Estado"
     })
-    st.dataframe(tabla_resumen, use_container_width=True, hide_index=True)
+    render_tabla_moderna(tabla_resumen, columna_estado="Estado")
     st.divider()
     st.subheader("⚠️ Alertas de cartera")
     a1, a2, a3 = st.columns(3)
@@ -4145,7 +4293,7 @@ if tab_resumen:
             "monto_en_mora": "Monto en mora",
             "exposicion_en_mora": "Exposición en mora"
         })
-        st.dataframe(detalle_mora_show, use_container_width=True, hide_index=True)
+        render_tabla_moderna(detalle_mora_show)
 
     # ==========================
     # 🔎 CONSULTA MENSUAL
@@ -4331,16 +4479,20 @@ if tab_proyeccion:
     if abs(total_pct - 100) > 0.01:
         st.warning("⚠️ La distribución debe sumar 100%. Ajusta reinversión, caja y gerencia antes de usar la recomendación.")
     elif ES_ADMIN:
-        if st.button("💾 Guardar parámetros", key="btn_guardar_parametros_proyeccion"):
-            with get_conn() as conn:
-                set_app_meta(conn, "proy_meta_mensual", meta_mensual)
-                set_app_meta(conn, "proy_valor_express", valor_express_ref)
-                set_app_meta(conn, "proy_valor_normal", valor_normal_ref)
-                set_app_meta(conn, "proy_pct_reinvertir", pct_reinvertir)
-                set_app_meta(conn, "proy_pct_caja", pct_caja)
-                set_app_meta(conn, "proy_pct_gerencia", pct_gerencia)
-                conn.commit()
-            st.success("✅ Parámetros de proyección guardados.")
+        if st.button("💾 Guardar parámetros", key="btn_guardar_parametros_proyeccion", disabled=st.session_state.get("app_busy", False)):
+            start_busy("Guardando parámetros...")
+            try:
+                with get_conn() as conn:
+                    set_app_meta(conn, "proy_meta_mensual", meta_mensual)
+                    set_app_meta(conn, "proy_valor_express", valor_express_ref)
+                    set_app_meta(conn, "proy_valor_normal", valor_normal_ref)
+                    set_app_meta(conn, "proy_pct_reinvertir", pct_reinvertir)
+                    set_app_meta(conn, "proy_pct_caja", pct_caja)
+                    set_app_meta(conn, "proy_pct_gerencia", pct_gerencia)
+                    conn.commit()
+                st.success("✅ Parámetros de proyección guardados.")
+            finally:
+                stop_busy()
 
     year_proy, month_proy = map(int, mes_proyeccion.split("-"))
     if year_proy == 2025 and month_proy == 12:

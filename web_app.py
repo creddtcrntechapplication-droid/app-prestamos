@@ -2658,6 +2658,112 @@ def registrar_auditoria_contrato(prestamo_id, accion, usuario=None, motivo=None,
         pass
 
 
+def enviar_contrato_credito_en_segundo_plano(prestamo_row):
+    """
+    Genera el PDF del contrato y guarda el token de aceptación de forma
+    inmediata (es trabajo local, rápido), y manda el correo con el contrato
+    en un hilo aparte -- igual que con los pagos, para no dejar "Registrar
+    crédito normal/express/interés libre" colgado hasta 60s esperando a
+    Brevo.
+
+    A diferencia de enviar_contrato_credito (que sigue existiendo para el
+    botón "Enviar contrato manual" con reintento explícito), esta versión no
+    devuelve si el correo se envió con éxito -- eso ya no se sabe en el
+    momento de responder a la pantalla. Si el correo falla, queda en el log
+    del servidor (buscar "[contrato-segundo-plano]") y el botón "Enviar
+    contrato manual" permite reintentar sin crear el crédito de nuevo.
+    """
+    if not prestamo_row.get("correo"):
+        print(f"[contrato-segundo-plano] Crédito {prestamo_row.get('id')}: sin correo registrado, no se envía")
+        return
+    if not APP_BASE_URL:
+        print(f"[contrato-segundo-plano] Crédito {prestamo_row.get('id')}: falta APP_BASE_URL")
+        return
+
+    token = prestamo_row.get("contrato_token")
+    if not token:
+        token = uuid.uuid4().hex
+        with get_conn() as conn:
+            conn.execute(
+                text("UPDATE prestamos SET contrato_token = :token WHERE id = :id"),
+                {"token": token, "id": prestamo_row["id"]}
+            )
+            conn.commit()
+
+    enlace = f"{APP_BASE_URL}?aceptar={token}"
+    ruta_pdf = generar_contrato_pdf(
+        prestamo_row["id"],
+        prestamo_row["cliente"],
+        prestamo_row["monto_original"],
+        prestamo_row["cuotas"],
+        prestamo_row["valor_cuota"],
+        prestamo_row.get("tipo", "Normal"),
+        tasa_interes=prestamo_row.get("tasa_mensual", 0),
+        fecha_proximo_interes=prestamo_row.get("fecha_proximo_interes")
+    )
+    cuerpo = construir_cuerpo_correo(
+        "CONTRATO", prestamo_row["cliente"], prestamo_id=prestamo_row["id"],
+        monto=prestamo_row["monto_original"], cuotas=prestamo_row["cuotas"],
+        valor_cuota=prestamo_row["valor_cuota"], tipo_credito=prestamo_row.get("tipo"),
+        tipo_credito_codigo=prestamo_row.get("tipo_credito"), frecuencia=prestamo_row.get("frecuencia", "Mensual"),
+        saldo_capital=prestamo_row.get("saldo_capital") or prestamo_row.get("monto_original"),
+        tasa_interes=prestamo_row.get("tasa_mensual"), fecha_proximo_interes=prestamo_row.get("fecha_proximo_interes"),
+        link_aceptacion=enlace
+    )
+    html_correo = construir_html_correo(
+        "CONTRATO", prestamo_row["cliente"], prestamo_id=prestamo_row["id"],
+        monto=prestamo_row["monto_original"], cuotas=prestamo_row["cuotas"],
+        valor_cuota=prestamo_row["valor_cuota"], tipo_credito=prestamo_row.get("tipo"),
+        tipo_credito_codigo=prestamo_row.get("tipo_credito"), frecuencia=prestamo_row.get("frecuencia", "Mensual"),
+        saldo_capital=prestamo_row.get("saldo_capital") or prestamo_row.get("monto_original"),
+        tasa_interes=prestamo_row.get("tasa_mensual"), fecha_proximo_interes=prestamo_row.get("fecha_proximo_interes"),
+        link_aceptacion=enlace
+    )
+
+    try:
+        with open(ruta_pdf, "rb") as f:
+            adjunto_bytes = f.read()
+    except Exception as e:
+        print(f"[contrato-segundo-plano] Crédito {prestamo_row.get('id')}: no se pudo leer el PDF: {e}")
+        return
+
+    def _enviar():
+        try:
+            ok_mail, mail_ref = enviar_correo_async(
+                prestamo_row["correo"],
+                "CREDDT CRNTECH | Contrato de crédito para aceptación",
+                cuerpo,
+                attachment_bytes=adjunto_bytes,
+                attachment_name=f"contrato_{prestamo_row['id']}.pdf",
+                html_override=html_correo
+            )
+            print(f"[contrato-segundo-plano] Crédito {prestamo_row.get('id')}: enviar_correo_async devolvió ok={ok_mail}, ref={mail_ref}")
+            if not ok_mail:
+                registrar_auditoria_contrato(prestamo_row["id"], "ENVIO_CONTRATO_FALLIDO", detalle=f"Intento de envío a {prestamo_row.get('correo')} falló: {mail_ref}")
+                return
+            with get_conn() as conn:
+                conn.execute(text("""
+                    UPDATE prestamos
+                    SET contrato_enviado = 1,
+                        fecha_envio_contrato = :fecha
+                    WHERE id = :id
+                """), {"fecha": ahora_local().isoformat(timespec='seconds'), "id": prestamo_row["id"]})
+                conn.commit()
+            clear_app_caches()
+            ref_txt = f" (Brevo messageId: {mail_ref})" if mail_ref else ""
+            registrar_auditoria_contrato(prestamo_row["id"], "ENVIO_CONTRATO", detalle=f"Contrato enviado a {prestamo_row.get('correo')}{ref_txt}")
+        except Exception as e:
+            print(f"[contrato-segundo-plano] Crédito {prestamo_row.get('id')}: EXCEPCIÓN enviando: {e}")
+        finally:
+            if os.path.exists(ruta_pdf):
+                try:
+                    os.remove(ruta_pdf)
+                except Exception:
+                    pass
+
+    threading.Thread(target=_enviar, daemon=True).start()
+
+
 def enviar_contrato_credito(prestamo_row):
     """Genera y envía el contrato del crédito.
 
@@ -2926,8 +3032,8 @@ def crear_credito_db(cliente_cedula, monto, cuotas, frecuencia, tipo, fecha_inic
             "tipo": tipo,
             "contrato_token": contrato_token
         }
-    ok_mail, err_mail = enviar_contrato_credito(prestamo_row)
-    return True, None if ok_mail else err_mail, prestamo_row
+    enviar_contrato_credito_en_segundo_plano(prestamo_row)
+    return True, None, prestamo_row
 
 
 def crear_credito_interes_libre_db(cliente_cedula, monto, tasa_interes_pct, fecha_inicio=None):
@@ -2982,8 +3088,8 @@ def crear_credito_interes_libre_db(cliente_cedula, monto, tasa_interes_pct, fech
             "fecha_proximo_interes": fecha_proximo.isoformat(),
             "contrato_token": contrato_token,
         }
-    ok_mail, err_mail = enviar_contrato_credito(prestamo_row)
-    return True, None if ok_mail else err_mail, prestamo_row
+    enviar_contrato_credito_en_segundo_plano(prestamo_row)
+    return True, None, prestamo_row
 
 def _fecha_iso_a_date(valor, default=None):
     if not valor:
@@ -3117,8 +3223,8 @@ def registrar_pago_interes_libre(prestamo_id, fecha_pago, valor_pago, modo_pago=
         clear_app_caches()
 
     pdf = None
-    correo_ok = False
     correo_error = None
+    correo_en_segundo_plano = False
     try:
         titulo_pdf = "RECIBO DE PAGO INTERÉS LIBRE" if modo_pago == "interes" else "RECIBO DE CIERRE INTERÉS LIBRE"
         pdf = generar_recibo_pdf(prestamo_id, prestamo["cliente"], prestamo["monto_original"], fecha_pago.isoformat(), valor_pago, titulo=titulo_pdf, subtitulo="VALOR PAGADO")
@@ -3140,7 +3246,9 @@ def registrar_pago_interes_libre(prestamo_id, fecha_pago, valor_pago, modo_pago=
         html_correo = construir_html_correo("RECIBO_CUOTA", prestamo["cliente"], **kwargs)
         correo_cliente = (prestamo.get("correo") or "").strip()
         if correo_cliente:
-            correo_ok, correo_error = enviar_pdf_por_correo(correo_cliente, f"CREDDT CRNTECH | Confirmación de pago del crédito {prestamo_id}", cuerpo, pdf, f"recibo_{prestamo_id}.pdf", html_override=html_correo)
+            enviar_pdf_por_correo_en_segundo_plano(correo_cliente, f"CREDDT CRNTECH | Confirmación de pago del crédito {prestamo_id}", cuerpo, pdf, f"recibo_{prestamo_id}.pdf", html_override=html_correo)
+            pdf = None
+            correo_en_segundo_plano = True
         else:
             correo_error = "Cliente sin correo registrado"
     finally:
@@ -3162,7 +3270,7 @@ def registrar_pago_interes_libre(prestamo_id, fecha_pago, valor_pago, modo_pago=
         "dias": dias,
         "fecha_proximo_interes": fecha_proximo.isoformat() if fecha_proximo else "Finalizado",
         "modo_pago": modo_pago,
-        "correo": correo_ok,
+        "correo": correo_en_segundo_plano,
         "tiene_correo": bool(prestamo.get("correo")),
         "correo_error": correo_error,
         "finalizado": modo_pago == "finalizar",
@@ -3916,8 +4024,8 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
     nombre_cliente = cliente[0] if cliente else "Cliente"
     correo_cliente = (cliente[1] or "").strip() if cliente else ""
     pdf = None
-    correo_ok = False
     correo_error = None
+    correo_en_segundo_plano = False
     try:
         pdf = generar_recibo_pdf(prestamo_id, nombre_cliente, prestamo_db["monto_original"], fecha_pago.isoformat(), valor_abono, titulo="RECIBO DE ABONO A CAPITAL", subtitulo="ABONO A CAPITAL")
         kwargs = dict(
@@ -3933,7 +4041,7 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
         cuerpo = construir_cuerpo_correo("RECIBO_ABONO", nombre_cliente, **kwargs)
         html_correo = construir_html_correo("RECIBO_ABONO", nombre_cliente, **kwargs)
         if correo_cliente:
-            correo_ok, correo_error = enviar_pdf_por_correo(
+            enviar_pdf_por_correo_en_segundo_plano(
                 correo_cliente,
                 f"Abono a capital crédito {prestamo_id}",
                 cuerpo,
@@ -3941,6 +4049,8 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
                 f"abono_capital_{prestamo_id}.pdf",
                 html_override=html_correo
             )
+            pdf = None
+            correo_en_segundo_plano = True
         else:
             correo_error = "Cliente sin correo registrado"
     finally:
@@ -3954,7 +4064,7 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
         "credito": prestamo_id,
         "valor": valor_abono,
         "nueva_cuota": nueva_cuota,
-        "correo": correo_ok,
+        "correo": correo_en_segundo_plano,
         "tiene_correo": bool(correo_cliente),
         "correo_error": correo_error
     }
@@ -4859,10 +4969,7 @@ if tab_creditos:
                                 ok_c, err_c, prestamo_creado = crear_credito_db(cliente_normal, monto_normal_new, cuotas_normal_new, frecuencia_normal_new, "Normal", fecha_inicio_normal)
                                 if ok_c:
                                     st.session_state["reset_cliente_normal_credito"] = True
-                                    if not err_c:
-                                        set_flash("credito_msg", "success", f"✅ Crédito {prestamo_creado['id']} creado y contrato enviado correctamente")
-                                    else:
-                                        set_flash("credito_msg", "warning", f"⚠️ Crédito {prestamo_creado['id']} creado. Observación del contrato: {err_c}")
+                                    set_flash("credito_msg", "success", f"✅ Crédito {prestamo_creado['id']} creado. El contrato se está enviando por correo (puede tardar unos segundos).")
                                     st.rerun()
                                 else:
                                     st.error(f"❌ {err_c}")
@@ -4898,11 +5005,8 @@ if tab_creditos:
                             try:
                                 ok_c, err_c, prestamo_creado = crear_credito_db(cliente_express, monto_express_new, cuotas_express_new, frecuencia_express_new, "Express", fecha_inicio_express)
                                 if ok_c:
-                                    st.session_state["reset_cliente_express_credito"] = True
-                                    if not err_c:
-                                        set_flash("credito_msg", "success", f"✅ Crédito {prestamo_creado['id']} creado y contrato enviado correctamente")
-                                    else:
-                                        set_flash("credito_msg", "warning", f"⚠️ Crédito {prestamo_creado['id']} creado. Observación del contrato: {err_c}")
+                                    st.session_state["reset_cliente_normal_credito"] = True
+                                    set_flash("credito_msg", "success", f"✅ Crédito {prestamo_creado['id']} creado. El contrato se está enviando por correo (puede tardar unos segundos).")
                                     st.rerun()
                                 else:
                                     st.error(f"❌ {err_c}")
@@ -4943,10 +5047,7 @@ if tab_creditos:
                                 ok_c, err_c, prestamo_creado = crear_credito_interes_libre_db(cliente_interes_libre, monto_interes_libre, tasa_interes_libre_pct, fecha_inicio_interes_libre)
                                 if ok_c:
                                     st.session_state["reset_cliente_interes_libre"] = True
-                                    if not err_c:
-                                        set_flash("credito_msg", "success", f"✅ Crédito interés libre {prestamo_creado['id']} creado y contrato enviado correctamente")
-                                    else:
-                                        set_flash("credito_msg", "warning", f"⚠️ Crédito interés libre {prestamo_creado['id']} creado. Observación del contrato: {err_c}")
+                                    set_flash("credito_msg", "success", f"✅ Crédito interés libre {prestamo_creado['id']} creado. El contrato se está enviando por correo (puede tardar unos segundos).")
                                     st.rerun()
                                 else:
                                     st.error(f"❌ {err_c}")

@@ -31,6 +31,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.lib.enums import TA_CENTER
 from io import BytesIO
+import html as html_module
 # ==========================
 # CONFIGURACIÓN
 # ==========================
@@ -125,7 +126,7 @@ def clear_app_caches():
     except Exception:
         pass
 
-@st.cache_data(ttl=45, show_spinner=False)
+@st.cache_data(ttl=45, show_spinner="⏳ Cargando créditos...")
 def load_estado():
     with get_conn() as conn:
         df = pd.read_sql(
@@ -218,7 +219,7 @@ def load_estado():
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
     return df
 
-@st.cache_data(ttl=45, show_spinner=False)
+@st.cache_data(ttl=45, show_spinner="⏳ Cargando cartera en mora...")
 def load_mora():
     with get_conn() as conn:
         mora_df = pd.read_sql(text("""
@@ -260,7 +261,7 @@ def load_mora():
         return 0, 0.0
     return int(mora_df["clientes_mora"][0] or 0), float(mora_df["monto_mora"][0] or 0)
 
-@st.cache_data(ttl=45, show_spinner=False)
+@st.cache_data(ttl=45, show_spinner="⏳ Cargando detalle de mora...")
 def load_detalle_mora():
     with get_conn() as conn:
         return pd.read_sql(text("""
@@ -306,7 +307,7 @@ def load_detalle_mora():
             WHERE fecha_vencimiento < :hoy
         """), conn, params={"hoy": hoy_local().isoformat()})
 
-@st.cache_data(ttl=45, show_spinner=False)
+@st.cache_data(ttl=45, show_spinner="⏳ Cargando cuotas del periodo...")
 def load_cuotas_periodo(inicio_iso, fin_iso):
     with get_conn() as conn:
         return pd.read_sql(text("""
@@ -370,7 +371,7 @@ def load_cuotas_periodo(inicio_iso, fin_iso):
             ORDER BY fecha_vencimiento, cliente
         """), conn, params={"inicio": inicio_iso, "fin": fin_iso})
 
-@st.cache_data(ttl=45, show_spinner=False)
+@st.cache_data(ttl=45, show_spinner="⏳ Calculando proyección de cuotas...")
 def load_cuotas_proyeccion(inicio_iso, fin_iso):
     with get_conn() as conn:
         return pd.read_sql(text("""
@@ -435,7 +436,7 @@ def load_cuotas_proyeccion(inicio_iso, fin_iso):
             ORDER BY fecha_vencimiento, cliente
         """), conn, params={"inicio": inicio_iso, "fin": fin_iso})
 
-@st.cache_data(ttl=45, show_spinner=False)
+@st.cache_data(ttl=45, show_spinner="⏳ Calculando indicadores financieros...")
 def load_kpis_financieros():
     with get_conn() as conn:
         row = conn.execute(text("""
@@ -965,16 +966,18 @@ if not st.session_state.auth and not token_aceptar:
         ingresar = st.form_submit_button("Ingresar", use_container_width=True, type="primary")
 
     if ingresar:
-        with get_conn() as conn:
-            user = conn.execute(
-                text("""
-                    SELECT usuario, rol, password_hash, password_salt
-                    FROM usuarios
-                    WHERE usuario=:usuario
-                """),
-                {"usuario": usuario}
-            ).mappings().first()
-        if user and _verificar_password(clave, user["password_hash"], user["password_salt"]):
+        with st.spinner("🔐 Verificando credenciales..."):
+            with get_conn() as conn:
+                user = conn.execute(
+                    text("""
+                        SELECT usuario, rol, password_hash, password_salt
+                        FROM usuarios
+                        WHERE usuario=:usuario
+                    """),
+                    {"usuario": usuario}
+                ).mappings().first()
+            login_ok = bool(user) and _verificar_password(clave, user["password_hash"], user["password_salt"])
+        if login_ok:
             st.session_state.auth = True
             st.session_state.usuario = user["usuario"]
             st.session_state.rol = user["rol"]
@@ -1020,6 +1023,8 @@ if PUEDE_CREAR_CREDITOS:
     MENU_LABELS.append("🆕 Nuevo crédito")
 if PUEDE_VER_DETALLE:
     MENU_LABELS.append("📄 Detalle por crédito")
+if PUEDE_VER_DETALLE:
+    MENU_LABELS.append("🗂️ Cartera por cliente")
 if PUEDE_REGISTRAR_PAGOS:
     MENU_LABELS.append("💰 Pagos")
 if PUEDE_USAR_SIMULADOR:
@@ -1989,20 +1994,25 @@ def show_flash(key):
 # ==========================
 _TABLA_MODERNA_CSS_INYECTADO = False
 
-def render_tabla_moderna(df, columna_estado=None):
+def render_tabla_moderna(df, columna_estado=None, buscar=False, key=None, placeholder_buscar="🔎 Buscar por nombre, crédito, estado..."):
     """
     Renderiza un DataFrame como tabla HTML con estilo moderno (encabezado
     oscuro, filas alternadas, bordes redondeados) en vez del grid gris por
-    defecto de st.dataframe.
-
-    Se usa solo en tablas de resumen/lectura (Resumen general, Alertas de
-    cartera) donde no hace falta ordenar columnas ni buscar en vivo. Las
-    tablas donde sí se necesita esa interactividad (Clientes, Detalle por
-    crédito, Usuarios, etc.) se dejan con st.dataframe.
+    defecto de st.dataframe. Esta es la tabla "oficial" de CREDDT y se usa
+    en todos los módulos que muestran listados (Resumen general, Alertas de
+    cartera, Clientes, Créditos pendientes, Detalle por crédito, Usuarios,
+    Proyección, etc.).
 
     columna_estado: nombre opcional de una columna cuyo valor se pinta como
     una "pastilla" de color (verde/rojo/gris) en vez de texto plano -- por
     ejemplo la columna "Estado" (Activo/Cancelado/Anulado).
+
+    buscar: si es True, muestra un campo de texto arriba de la tabla que
+    filtra las filas en vivo -- coincide si el texto escrito aparece en
+    cualquier columna de esa fila (sin importar mayúsculas/minúsculas).
+
+    key: key único de Streamlit para el campo de búsqueda. Obligatorio si
+    buscar=True y hay más de una tabla con buscador en la misma pantalla.
     """
     global _TABLA_MODERNA_CSS_INYECTADO
     if not _TABLA_MODERNA_CSS_INYECTADO:
@@ -2010,13 +2020,16 @@ def render_tabla_moderna(df, columna_estado=None):
         <style>
         .creddt-tabla-wrap{
             border-radius: 14px;
-            overflow: hidden;
+            overflow-x: auto;
+            overflow-y: hidden;
+            -webkit-overflow-scrolling: touch;
             border: 1px solid #e2e8f0;
             box-shadow: 0 6px 18px rgba(15,23,42,.06);
             margin-bottom: 0.5rem;
         }
         table.creddt-tabla{
             width: 100%;
+            min-width: 640px;
             border-collapse: collapse;
             font-size: 14px;
             font-family: inherit;
@@ -2033,6 +2046,7 @@ def render_tabla_moderna(df, columna_estado=None):
             padding: 9px 14px;
             border-top: 1px solid #eef2f7;
             color: #1f2937;
+            white-space: nowrap;
         }
         table.creddt-tabla tbody tr:nth-child(even){
             background: #f8fafc;
@@ -2046,11 +2060,17 @@ def render_tabla_moderna(df, columna_estado=None):
             border-radius: 999px;
             font-size: 12.5px;
             font-weight: 700;
+            white-space: nowrap;
         }
         .creddt-pill-activo{ background:#dcfce7; color:#15803d; }
         .creddt-pill-cancelado{ background:#dbeafe; color:#1d4ed8; }
         .creddt-pill-anulado{ background:#fee2e2; color:#b91c1c; }
         .creddt-pill-otro{ background:#f1f5f9; color:#475569; }
+        .creddt-tabla-hint{
+            font-size: 12px;
+            color: #94a3b8;
+            margin: -2px 0 6px 2px;
+        }
         @media (prefers-color-scheme: dark){
             .creddt-tabla-wrap{ border-color:#334155; box-shadow: 0 6px 18px rgba(2,6,23,.35); }
             table.creddt-tabla tbody td{ border-top-color:#1e293b; color:#e2e8f0; }
@@ -2068,9 +2088,31 @@ def render_tabla_moderna(df, columna_estado=None):
             "cancelado": "creddt-pill-cancelado",
             "anulado": "creddt-pill-anulado",
         }.get(v, "creddt-pill-otro")
-        return f'<span class="creddt-pill {clase}">{valor}</span>'
+        return f'<span class="creddt-pill {clase}">{html_module.escape(str(valor))}</span>'
 
-    encabezados = "".join(f"<th>{col}</th>" for col in df.columns)
+    if buscar:
+        termino = st.text_input(
+            placeholder_buscar,
+            key=key or "creddt_buscar_tabla",
+            placeholder=placeholder_buscar,
+            label_visibility="collapsed"
+        )
+        if termino and termino.strip():
+            termino_low = termino.strip().lower()
+            mask = df.apply(
+                lambda fila: fila.astype(str).str.lower().str.contains(termino_low, regex=False, na=False).any(),
+                axis=1
+            )
+            df = df[mask]
+
+    if df.empty:
+        st.info("No se encontraron resultados." if buscar else "No hay datos para mostrar.")
+        return
+
+    if len(df.columns) > 5:
+        st.markdown('<div class="creddt-tabla-hint">👉 Desliza la tabla hacia los lados para ver todas las columnas</div>', unsafe_allow_html=True)
+
+    encabezados = "".join(f"<th>{html_module.escape(str(col))}</th>" for col in df.columns)
     filas_html = []
     for _, fila in df.iterrows():
         celdas = []
@@ -2079,10 +2121,10 @@ def render_tabla_moderna(df, columna_estado=None):
             if columna_estado and col == columna_estado:
                 celdas.append(f"<td>{_pill(valor)}</td>")
             else:
-                celdas.append(f"<td>{valor}</td>")
+                celdas.append(f"<td>{html_module.escape(str(valor))}</td>")
         filas_html.append(f"<tr>{''.join(celdas)}</tr>")
 
-    html = f"""
+    html_tabla = f"""
     <div class="creddt-tabla-wrap">
         <table class="creddt-tabla">
             <thead><tr>{encabezados}</tr></thead>
@@ -2090,7 +2132,7 @@ def render_tabla_moderna(df, columna_estado=None):
         </table>
     </div>
     """
-    st.markdown(html, unsafe_allow_html=True)
+    st.markdown(html_tabla, unsafe_allow_html=True)
 
 def pesos(valor):
     try:
@@ -3546,13 +3588,13 @@ def render_aceptacion_contrato(token):
         return
     st.info("Al hacer clic en aceptar, su crédito quedará activado para continuar con el desembolso.")
     if st.button("✅ Aceptar contrato", type="primary", disabled=st.session_state.get("app_busy", False)):
-        start_busy("Aceptando contrato...")
         try:
-            ok, mensaje, _ = aceptar_contrato_por_token(token)
-            if ok:
-                st.success(mensaje)
-            else:
-                st.error(mensaje)
+            with st.spinner("Aceptando contrato..."):
+                ok, mensaje, _ = aceptar_contrato_por_token(token)
+                if ok:
+                    st.success(mensaje)
+                else:
+                    st.error(mensaje)
         finally:
             stop_busy()
 def enviar_recordatorio_credito(prestamo_row):
@@ -4280,6 +4322,7 @@ tab_resumen = SECCION_ACTIVA == "📊 Resumen"
 tab_clientes = SECCION_ACTIVA == "👥 Clientes"
 tab_creditos = SECCION_ACTIVA == "🆕 Nuevo crédito"
 tab_detalle = SECCION_ACTIVA == "📄 Detalle por crédito"
+tab_cartera_cliente = SECCION_ACTIVA == "🗂️ Cartera por cliente"
 tab_pagos = SECCION_ACTIVA == "💰 Pagos"
 tab_proyeccion = SECCION_ACTIVA == "📈 Proyección"
 tab_sim = SECCION_ACTIVA == "🧮 Simulador"
@@ -4323,15 +4366,15 @@ if tab_resumen:
     with g3:
         st.caption(f"Última conciliación financiera: {ultima_reconciliacion}")
         if ES_ADMIN and st.button("🔄 Reconciliar histórico financiero", key="btn_reconciliar_finanzas", disabled=st.session_state.get("app_busy", False)):
-            start_busy("Reconstruyendo histórico financiero...")
             try:
-                resumen_recon = reconstruir_historial_financiero()
-                set_flash(
-                    "sistema_msg",
-                    "success",
-                    f"✅ Conciliación completada. Préstamos revisados: {resumen_recon['prestamos']} | Pagos recalculados: {resumen_recon['pagos']} | Ajustes negativos detectados: {resumen_recon['ajustes_negativos']}"
-                )
-                st.rerun()
+                with st.spinner("Reconstruyendo histórico financiero..."):
+                    resumen_recon = reconstruir_historial_financiero()
+                    set_flash(
+                        "sistema_msg",
+                        "success",
+                        f"✅ Conciliación completada. Préstamos revisados: {resumen_recon['prestamos']} | Pagos recalculados: {resumen_recon['pagos']} | Ajustes negativos detectados: {resumen_recon['ajustes_negativos']}"
+                    )
+                    st.rerun()
             except Exception as e:
                 st.error(f"❌ No se pudo ejecutar la conciliación financiera: {e}")
             finally:
@@ -4381,7 +4424,13 @@ if tab_resumen:
         "tipo": "Tipo de crédito",
         "estado": "Estado"
     })
-    render_tabla_moderna(tabla_resumen, columna_estado="Estado")
+    render_tabla_moderna(
+        tabla_resumen,
+        columna_estado="Estado",
+        buscar=True,
+        key="buscar_resumen_creditos",
+        placeholder_buscar="🔎 Buscar por cliente, N.° de crédito, tipo o estado..."
+    )
     st.divider()
     st.subheader("⚠️ Alertas de cartera")
     a1, a2, a3 = st.columns(3)
@@ -4590,17 +4639,17 @@ if tab_proyeccion:
         st.warning("⚠️ La distribución debe sumar 100%. Ajusta reinversión, caja y gerencia antes de usar la recomendación.")
     elif ES_ADMIN:
         if st.button("💾 Guardar parámetros", key="btn_guardar_parametros_proyeccion", disabled=st.session_state.get("app_busy", False)):
-            start_busy("Guardando parámetros...")
             try:
-                with get_conn() as conn:
-                    set_app_meta(conn, "proy_meta_mensual", meta_mensual)
-                    set_app_meta(conn, "proy_valor_express", valor_express_ref)
-                    set_app_meta(conn, "proy_valor_normal", valor_normal_ref)
-                    set_app_meta(conn, "proy_pct_reinvertir", pct_reinvertir)
-                    set_app_meta(conn, "proy_pct_caja", pct_caja)
-                    set_app_meta(conn, "proy_pct_gerencia", pct_gerencia)
-                    conn.commit()
-                st.success("✅ Parámetros de proyección guardados.")
+                with st.spinner("Guardando parámetros..."):
+                    with get_conn() as conn:
+                        set_app_meta(conn, "proy_meta_mensual", meta_mensual)
+                        set_app_meta(conn, "proy_valor_express", valor_express_ref)
+                        set_app_meta(conn, "proy_valor_normal", valor_normal_ref)
+                        set_app_meta(conn, "proy_pct_reinvertir", pct_reinvertir)
+                        set_app_meta(conn, "proy_pct_caja", pct_caja)
+                        set_app_meta(conn, "proy_pct_gerencia", pct_gerencia)
+                        conn.commit()
+                    st.success("✅ Parámetros de proyección guardados.")
             finally:
                 stop_busy()
 
@@ -4709,7 +4758,7 @@ if tab_proyeccion:
         resumen_tipo = cuotas_proy.groupby("tipo_credito", dropna=False)["valor_cuota"].sum().reset_index()
         resumen_tipo["valor_cuota"] = resumen_tipo["valor_cuota"].apply(pesos)
         resumen_tipo = resumen_tipo.rename(columns={"tipo_credito": "Tipo de crédito", "valor_cuota": "Recaudo proyectado"})
-        st.dataframe(resumen_tipo, use_container_width=True, hide_index=True)
+        render_tabla_moderna(resumen_tipo)
 
         detalle_proy = cuotas_proy[["fecha_vencimiento", "cliente", "credito", "nro_cuota", "tipo_credito", "valor_cuota", "estado_cuota"]].copy()
         detalle_proy["valor_cuota"] = detalle_proy["valor_cuota"].apply(pesos)
@@ -4722,7 +4771,7 @@ if tab_proyeccion:
             "valor_cuota": "Valor cuota",
             "estado_cuota": "Estado cuota"
         })
-        st.dataframe(detalle_proy, use_container_width=True, hide_index=True)
+        render_tabla_moderna(detalle_proy, columna_estado="Estado cuota")
 
 # ==========================
 # 👥 CLIENTES
@@ -4777,22 +4826,22 @@ if tab_clientes:
                         if not cedula_new.strip() or not nombres_new.strip() or not apellidos_new.strip():
                             st.error("❌ Cédula, nombres y apellidos son obligatorios")
                         else:
-                            start_busy("Registrando cliente...")
                             try:
-                                guardar_cliente_db({
-                                    "cedula": cedula_new.strip(),
-                                    "nombres": nombres_new.strip(),
-                                    "apellidos": apellidos_new.strip(),
-                                    "ciudad": ciudad_new.strip(),
-                                    "telefono": telefono_new.strip(),
-                                    "correo": correo_new.strip(),
-                                    "direccion": direccion_new.strip(),
-                                    "empresa": empresa_new.strip(),
-                                    "fecha_nacimiento": _fecha_cliente_db(fecha_nacimiento_new),
-                                    "cargo": cargo_new.strip()
-                                })
-                                set_flash("clientes_msg", "success", "✅ Cliente registrado correctamente")
-                                st.rerun()
+                                with st.spinner("Registrando cliente..."):
+                                    guardar_cliente_db({
+                                        "cedula": cedula_new.strip(),
+                                        "nombres": nombres_new.strip(),
+                                        "apellidos": apellidos_new.strip(),
+                                        "ciudad": ciudad_new.strip(),
+                                        "telefono": telefono_new.strip(),
+                                        "correo": correo_new.strip(),
+                                        "direccion": direccion_new.strip(),
+                                        "empresa": empresa_new.strip(),
+                                        "fecha_nacimiento": _fecha_cliente_db(fecha_nacimiento_new),
+                                        "cargo": cargo_new.strip()
+                                    })
+                                    set_flash("clientes_msg", "success", "✅ Cliente registrado correctamente")
+                                    st.rerun()
                             except Exception as e:
                                 st.error(f"❌ No se pudo registrar el cliente: {e}")
                             finally:
@@ -4850,22 +4899,22 @@ if tab_clientes:
                                         cargo_edit = st.text_input("Cargo", value=fila["cargo"])
                                         actualizar = st.form_submit_button("Guardar cambios", type="primary", disabled=st.session_state.get("app_busy", False))
                                         if actualizar:
-                                            start_busy("Actualizando cliente...")
                                             try:
-                                                actualizar_cliente_db(cliente_sel, {
-                                                    "nombres": nombres_edit.strip(),
-                                                    "apellidos": apellidos_edit.strip(),
-                                                    "ciudad": ciudad_edit.strip(),
-                                                    "telefono": telefono_edit.strip(),
-                                                    "correo": correo_edit.strip(),
-                                                    "direccion": direccion_edit.strip(),
-                                                    "empresa": empresa_edit.strip(),
-                                                    "fecha_nacimiento": _fecha_cliente_db(fecha_nacimiento_edit),
-                                                    "cargo": cargo_edit.strip()
-                                                })
-                                                set_flash("clientes_msg", "success", "✅ Cliente actualizado correctamente")
-                                                st.session_state["reset_sel_cliente_gestion"] = True
-                                                st.rerun()
+                                                with st.spinner("Actualizando cliente..."):
+                                                    actualizar_cliente_db(cliente_sel, {
+                                                        "nombres": nombres_edit.strip(),
+                                                        "apellidos": apellidos_edit.strip(),
+                                                        "ciudad": ciudad_edit.strip(),
+                                                        "telefono": telefono_edit.strip(),
+                                                        "correo": correo_edit.strip(),
+                                                        "direccion": direccion_edit.strip(),
+                                                        "empresa": empresa_edit.strip(),
+                                                        "fecha_nacimiento": _fecha_cliente_db(fecha_nacimiento_edit),
+                                                        "cargo": cargo_edit.strip()
+                                                    })
+                                                    set_flash("clientes_msg", "success", "✅ Cliente actualizado correctamente")
+                                                    st.session_state["reset_sel_cliente_gestion"] = True
+                                                    st.rerun()
                                             except Exception as e:
                                                 st.error(f"❌ No se pudo actualizar el cliente: {e}")
                                             finally:
@@ -4876,33 +4925,38 @@ if tab_clientes:
                                 with st.expander("🗑️ Borrar cliente", expanded=False):
                                     st.warning("Esta acción eliminará el cliente solo si no tiene créditos asociados.")
                                     if st.button("Borrar cliente seleccionado", key="btn_borrar_cliente", type="secondary", disabled=st.session_state.get("app_busy", False)):
-                                        start_busy("Eliminando cliente...")
                                         try:
-                                            ok_del, err_del = eliminar_cliente_db(cliente_sel)
-                                            if ok_del:
-                                                st.session_state["reset_sel_cliente_gestion"] = True
-                                                set_flash("clientes_msg", "success", "✅ Cliente eliminado correctamente")
-                                                st.rerun()
-                                            else:
-                                                st.error(f"❌ {err_del}")
+                                            with st.spinner("Eliminando cliente..."):
+                                                ok_del, err_del = eliminar_cliente_db(cliente_sel)
+                                                if ok_del:
+                                                    st.session_state["reset_sel_cliente_gestion"] = True
+                                                    set_flash("clientes_msg", "success", "✅ Cliente eliminado correctamente")
+                                                    st.rerun()
+                                                else:
+                                                    st.error(f"❌ {err_del}")
                                         finally:
                                             stop_busy()
 
         if cli_tab3 is not None:
             with cli_tab3:
                 if not clientes_df.empty:
-                    st.dataframe(clientes_df.rename(columns={
-                        "cedula": "Cédula",
-                        "nombres": "Nombres",
-                        "apellidos": "Apellidos",
-                        "ciudad": "Ciudad",
-                        "telefono": "Teléfono",
-                        "correo": "Correo",
-                        "direccion": "Dirección",
-                        "empresa": "Empresa",
-                        "fecha_nacimiento": "Fecha de nacimiento",
-                        "cargo": "Cargo"
-                    }), use_container_width=True, hide_index=True)
+                    render_tabla_moderna(
+                        clientes_df.rename(columns={
+                            "cedula": "Cédula",
+                            "nombres": "Nombres",
+                            "apellidos": "Apellidos",
+                            "ciudad": "Ciudad",
+                            "telefono": "Teléfono",
+                            "correo": "Correo",
+                            "direccion": "Dirección",
+                            "empresa": "Empresa",
+                            "fecha_nacimiento": "Fecha de nacimiento",
+                            "cargo": "Cargo"
+                        }),
+                        buscar=True,
+                        key="buscar_bd_clientes",
+                        placeholder_buscar="🔎 Buscar por nombre, cédula, ciudad..."
+                    )
                 else:
                     st.info("No hay clientes registrados.")
 # ==========================
@@ -4964,15 +5018,15 @@ if tab_creditos:
                         elif not confirmar_envio_normal:
                             st.warning("ℹ️ Debes confirmar la validación antes de enviar el contrato.")
                         else:
-                            start_busy("Creando crédito normal...")
                             try:
-                                ok_c, err_c, prestamo_creado = crear_credito_db(cliente_normal, monto_normal_new, cuotas_normal_new, frecuencia_normal_new, "Normal", fecha_inicio_normal)
-                                if ok_c:
-                                    st.session_state["reset_cliente_normal_credito"] = True
-                                    set_flash("credito_msg", "success", f"✅ Crédito {prestamo_creado['id']} creado. El contrato se está enviando por correo (puede tardar unos segundos).")
-                                    st.rerun()
-                                else:
-                                    st.error(f"❌ {err_c}")
+                                with st.spinner("Creando crédito normal..."):
+                                    ok_c, err_c, prestamo_creado = crear_credito_db(cliente_normal, monto_normal_new, cuotas_normal_new, frecuencia_normal_new, "Normal", fecha_inicio_normal)
+                                    if ok_c:
+                                        st.session_state["reset_cliente_normal_credito"] = True
+                                        set_flash("credito_msg", "success", f"✅ Crédito {prestamo_creado['id']} creado. El contrato se está enviando por correo (puede tardar unos segundos).")
+                                        st.rerun()
+                                    else:
+                                        st.error(f"❌ {err_c}")
                             finally:
                                 stop_busy()
 
@@ -5001,15 +5055,15 @@ if tab_creditos:
                         elif not confirmar_envio_express:
                             st.warning("ℹ️ Debes confirmar la validación antes de enviar el contrato.")
                         else:
-                            start_busy("Creando crédito express...")
                             try:
-                                ok_c, err_c, prestamo_creado = crear_credito_db(cliente_express, monto_express_new, cuotas_express_new, frecuencia_express_new, "Express", fecha_inicio_express)
-                                if ok_c:
-                                    st.session_state["reset_cliente_normal_credito"] = True
-                                    set_flash("credito_msg", "success", f"✅ Crédito {prestamo_creado['id']} creado. El contrato se está enviando por correo (puede tardar unos segundos).")
-                                    st.rerun()
-                                else:
-                                    st.error(f"❌ {err_c}")
+                                with st.spinner("Creando crédito express..."):
+                                    ok_c, err_c, prestamo_creado = crear_credito_db(cliente_express, monto_express_new, cuotas_express_new, frecuencia_express_new, "Express", fecha_inicio_express)
+                                    if ok_c:
+                                        st.session_state["reset_cliente_normal_credito"] = True
+                                        set_flash("credito_msg", "success", f"✅ Crédito {prestamo_creado['id']} creado. El contrato se está enviando por correo (puede tardar unos segundos).")
+                                        st.rerun()
+                                    else:
+                                        st.error(f"❌ {err_c}")
                             finally:
                                 stop_busy()
 
@@ -5042,15 +5096,15 @@ if tab_creditos:
                         elif not confirmar_envio_interes_libre:
                             st.warning("ℹ️ Debes confirmar la validación antes de enviar el contrato.")
                         else:
-                            start_busy("Creando crédito interés libre...")
                             try:
-                                ok_c, err_c, prestamo_creado = crear_credito_interes_libre_db(cliente_interes_libre, monto_interes_libre, tasa_interes_libre_pct, fecha_inicio_interes_libre)
-                                if ok_c:
-                                    st.session_state["reset_cliente_interes_libre"] = True
-                                    set_flash("credito_msg", "success", f"✅ Crédito interés libre {prestamo_creado['id']} creado. El contrato se está enviando por correo (puede tardar unos segundos).")
-                                    st.rerun()
-                                else:
-                                    st.error(f"❌ {err_c}")
+                                with st.spinner("Creando crédito interés libre..."):
+                                    ok_c, err_c, prestamo_creado = crear_credito_interes_libre_db(cliente_interes_libre, monto_interes_libre, tasa_interes_libre_pct, fecha_inicio_interes_libre)
+                                    if ok_c:
+                                        st.session_state["reset_cliente_interes_libre"] = True
+                                        set_flash("credito_msg", "success", f"✅ Crédito interés libre {prestamo_creado['id']} creado. El contrato se está enviando por correo (puede tardar unos segundos).")
+                                        st.rerun()
+                                    else:
+                                        st.error(f"❌ {err_c}")
                             finally:
                                 stop_busy()
 
@@ -5132,16 +5186,16 @@ if tab_creditos:
                                     if not confirmar_reenvio:
                                         set_flash("contrato_msg", "warning", "ℹ️ Debes confirmar la validación antes de reenviar el contrato.")
                                         st.rerun()
-                                    start_busy("Enviando contrato manual...")
                                     try:
-                                        ok_send, err_send = enviar_contrato_credito(fila_p)
-                                        if ok_send:
-                                            if err_send:
-                                                set_flash("contrato_msg", "warning", f"⚠️ Contrato enviado para el crédito {fila_p['id']}, pero quedó una observación: {err_send}")
+                                        with st.spinner("Enviando contrato manual..."):
+                                            ok_send, err_send = enviar_contrato_credito(fila_p)
+                                            if ok_send:
+                                                if err_send:
+                                                    set_flash("contrato_msg", "warning", f"⚠️ Contrato enviado para el crédito {fila_p['id']}, pero quedó una observación: {err_send}")
+                                                else:
+                                                    set_flash("contrato_msg", "success", f"✅ Contrato enviado correctamente para el crédito {fila_p['id']}. Ahora queda esperando aceptación.")
                                             else:
-                                                set_flash("contrato_msg", "success", f"✅ Contrato enviado correctamente para el crédito {fila_p['id']}. Ahora queda esperando aceptación.")
-                                        else:
-                                            set_flash("contrato_msg", "warning", f"⚠️ No se pudo enviar el contrato del crédito {fila_p['id']}: {err_send}")
+                                                set_flash("contrato_msg", "warning", f"⚠️ No se pudo enviar el contrato del crédito {fila_p['id']}: {err_send}")
                                     except Exception as e:
                                         set_flash("contrato_msg", "error", f"❌ Error inesperado enviando contrato: {e}")
                                     finally:
@@ -5150,21 +5204,21 @@ if tab_creditos:
 
                             with col_accion_2:
                                 if st.button("🚫 Anular contrato", key=f"btn_anular_contrato_{fila_p['id']}", disabled=st.session_state.get("app_busy", False)):
-                                    start_busy("Anulando contrato...")
                                     try:
-                                        ok_cancel, data_cancel = cancelar_contrato_prestamo(
-                                            fila_p["id"],
-                                            motivo_anulacion,
-                                            usuario=st.session_state.get("usuario")
-                                        )
-                                        if ok_cancel:
-                                            if data_cancel.get("correo"):
-                                                set_flash("contrato_msg", "success", f"✅ Contrato {fila_p['id']} anulado y correo enviado al cliente.")
+                                        with st.spinner("Anulando contrato..."):
+                                            ok_cancel, data_cancel = cancelar_contrato_prestamo(
+                                                fila_p["id"],
+                                                motivo_anulacion,
+                                                usuario=st.session_state.get("usuario")
+                                            )
+                                            if ok_cancel:
+                                                if data_cancel.get("correo"):
+                                                    set_flash("contrato_msg", "success", f"✅ Contrato {fila_p['id']} anulado y correo enviado al cliente.")
+                                                else:
+                                                    obs = data_cancel.get("correo_error") or "sin detalle adicional"
+                                                    set_flash("contrato_msg", "warning", f"⚠️ Contrato {fila_p['id']} anulado, pero el correo no se pudo enviar: {obs}")
                                             else:
-                                                obs = data_cancel.get("correo_error") or "sin detalle adicional"
-                                                set_flash("contrato_msg", "warning", f"⚠️ Contrato {fila_p['id']} anulado, pero el correo no se pudo enviar: {obs}")
-                                        else:
-                                            set_flash("contrato_msg", "error", f"❌ {data_cancel}")
+                                                set_flash("contrato_msg", "error", f"❌ {data_cancel}")
                                     except Exception as e:
                                         set_flash("contrato_msg", "error", f"❌ Error anulando contrato: {e}")
                                     finally:
@@ -5190,7 +5244,7 @@ if tab_creditos:
                             "contrato_aceptado": "Aceptado",
                             "desembolso_notificado": "Desembolso notificado"
                         })
-                        st.dataframe(pendientes_show, use_container_width=True, hide_index=True)
+                        render_tabla_moderna(pendientes_show, columna_estado="Estado")
 # ==========================
 # 📄 DETALLE
 # ==========================
@@ -5276,7 +5330,7 @@ if tab_detalle:
                                     "valor_cuota": "Valor cuota",
                                     "estado": "Estado"
                                 })
-                                st.dataframe(cuotas_credito, use_container_width=True, hide_index=True)
+                                render_tabla_moderna(cuotas_credito, columna_estado="Estado")
                         with t2:
                             if pagos_credito.empty:
                                 st.info("Sin movimientos registrados para este crédito.")
@@ -5288,7 +5342,7 @@ if tab_detalle:
                                     "tipo_movimiento": "Tipo",
                                     "detalle": "Detalle"
                                 })
-                                st.dataframe(pagos_credito, use_container_width=True, hide_index=True)
+                                render_tabla_moderna(pagos_credito)
                         with t3:
                             if auditoria_credito.empty:
                                 st.info("Sin auditoría de contrato para este crédito.")
@@ -5300,7 +5354,7 @@ if tab_detalle:
                                     "motivo": "Motivo",
                                     "detalle": "Detalle"
                                 })
-                                st.dataframe(auditoria_credito, use_container_width=True, hide_index=True)
+                                render_tabla_moderna(auditoria_credito)
 
             with det_tab_activos:
                 render_detalle_creditos(detalle_activos, "ℹ️ No hay créditos activos con saldo pendiente.")
@@ -5308,6 +5362,113 @@ if tab_detalle:
                 render_detalle_creditos(detalle_cancelados, "ℹ️ No hay créditos cerrados o cancelados para mostrar.")
             with det_tab_anulados:
                 render_detalle_creditos(detalle_anulados, "ℹ️ No hay contratos anulados para mostrar.", es_anulado=True)
+# ==========================
+# 🗂️ CARTERA POR CLIENTE
+# ==========================
+if tab_cartera_cliente:
+    st.subheader("🗂️ Cartera por cliente")
+    st.caption("Busca un cliente por nombre o cédula para ver todos sus créditos discriminados, el total de su cartera, y descargar el detalle.")
+
+    estado_cartera = estado[estado["estado"] != "Anulado"].copy()
+    if estado_cartera.empty:
+        st.info("No hay créditos registrados todavía.")
+    else:
+        clientes_unicos_cartera = (
+            estado_cartera[["cliente_cedula", "cliente"]]
+            .drop_duplicates()
+            .sort_values("cliente")
+        )
+
+        busqueda_cliente_cartera = st.text_input(
+            "🔎 Buscar cliente por nombre o cédula",
+            key="buscar_cliente_cartera",
+            placeholder="Ej: Angie Quiguá o 1234567890"
+        )
+
+        if busqueda_cliente_cartera and busqueda_cliente_cartera.strip():
+            termino_cartera = busqueda_cliente_cartera.strip().lower()
+            coincidencias_cartera = clientes_unicos_cartera[
+                clientes_unicos_cartera["cliente"].astype(str).str.lower().str.contains(termino_cartera, na=False, regex=False)
+                | clientes_unicos_cartera["cliente_cedula"].astype(str).str.lower().str.contains(termino_cartera, na=False, regex=False)
+            ]
+        else:
+            coincidencias_cartera = clientes_unicos_cartera
+
+        if coincidencias_cartera.empty:
+            st.warning("⚠️ No se encontró ningún cliente con ese nombre o cédula.")
+        else:
+            opciones_cliente_cartera = coincidencias_cartera["cliente_cedula"].tolist()
+            cliente_cartera_sel = st.selectbox(
+                "Selecciona el cliente" if len(opciones_cliente_cartera) > 1 else "Cliente encontrado",
+                opciones_cliente_cartera,
+                format_func=lambda ced: f"{coincidencias_cartera.loc[coincidencias_cartera['cliente_cedula']==ced, 'cliente'].iloc[0]} — {ced}",
+                key="sel_cliente_cartera"
+            )
+
+            creditos_cliente_cartera = estado_cartera[estado_cartera["cliente_cedula"] == cliente_cartera_sel].copy()
+
+            if creditos_cliente_cartera.empty:
+                st.info("Este cliente no tiene créditos para mostrar.")
+            else:
+                nombre_cliente_cartera = creditos_cliente_cartera["cliente"].iloc[0]
+
+                total_capital_cartera = creditos_cliente_cartera["monto_original"].sum()
+                total_pagado_cartera = creditos_cliente_cartera["total_pagado"].sum()
+                total_saldo_cartera = creditos_cliente_cartera["saldo"].sum()
+                creditos_activos_cartera = int((creditos_cliente_cartera["estado"] == "Activo").sum())
+
+                st.markdown(f"### 👤 {nombre_cliente_cartera}")
+                cc1, cc2, cc3, cc4, cc5 = st.columns(5)
+                cc1.metric("📄 N.° de créditos", len(creditos_cliente_cartera))
+                cc2.metric("💰 Capital total", pesos(total_capital_cartera))
+                cc3.metric("✅ Total pagado", pesos(total_pagado_cartera))
+                cc4.metric("⏳ Saldo pendiente", pesos(total_saldo_cartera))
+                cc5.metric("🟢 Créditos activos", creditos_activos_cartera)
+
+                tabla_cartera_cliente = creditos_cliente_cartera[
+                    ["id", "monto_original", "monto_total_credito", "total_pagado", "saldo", "valor_cuota", "cuotas", "tipo", "estado"]
+                ].copy()
+
+                # Copia sin formatear en pesos, para el archivo descargable (más útil en Excel)
+                tabla_cartera_cliente_export = tabla_cartera_cliente.rename(columns={
+                    "id": "Credito",
+                    "monto_original": "Capital",
+                    "monto_total_credito": "Total del credito",
+                    "total_pagado": "Pagado",
+                    "saldo": "Saldo pendiente",
+                    "valor_cuota": "Cuota",
+                    "cuotas": "N. cuotas",
+                    "tipo": "Tipo de credito",
+                    "estado": "Estado"
+                })
+
+                tabla_cartera_cliente_show = tabla_cartera_cliente.copy()
+                for c in ["monto_original", "monto_total_credito", "total_pagado", "saldo", "valor_cuota"]:
+                    tabla_cartera_cliente_show[c] = tabla_cartera_cliente_show[c].apply(pesos)
+                tabla_cartera_cliente_show = tabla_cartera_cliente_show.rename(columns={
+                    "id": "Crédito",
+                    "monto_original": "Capital",
+                    "monto_total_credito": "Total del crédito",
+                    "total_pagado": "Pagado",
+                    "saldo": "Saldo pendiente",
+                    "valor_cuota": "Cuota",
+                    "cuotas": "N.° cuotas",
+                    "tipo": "Tipo de crédito",
+                    "estado": "Estado"
+                })
+
+                st.markdown("#### 📋 Créditos de este cliente")
+                render_tabla_moderna(tabla_cartera_cliente_show, columna_estado="Estado")
+
+                csv_cartera_cliente = tabla_cartera_cliente_export.to_csv(index=False).encode("utf-8-sig")
+                nombre_archivo_cartera = f"cartera_{nombre_cliente_cartera.strip().replace(' ', '_')}_{cliente_cartera_sel}.csv"
+                st.download_button(
+                    "⬇️ Descargar cartera de este cliente (CSV)",
+                    data=csv_cartera_cliente,
+                    file_name=nombre_archivo_cartera,
+                    mime="text/csv",
+                    key="descargar_cartera_cliente"
+                )
 # ==========================
 # 💰 PAGOS
 # ==========================
@@ -5416,15 +5577,15 @@ if tab_pagos:
                                 st.caption("El valor se calcula automáticamente según la fecha de pago seleccionada arriba; no se puede editar para evitar descuadres.")
                                 submit_pago_il = st.form_submit_button("Registrar movimiento interés libre", type="primary", disabled=st.session_state.get("app_busy", False))
                             if submit_pago_il:
-                                start_busy("Aplicando movimiento interés libre...")
                                 try:
-                                    resultado = registrar_pago_interes_libre(prestamo.id, fecha_pago_il, valor_a_pagar, modo_pago=modo_backend_il)
-                                    if resultado.get("ok"):
-                                        st.session_state.pago_msg = {"tipo": "INTERES_LIBRE", **resultado}
-                                        st.session_state.reset_select_prestamo_pago = True
-                                        st.rerun()
-                                    else:
-                                        st.error(f"❌ {resultado.get('error')}")
+                                    with st.spinner("Aplicando movimiento interés libre..."):
+                                        resultado = registrar_pago_interes_libre(prestamo.id, fecha_pago_il, valor_a_pagar, modo_pago=modo_backend_il)
+                                        if resultado.get("ok"):
+                                            st.session_state.pago_msg = {"tipo": "INTERES_LIBRE", **resultado}
+                                            st.session_state.reset_select_prestamo_pago = True
+                                            st.rerun()
+                                        else:
+                                            st.error(f"❌ {resultado.get('error')}")
                                 finally:
                                     stop_busy()
                         elif not proxima_cuota:
@@ -5441,7 +5602,6 @@ if tab_pagos:
                                 fecha_pago = st.date_input("📅 Fecha de movimiento", value=hoy_local(), key="fecha_movimiento_pago")
                                 submit_pago_cuota = st.form_submit_button("Registrar pago de cuota", type="primary", disabled=st.session_state.get("app_busy", False))
                             if submit_pago_cuota:
-                                start_busy("Aplicando pago de cuota...")
                                 try:
                                     with st.spinner("⏳ Aplicando pago, por favor espera..."):
                                         resultado = registrar_pago_cuota(prestamo.id, fecha_pago)
@@ -5491,7 +5651,6 @@ if tab_pagos:
                                     st.info(f"Saldo máximo aplicable en cuotas pendientes: {pesos(total_pendiente_pago)}.")
                                 submit_pago_multiple = st.form_submit_button("Registrar pago múltiple", disabled=st.session_state.get("app_busy", False))
                             if submit_pago_multiple:
-                                start_busy("Aplicando pago múltiple...")
                                 try:
                                     with st.spinner("⏳ Aplicando pago múltiple..."):
                                         if modo_pago_multi == "Por número de cuotas":
@@ -5520,7 +5679,6 @@ if tab_pagos:
                             )
                             submit_abono_capital = st.form_submit_button("Aplicar abono a capital", disabled=st.session_state.get("app_busy", False))
                         if submit_abono_capital:
-                            start_busy("Aplicando abono a capital...")
                             try:
                                 with st.spinner("⏳ Aplicando abono a capital..."):
                                     resultado = registrar_abono_capital(prestamo.id, fecha_pago, abono_capital)
@@ -5677,14 +5835,14 @@ if tab_cuenta:
         elif clave_nueva == clave_actual:
             st.warning("ℹ️ La nueva contraseña debe ser diferente a la actual.")
         else:
-            start_busy("Actualizando contraseña...")
             try:
-                ok_clave, msg_clave = cambiar_password(st.session_state.get("usuario", ""), clave_actual, clave_nueva)
-                if ok_clave:
-                    set_flash("cuenta_msg", "success", f"✅ {msg_clave}")
-                else:
-                    set_flash("cuenta_msg", "error", f"❌ {msg_clave}")
-                st.rerun()
+                with st.spinner("Actualizando contraseña..."):
+                    ok_clave, msg_clave = cambiar_password(st.session_state.get("usuario", ""), clave_actual, clave_nueva)
+                    if ok_clave:
+                        set_flash("cuenta_msg", "success", f"✅ {msg_clave}")
+                    else:
+                        set_flash("cuenta_msg", "error", f"❌ {msg_clave}")
+                    st.rerun()
             finally:
                 stop_busy()
 
@@ -5697,18 +5855,18 @@ if tab_cuenta:
             "sin tener que revisar los logs de Render."
         )
         if st.button("▶️ Ejecutar recordatorios ahora", disabled=st.session_state.get("app_busy", False)):
-            start_busy("Procesando recordatorios...")
             try:
-                enviados_r, fallidos_r, detalle_r = procesar_recordatorios_automaticos()
-                if enviados_r == 0 and fallidos_r == 0:
-                    st.info("ℹ️ No había recordatorios pendientes para enviar en este momento.")
-                else:
-                    if enviados_r:
-                        st.success(f"✅ {enviados_r} recordatorio(s) enviado(s) correctamente.")
-                    if fallidos_r:
-                        st.error(f"❌ {fallidos_r} recordatorio(s) fallaron al enviarse:")
-                        for linea in detalle_r:
-                            st.write(f"- {linea}")
+                with st.spinner("Procesando recordatorios..."):
+                    enviados_r, fallidos_r, detalle_r = procesar_recordatorios_automaticos()
+                    if enviados_r == 0 and fallidos_r == 0:
+                        st.info("ℹ️ No había recordatorios pendientes para enviar en este momento.")
+                    else:
+                        if enviados_r:
+                            st.success(f"✅ {enviados_r} recordatorio(s) enviado(s) correctamente.")
+                        if fallidos_r:
+                            st.error(f"❌ {fallidos_r} recordatorio(s) fallaron al enviarse:")
+                            for linea in detalle_r:
+                                st.write(f"- {linea}")
             finally:
                 stop_busy()
 
@@ -5737,7 +5895,7 @@ if tab_usuarios:
         usuarios_actuales = listar_usuarios()
         if usuarios_actuales:
             df_usuarios = pd.DataFrame(usuarios_actuales, columns=["usuario", "rol"])
-            st.dataframe(df_usuarios, use_container_width=True, hide_index=True)
+            render_tabla_moderna(df_usuarios)
         else:
             st.info("No hay usuarios registrados todavía.")
 
@@ -5749,11 +5907,11 @@ if tab_usuarios:
             nuevo_usuario_rol = st.selectbox("Rol", ROLES_DISPONIBLES, index=1, key="nuevo_usuario_rol")
             submit_crear_usuario = st.form_submit_button("Crear usuario", type="primary", disabled=st.session_state.get("app_busy", False))
         if submit_crear_usuario:
-            start_busy("Creando usuario...")
             try:
-                ok_u, msg_u = crear_usuario(nuevo_usuario_nombre, nuevo_usuario_password, nuevo_usuario_rol)
-                set_flash("usuarios_msg", "success" if ok_u else "error", ("✅ " if ok_u else "❌ ") + msg_u)
-                st.rerun()
+                with st.spinner("Creando usuario..."):
+                    ok_u, msg_u = crear_usuario(nuevo_usuario_nombre, nuevo_usuario_password, nuevo_usuario_rol)
+                    set_flash("usuarios_msg", "success" if ok_u else "error", ("✅ " if ok_u else "❌ ") + msg_u)
+                    st.rerun()
             finally:
                 stop_busy()
 
@@ -5774,11 +5932,11 @@ if tab_usuarios:
                     key="rol_editar_sel"
                 )
                 if st.button("Actualizar rol", key="btn_actualizar_rol", disabled=st.session_state.get("app_busy", False)):
-                    start_busy("Actualizando rol...")
                     try:
-                        ok_r, msg_r = actualizar_rol_usuario(usuario_seleccionado, nuevo_rol_sel, st.session_state.get("usuario", ""))
-                        set_flash("usuarios_msg", "success" if ok_r else "error", ("✅ " if ok_r else "❌ ") + msg_r)
-                        st.rerun()
+                        with st.spinner("Actualizando rol..."):
+                            ok_r, msg_r = actualizar_rol_usuario(usuario_seleccionado, nuevo_rol_sel, st.session_state.get("usuario", ""))
+                            set_flash("usuarios_msg", "success" if ok_r else "error", ("✅ " if ok_r else "❌ ") + msg_r)
+                            st.rerun()
                     finally:
                         stop_busy()
 
@@ -5786,11 +5944,11 @@ if tab_usuarios:
                 st.markdown("**Restablecer contraseña**")
                 password_reset = st.text_input("Nueva contraseña", type="password", key="password_reset_admin")
                 if st.button("Restablecer contraseña", key="btn_reset_password", disabled=st.session_state.get("app_busy", False)):
-                    start_busy("Restableciendo contraseña...")
                     try:
-                        ok_p, msg_p = resetear_password_usuario(usuario_seleccionado, password_reset)
-                        set_flash("usuarios_msg", "success" if ok_p else "error", ("✅ " if ok_p else "❌ ") + msg_p)
-                        st.rerun()
+                        with st.spinner("Restableciendo contraseña..."):
+                            ok_p, msg_p = resetear_password_usuario(usuario_seleccionado, password_reset)
+                            set_flash("usuarios_msg", "success" if ok_p else "error", ("✅ " if ok_p else "❌ ") + msg_p)
+                            st.rerun()
                     finally:
                         stop_busy()
 
@@ -5800,11 +5958,11 @@ if tab_usuarios:
                 if not confirmar_eliminar_usuario:
                     st.warning("ℹ️ Marca la casilla de confirmación antes de eliminar.")
                 else:
-                    start_busy("Eliminando usuario...")
                     try:
-                        ok_e, msg_e = eliminar_usuario(usuario_seleccionado, st.session_state.get("usuario", ""))
-                        set_flash("usuarios_msg", "success" if ok_e else "error", ("✅ " if ok_e else "❌ ") + msg_e)
-                        st.rerun()
+                        with st.spinner("Eliminando usuario..."):
+                            ok_e, msg_e = eliminar_usuario(usuario_seleccionado, st.session_state.get("usuario", ""))
+                            set_flash("usuarios_msg", "success" if ok_e else "error", ("✅ " if ok_e else "❌ ") + msg_e)
+                            st.rerun()
                     finally:
                         stop_busy()
         else:

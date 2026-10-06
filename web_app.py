@@ -64,7 +64,7 @@ try:
         pool_pre_ping=True # Esto ayuda a que si la conexión se duerme, se despierte sola
     )
 except Exception as e:
-    st.error(f"❌ Error al conectar con la base de datos: {e}")
+    st.error((f"❌ Error al conectar con la base de datos: {e}").replace("$", "\\$"))
     st.stop()
 # ==========================
 # FUNCIONES DE UTILIDAD
@@ -116,15 +116,14 @@ def asegurar_funcion_es_interes_libre():
 asegurar_funcion_es_interes_libre()
 
 def clear_app_caches():
-    try:
-        load_estado.cache_clear()
-        load_mora.cache_clear()
-        load_cuotas_periodo.cache_clear()
-        load_cuotas_proyeccion.cache_clear()
-        load_detalle_mora.cache_clear()
-        load_kpis_financieros.cache_clear()
-    except Exception:
-        pass
+    for nombre in ("load_estado", "load_mora", "load_cuotas_periodo", "load_cuotas_proyeccion",
+                   "load_detalle_mora", "load_kpis_financieros", "load_cobros_dashboard"):
+        loader = globals().get(nombre)
+        if loader is not None:
+            try:
+                loader.clear()
+            except Exception as error_cache:
+                print(f"[cache] No se pudo actualizar {nombre}: {error_cache}")
 
 @st.cache_data(ttl=45, show_spinner="⏳ Cargando créditos...")
 def load_estado():
@@ -307,134 +306,115 @@ def load_detalle_mora():
             WHERE fecha_vencimiento < :hoy
         """), conn, params={"hoy": hoy_local().isoformat()})
 
-@st.cache_data(ttl=45, show_spinner="⏳ Cargando cuotas del periodo...")
-def load_cuotas_periodo(inicio_iso, fin_iso):
+def fechas_corte_operativo(year, month):
+    if year == 2025 and month == 12:
+        return date(2025, 12, 15), date(2026, 1, 1)
+    if year == 2026 and month == 1:
+        return date(2026, 1, 2), date(2026, 2, 2)
+    return date(year, month, 3), date(year + (month == 12), 1 if month == 12 else month + 1, 2)
+
+def generar_ciclos_interes_libre(prestamos, inicio_iso, fin_iso):
+    """Future cash-flow scenarios, not persisted debt. Preserve 30-day contracts."""
+    inicio = date.fromisoformat(str(inicio_iso)[:10])
+    fin = date.fromisoformat(str(fin_iso)[:10])
+    if fin < inicio:
+        raise ValueError("El fin del período debe ser posterior al inicio")
+    filas = []
+    for p in prestamos:
+        if str(p.get("estado", "")).strip().lower() != "activo" or int(p.get("contrato_cancelado", 0) or 0):
+            continue
+        capital = Decimal(str(p.get("saldo_capital") if p.get("saldo_capital") is not None else p.get("monto_original", 0)))
+        if capital <= 0:
+            continue
+        raw = p.get("fecha_proximo_interes")
+        if not raw:
+            base = p.get("fecha_inicio") or p.get("fecha_desembolso")
+            if not base:
+                raise ValueError(f"Crédito {p['id']}: falta fecha de inicio para proyectar")
+            primera = date.fromisoformat(str(base)[:10]) + timedelta(days=30)
+        else:
+            primera = date.fromisoformat(str(raw)[:10])
+        mensual = (capital * Decimal(str(p.get("tasa_mensual", 0) or 0))).quantize(Decimal("0.01"))
+        acumulado = Decimal(str(p.get("interes_acumulado", 0) or 0))
+        n = max(0, ((inicio - primera).days + 29) // 30)
+        fecha = primera + timedelta(days=30*n)
+        while fecha <= fin:
+            filas.append({
+                "fecha_vencimiento": fecha, "valor_cuota": mensual + (acumulado if n == 0 else Decimal("0.00")),
+                "estado": "Pendiente", "estado_cuota": "Pendiente", "nro_cuota": n + 1,
+                "credito": p["id"], "estado_credito": p["estado"], "contrato_cancelado": 0,
+                "tipo_credito": "Interés libre", "cliente": p["cliente"],
+                "naturaleza": "Ciclo pendiente" if n == 0 else "Estimación recurrente",
+            })
+            n += 1
+            fecha += timedelta(days=30)
+    return filas
+
+def cargar_flujos_periodo(inicio_iso, fin_iso, solo_pendientes=False):
+    filtro = "AND cu.estado <> 'Pagada'" if solo_pendientes else ""
     with get_conn() as conn:
-        return pd.read_sql(text("""
-            WITH interes_libre AS (
-                SELECT
-                    COALESCE(
-                        NULLIF(p.fecha_proximo_interes::text, '')::date,
-                        (COALESCE(NULLIF(p.fecha_inicio::text, ''), NULLIF(p.fecha_desembolso::text, ''))::date + INTERVAL '30 day')::date
-                    ) AS fecha_vencimiento,
-                    COALESCE(p.interes_acumulado, 0) + ROUND(COALESCE(p.saldo_capital, p.monto_original) * COALESCE(p.tasa_mensual, 0), 2) AS valor_cuota,
-                    'Pendiente' AS estado,
-                    0 AS nro_cuota,
-                    p.id AS credito,
-                    COALESCE(p.estado, '') AS estado_credito,
-                    COALESCE(p.contrato_cancelado, 0) AS contrato_cancelado,
-                    'Interés libre' AS tipo_credito,
-                    c.nombres || ' ' || c.apellidos AS cliente
-                FROM prestamos p
+        normales = pd.read_sql(text(f"""
+            SELECT cu.fecha_vencimiento::date AS fecha_vencimiento, cu.valor_cuota,
+                   cu.estado, cu.estado AS estado_cuota, cu.nro_cuota,
+                   p.id AS credito, p.estado AS estado_credito,
+                   COALESCE(p.contrato_cancelado, 0) AS contrato_cancelado,
+                   COALESCE(p.tipo, 'Normal') AS tipo_credito,
+                   c.nombres || ' ' || c.apellidos AS cliente,
+                   'Cuota programada' AS naturaleza
+            FROM cuotas cu JOIN prestamos p ON p.id = cu.prestamo_id
+            JOIN clientes c ON c.cedula = p.cliente_cedula
+            WHERE cu.fecha_vencimiento::date BETWEEN :inicio AND :fin
+              AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
+              AND COALESCE(p.contrato_cancelado, 0) = 0
+              AND NOT es_interes_libre(p.tipo_credito, p.tipo)
+              {filtro}
+        """), conn, params={"inicio": inicio_iso, "fin": fin_iso})
+        libres = conn.execute(text("""
+            SELECT p.*, c.nombres || ' ' || c.apellidos AS cliente
+            FROM prestamos p JOIN clientes c ON c.cedula = p.cliente_cedula
+            WHERE es_interes_libre(p.tipo_credito, p.tipo)
+              AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
+              AND COALESCE(p.contrato_cancelado, 0) = 0
+              AND COALESCE(p.saldo_capital, p.monto_original, 0) > 0
+        """)).mappings().all()
+    recurrentes = pd.DataFrame(generar_ciclos_interes_libre(libres, inicio_iso, fin_iso))
+    # Paid IL cycles are obtained from the actual payment ledger, never inferred.
+    if not solo_pendientes:
+        with get_conn() as conn:
+            pagados = pd.read_sql(text("""
+                SELECT COALESCE(NULLIF(pg.fecha_ciclo_interes, ''), pg.fecha_pago)::date AS fecha_vencimiento,
+                       pg.interes_pagado AS valor_cuota, 'Pagada' AS estado,
+                       'Pagada' AS estado_cuota, 0 AS nro_cuota, p.id AS credito,
+                       p.estado AS estado_credito, 0 AS contrato_cancelado,
+                       'Interés libre' AS tipo_credito,
+                       c.nombres || ' ' || c.apellidos AS cliente,
+                       'Interés cobrado' AS naturaleza
+                FROM pagos pg JOIN prestamos p ON p.id = pg.prestamo_id
                 JOIN clientes c ON c.cedula = p.cliente_cedula
-                WHERE (
-                    es_interes_libre(p.tipo_credito, p.tipo)
-                )
+                WHERE es_interes_libre(p.tipo_credito, p.tipo)
                   AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
                   AND COALESCE(p.contrato_cancelado, 0) = 0
                   AND COALESCE(p.saldo_capital, p.monto_original, 0) > 0
-            )
-            SELECT
-                cu.fecha_vencimiento::date AS fecha_vencimiento,
-                cu.valor_cuota,
-                cu.estado,
-                cu.nro_cuota,
-                p.id AS credito,
-                COALESCE(p.estado, '') AS estado_credito,
-                COALESCE(p.contrato_cancelado, 0) AS contrato_cancelado,
-                COALESCE(p.tipo, 'Normal') AS tipo_credito,
-                c.nombres || ' ' || c.apellidos AS cliente
-            FROM cuotas cu
-            JOIN prestamos p ON p.id = cu.prestamo_id
-            JOIN clientes c ON c.cedula = p.cliente_cedula
-            WHERE cu.fecha_vencimiento::date >= :inicio
-              AND cu.fecha_vencimiento::date <= :fin
-              AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
-              AND COALESCE(p.contrato_cancelado, 0) = 0
-              AND NOT (
-                    es_interes_libre(p.tipo_credito, p.tipo)
-                )
-            UNION ALL
-            SELECT
-                fecha_vencimiento,
-                valor_cuota,
-                estado,
-                nro_cuota,
-                credito,
-                estado_credito,
-                contrato_cancelado,
-                tipo_credito,
-                cliente
-            FROM interes_libre
-            WHERE fecha_vencimiento >= :inicio
-              AND fecha_vencimiento <= :fin
-            ORDER BY fecha_vencimiento, cliente
-        """), conn, params={"inicio": inicio_iso, "fin": fin_iso})
+                  AND pg.estado = 'Pagado' AND pg.tipo_movimiento = 'INTERES_LIBRE'
+                  AND COALESCE(NULLIF(pg.fecha_ciclo_interes, ''), pg.fecha_pago)::date BETWEEN :inicio AND :fin
+            """), conn, params={"inicio": inicio_iso, "fin": fin_iso})
+        frames = [normales, recurrentes, pagados]
+    else:
+        frames = [normales, recurrentes]
+    frames = [f for f in frames if not f.empty]
+    if not frames:
+        return normales
+    result = pd.concat(frames, ignore_index=True)
+    result["valor_cuota"] = pd.to_numeric(result["valor_cuota"], errors="raise")
+    return result.sort_values(["fecha_vencimiento", "cliente"]).reset_index(drop=True)
+
+@st.cache_data(ttl=45, show_spinner="⏳ Cargando cuotas del periodo...")
+def load_cuotas_periodo(inicio_iso, fin_iso):
+    return cargar_flujos_periodo(inicio_iso, fin_iso, solo_pendientes=False)
 
 @st.cache_data(ttl=45, show_spinner="⏳ Calculando proyección de cuotas...")
 def load_cuotas_proyeccion(inicio_iso, fin_iso):
-    with get_conn() as conn:
-        return pd.read_sql(text("""
-            WITH interes_libre AS (
-                SELECT
-                    COALESCE(
-                        NULLIF(p.fecha_proximo_interes::text, '')::date,
-                        (COALESCE(NULLIF(p.fecha_inicio::text, ''), NULLIF(p.fecha_desembolso::text, ''))::date + INTERVAL '30 day')::date
-                    ) AS fecha_vencimiento,
-                    COALESCE(p.interes_acumulado, 0) + ROUND(COALESCE(p.saldo_capital, p.monto_original) * COALESCE(p.tasa_mensual, 0), 2) AS valor_cuota,
-                    'Pendiente' AS estado_cuota,
-                    0 AS nro_cuota,
-                    p.id AS credito,
-                    COALESCE(p.estado, '') AS estado_credito,
-                    COALESCE(p.contrato_cancelado, 0) AS contrato_cancelado,
-                    'Interés libre' AS tipo_credito,
-                    c.nombres || ' ' || c.apellidos AS cliente
-                FROM prestamos p
-                JOIN clientes c ON c.cedula = p.cliente_cedula
-                WHERE (
-                    es_interes_libre(p.tipo_credito, p.tipo)
-                )
-                  AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
-                  AND COALESCE(p.contrato_cancelado, 0) = 0
-                  AND COALESCE(p.saldo_capital, p.monto_original, 0) > 0
-            )
-            SELECT
-                cu.fecha_vencimiento::date AS fecha_vencimiento,
-                cu.valor_cuota,
-                cu.estado AS estado_cuota,
-                cu.nro_cuota,
-                p.id AS credito,
-                COALESCE(p.estado, '') AS estado_credito,
-                COALESCE(p.contrato_cancelado, 0) AS contrato_cancelado,
-                COALESCE(p.tipo, 'Normal') AS tipo_credito,
-                c.nombres || ' ' || c.apellidos AS cliente
-            FROM cuotas cu
-            JOIN prestamos p ON p.id = cu.prestamo_id
-            JOIN clientes c ON c.cedula = p.cliente_cedula
-            WHERE cu.fecha_vencimiento::date >= :inicio
-              AND cu.fecha_vencimiento::date <= :fin
-              AND cu.estado <> 'Pagada'
-              AND LOWER(TRIM(COALESCE(p.estado, ''))) = 'activo'
-              AND COALESCE(p.contrato_cancelado, 0) = 0
-              AND NOT (
-                    es_interes_libre(p.tipo_credito, p.tipo)
-                )
-            UNION ALL
-            SELECT
-                fecha_vencimiento,
-                valor_cuota,
-                estado_cuota,
-                nro_cuota,
-                credito,
-                estado_credito,
-                contrato_cancelado,
-                tipo_credito,
-                cliente
-            FROM interes_libre
-            WHERE fecha_vencimiento >= :inicio
-              AND fecha_vencimiento <= :fin
-            ORDER BY fecha_vencimiento, cliente
-        """), conn, params={"inicio": inicio_iso, "fin": fin_iso})
+    return cargar_flujos_periodo(inicio_iso, fin_iso, solo_pendientes=True)
 
 @st.cache_data(ttl=45, show_spinner="⏳ Calculando indicadores financieros...")
 def load_kpis_financieros():
@@ -765,26 +745,7 @@ if not st.session_state.auth and not token_aceptar:
         --login-shadow: 0 26px 70px rgba(15,23,42,.10);
         --login-form-shadow: 0 12px 30px rgba(15,23,42,.06);
     }
-    @media (prefers-color-scheme: dark){
-        :root{
-            color-scheme: dark;
-            --login-bg: #020817;
-            --login-surface: #0f172a;
-            --login-surface-soft: #111827;
-            --login-border: #334155;
-            --login-border-strong: #334155;
-            --login-text: #f8fafc;
-            --login-text-soft: #cbd5e1;
-            --login-label: #e2e8f0;
-            --login-input-bg: #111827;
-            --login-note: #94a3b8;
-            --login-chip-bg: rgba(37,99,235,.14);
-            --login-chip-text: #bfdbfe;
-            --login-chip-border: rgba(147,197,253,.24);
-            --login-shadow: 0 26px 70px rgba(2,6,23,.45);
-            --login-form-shadow: 0 12px 30px rgba(2,6,23,.28);
-        }
-    }
+    
     html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"]{
         background: var(--login-bg) !important;
     }
@@ -1054,7 +1015,7 @@ st.markdown("""
     text-align: left;
 }
 .sidebar-brand{
-    font-size: 28px;
+    font-size: 23px;
     font-weight: 900;
     letter-spacing: -.03em;
     color: #ffffff;
@@ -1068,7 +1029,7 @@ st.markdown("""
     font-size: 12px;
     color: #cbd5e1;
     line-height: 1.5;
-    margin: 10px 0 18px 0;
+    margin: 8px 0 12px 0;
 }
 .sidebar-menu-title{
     font-size: 11px;
@@ -1080,7 +1041,7 @@ st.markdown("""
     margin: 10px 0 10px 2px;
 }
 [data-testid="stSidebar"] .stRadio > div{
-    gap: .42rem !important;
+    gap: .12rem !important;
 }
 [data-testid="stSidebar"] .stRadio label{
     position: relative;
@@ -1088,8 +1049,8 @@ st.markdown("""
     margin: 0;
     background: transparent !important;
     border: 1px solid transparent !important;
-    border-radius: 16px !important;
-    padding: 12px 14px 12px 16px !important;
+    border-radius: 9px !important;
+    padding: 8px 12px 8px 14px !important;
     transition: all .18s ease;
     box-shadow: none !important;
 }
@@ -1200,7 +1161,7 @@ if not token_aceptar:
     with st.sidebar:
         st.markdown("<div class='sidebar-logo-wrap'>", unsafe_allow_html=True)
         if os.path.exists("logo_creddt.png"):
-            st.image("logo_creddt.png", width=112)
+            st.image("logo_creddt.png", width=88)
         st.markdown("<div class='sidebar-brand'>CREDDT | <span class='sidebar-brand-accent'>CRNTECH</span></div>", unsafe_allow_html=True)
         st.markdown("<div class='sidebar-sub'>Gestión principal de créditos, clientes, pagos y seguimiento operativo.</div>", unsafe_allow_html=True)
         st.markdown("<div class='sidebar-menu-title'>Menú principal</div>", unsafe_allow_html=True)
@@ -1210,13 +1171,14 @@ if not token_aceptar:
             "Opciones",
             MENU_LABELS,
             index=MENU_LABELS.index(st.session_state.menu_activo),
+            format_func=lambda label: label.split(" ", 1)[-1],
             label_visibility="collapsed"
         )
 
         st.markdown(
             f"<div class='sidebar-user-card'>"
             f"<div class='sidebar-user-top'>"
-            f"<div class='sidebar-avatar'>👤</div>"
+            f"<div class='sidebar-avatar'>C</div>"
             f"<div>"
             f"<div class='sidebar-user-pill'>Sesión activa</div>"
             f"<div class='sidebar-user-name'>{st.session_state.get('usuario','-')}</div>"
@@ -1227,7 +1189,7 @@ if not token_aceptar:
             unsafe_allow_html=True
         )
 
-        if st.button("↪ Cerrar sesión", key="btn_logout_sidebar"):
+        if st.button("Cerrar sesión", key="btn_logout_sidebar"):
             for k in ["auth", "usuario", "rol", "menu_activo", "pago_msg", "detalle", "detalle_mora"]:
                 if k in st.session_state:
                     del st.session_state[k]
@@ -1261,27 +1223,7 @@ st.markdown("""
     --status-pending-bg: #fee2e2;
     --status-pending-text: #991b1b;
 }
-@media (prefers-color-scheme: dark){
-    :root{
-        --app-bg: #0b1220;
-        --surface: #111827;
-        --surface-soft: #0f172a;
-        --surface-accent: #172554;
-        --border-color: #334155;
-        --text-primary: #f8fafc;
-        --text-secondary: #cbd5e1;
-        --text-tertiary: #e2e8f0;
-        --chip-text: #bfdbfe;
-        --card-bg: #111827;
-        --card-border: #334155;
-        --status-paid-bg: rgba(22,101,52,.22);
-        --status-paid-text: #bbf7d0;
-        --status-partial-bg: rgba(146,64,14,.26);
-        --status-partial-text: #fde68a;
-        --status-pending-bg: rgba(153,27,27,.24);
-        --status-pending-text: #fecaca;
-    }
-}
+
 html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"]{
     background: var(--app-bg) !important;
 }
@@ -1450,9 +1392,9 @@ rol_hdr = st.session_state.get("rol", "-")
 if not token_aceptar:
     with st.container():
         st.markdown("<div class='home-hero-wrap'></div>", unsafe_allow_html=True)
-        col_logo, col_centro, col_derecha = st.columns([1.15, 4.4, 2.2], gap="small")
+        col_logo, col_centro, col_derecha = st.columns([.65, 4.9, 2.2], gap="small")
         with col_logo:
-            st.image("logo_creddt.png", width=138)
+            st.image("logo_creddt.png", width=80)
         with col_centro:
             st.markdown("<div class='home-title'>CREDDT | CRNTECH</div>", unsafe_allow_html=True)
             st.markdown("<div class='home-subtitle'>Plataforma inteligente de gestión de créditos</div>", unsafe_allow_html=True)
@@ -1468,7 +1410,7 @@ if not token_aceptar:
     st.markdown("<div class='home-blue-line'></div>", unsafe_allow_html=True)
 
 if st.session_state.get("app_busy") and st.session_state.get("app_busy_label"):
-    st.info(f"⏳ {st.session_state.get('app_busy_label')}")
+    st.info((f"⏳ {st.session_state.get('app_busy_label')}").replace("$", "\\$"))
 # ==========================
 # VARIABLES SEGURAS
 # ==========================
@@ -1610,8 +1552,11 @@ def _asegurar_estructura_base_impl():
             "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS cancelado_por TEXT",
             "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS tipo_movimiento TEXT",
             "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS detalle TEXT",
+            "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS fecha_ciclo_interes TEXT",
+            "CREATE TABLE IF NOT EXISTS operaciones_pago (clave TEXT PRIMARY KEY, prestamo_id TEXT NOT NULL, usuario TEXT, fecha TEXT, enviar_correo BOOLEAN NOT NULL DEFAULT TRUE)",
             "ALTER TABLE pagos_cuotas ADD COLUMN IF NOT EXISTS valor_aplicado NUMERIC(18,2)",
-            "ALTER TABLE reminders_sent ADD COLUMN IF NOT EXISTS tipo_recordatorio TEXT"
+            "ALTER TABLE reminders_sent ADD COLUMN IF NOT EXISTS tipo_recordatorio TEXT",
+            "ALTER TABLE reminders_sent ADD COLUMN IF NOT EXISTS prestamo_id TEXT"
         ]:
             conn.execute(text(s))
         conn.execute(text("""
@@ -1660,6 +1605,8 @@ def _asegurar_estructura_financiera_impl():
             "ALTER TABLE prestamos ADD COLUMN IF NOT EXISTS fecha_cierre_manual TEXT",
             "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS tipo_movimiento TEXT",
             "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS detalle TEXT",
+            "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS fecha_ciclo_interes TEXT",
+            "CREATE TABLE IF NOT EXISTS operaciones_pago (clave TEXT PRIMARY KEY, prestamo_id TEXT NOT NULL, usuario TEXT, fecha TEXT, enviar_correo BOOLEAN NOT NULL DEFAULT TRUE)",
             "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS interes_pagado NUMERIC(18,2)",
             "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS capital_pagado NUMERIC(18,2)",
             "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS saldo_capital_anterior NUMERIC(18,2)",
@@ -1754,10 +1701,14 @@ def _normalizar_fechas_interes_libre_aceptados_impl():
                     saldo_capital = COALESCE(saldo_capital, monto_original),
                     interes_acumulado = COALESCE(interes_acumulado, 0),
                     fecha_inicio = COALESCE(NULLIF(fecha_inicio::text, ''), NULLIF(fecha_desembolso::text, ''), NULLIF(fecha_aceptacion::text, ''), CURRENT_DATE::text),
-                    fecha_proximo_interes = COALESCE(
-                        NULLIF(fecha_proximo_interes::text, ''),
-                        (COALESCE(NULLIF(fecha_inicio::text, ''), NULLIF(fecha_desembolso::text, ''), NULLIF(fecha_aceptacion::text, ''), CURRENT_DATE::text)::date + INTERVAL '30 day')::date::text
-                    ),
+                    fecha_proximo_interes = CASE
+                        WHEN LOWER(TRIM(COALESCE(estado, ''))) = 'cancelado'
+                             AND COALESCE(saldo_capital, monto_original, 0) <= 0 THEN NULL
+                        ELSE COALESCE(
+                            NULLIF(fecha_proximo_interes::text, ''),
+                            (COALESCE(NULLIF(fecha_inicio::text, ''), NULLIF(fecha_desembolso::text, ''), NULLIF(fecha_aceptacion::text, ''), CURRENT_DATE::text)::date + INTERVAL '30 day')::date::text
+                        )
+                    END,
                     valor_cuota = ROUND(COALESCE(saldo_capital, monto_original) * COALESCE(tasa_mensual, 0), 2)
                 WHERE es_interes_libre(tipo_credito, tipo)
                   AND LOWER(TRIM(COALESCE(estado, ''))) <> 'anulado'
@@ -1801,6 +1752,36 @@ def set_app_meta(conn, clave, valor):
     """), {"clave": clave, "valor": str(valor), "updated_at": ahora_local().isoformat(timespec='seconds')})
 
 
+def clasificar_pago_historico(pago, saldo_anterior, tasa_mensual):
+    """Preserve reconciled components and distinguish interest from capital."""
+    valor = normalizar_decimal(pago.get("valor", 0))
+    tipo = str(pago.get("tipo_movimiento", "") or "").strip().upper()
+    saldo = normalizar_decimal(saldo_anterior)
+    if valor < 0:
+        return Decimal("0.00"), valor
+    if tipo == "INTERES_LIBRE":
+        return valor, Decimal("0.00")
+    if tipo == "ABONO_CAPITAL":
+        if valor > saldo:
+            raise ValueError("El abono histórico supera el capital pendiente; revisar antes de reconstruir")
+        return Decimal("0.00"), valor
+    if tipo == "CIERRE_INTERES_LIBRE":
+        if valor < saldo:
+            raise ValueError("El cierre histórico no cubre el capital pendiente; revisar el historial")
+        return valor - saldo, saldo
+    capital = pago.get("capital_pagado")
+    interes = pago.get("interes_pagado")
+    if capital is not None and interes is not None:
+        capital, interes = normalizar_decimal(capital), normalizar_decimal(interes)
+        if capital >= 0 and interes >= 0 and capital + interes == valor:
+            if capital > saldo:
+                raise ValueError("El capital registrado supera el saldo histórico")
+            return interes, capital
+    # Legacy records without a valid split retain the previous estimation rule.
+    interes = min(valor, (saldo * tasa_mensual).quantize(Decimal("0.01"))) if tasa_mensual > 0 else Decimal("0.00")
+    capital = min(valor - interes, saldo)
+    return valor - capital, capital
+
 def reconstruir_historial_financiero():
     resumen = {"prestamos": 0, "pagos": 0, "ajustes_negativos": 0}
     asegurar_estructura_control_financiero()
@@ -1812,7 +1793,7 @@ def reconstruir_historial_financiero():
                    COALESCE(interes_acumulado, 0) AS interes_acumulado
             FROM prestamos
             WHERE COALESCE(estado, '') <> 'Anulado'
-            ORDER BY id
+            ORDER BY id FOR UPDATE
         """)).mappings().all()
 
         for prestamo in prestamos:
@@ -1822,7 +1803,7 @@ def reconstruir_historial_financiero():
             pagos = conn.execute(text("""
                 SELECT id_pago, fecha_pago, COALESCE(valor, 0) AS valor,
                        COALESCE(tipo_movimiento, '') AS tipo_movimiento,
-                       COALESCE(detalle, '') AS detalle, cuota_numero
+                       COALESCE(detalle, '') AS detalle, cuota_numero, capital_pagado, interes_pagado
                 FROM pagos
                 WHERE prestamo_id = :prestamo_id
                 ORDER BY COALESCE(fecha_pago, '1900-01-01'), id_pago
@@ -1848,26 +1829,13 @@ def reconstruir_historial_financiero():
                 interes_pagado = Decimal("0.00")
                 capital_pagado = Decimal("0.00")
 
+                pago_clasificar = dict(pago)
+                pago_clasificar["tipo_movimiento"] = tipo_movimiento
+                interes_pagado, capital_pagado = clasificar_pago_historico(pago_clasificar, saldo_anterior, tasa_mensual)
+                saldo_nuevo = saldo_anterior - capital_pagado
                 if valor_pago < 0:
                     resumen["ajustes_negativos"] += 1
-                    capital_pagado = valor_pago
-                    saldo_nuevo = saldo_anterior - capital_pagado
-                elif tipo_movimiento == "ABONO_CAPITAL":
-                    capital_pagado = min(valor_pago, saldo_anterior)
-                    saldo_nuevo = saldo_anterior - capital_pagado
-                else:
-                    interes_estimado = (saldo_anterior * tasa_mensual).quantize(Decimal("0.01")) if tasa_mensual > 0 else Decimal("0.00")
-                    interes_pagado = min(valor_pago, interes_estimado)
-                    capital_pagado = valor_pago - interes_pagado
-                    if capital_pagado < 0:
-                        capital_pagado = Decimal("0.00")
-                        interes_pagado = valor_pago
-                    if capital_pagado > saldo_anterior:
-                        capital_pagado = saldo_anterior
-                        interes_pagado = valor_pago - capital_pagado
-                        if interes_pagado < 0:
-                            interes_pagado = Decimal("0.00")
-                    saldo_nuevo = saldo_anterior - capital_pagado
+                elif tipo_movimiento != "ABONO_CAPITAL":
                     contador_cuotas += 1
 
                 if saldo_nuevo < 0:
@@ -2071,12 +2039,7 @@ def render_tabla_moderna(df, columna_estado=None, buscar=False, key=None, placeh
             color: #94a3b8;
             margin: -2px 0 6px 2px;
         }
-        @media (prefers-color-scheme: dark){
-            .creddt-tabla-wrap{ border-color:#334155; box-shadow: 0 6px 18px rgba(2,6,23,.35); }
-            table.creddt-tabla tbody td{ border-top-color:#1e293b; color:#e2e8f0; }
-            table.creddt-tabla tbody tr:nth-child(even){ background:#111827; }
-            table.creddt-tabla tbody tr:hover{ background:#1e293b; }
-        }
+        
         </style>
         """, unsafe_allow_html=True)
         _TABLA_MODERNA_CSS_INYECTADO = True
@@ -2088,7 +2051,8 @@ def render_tabla_moderna(df, columna_estado=None, buscar=False, key=None, placeh
             "cancelado": "creddt-pill-cancelado",
             "anulado": "creddt-pill-anulado",
         }.get(v, "creddt-pill-otro")
-        return f'<span class="creddt-pill {clase}">{html_module.escape(str(valor))}</span>'
+        etiqueta = "Pagado / cerrado" if v == "cancelado" else str(valor)
+        return f'<span class="creddt-pill {clase}">{html_module.escape(etiqueta)}</span>'
 
     if buscar:
         termino = st.text_input(
@@ -2168,7 +2132,7 @@ def enviar_correo(destino, asunto, cuerpo):
         cuerpo=cuerpo
     )
     if not ok:
-        st.warning(f"⚠️ El correo no pudo enviarse: {error}")
+        st.warning((f"⚠️ El correo no pudo enviarse: {error}").replace("$", "\\$"))
     return ok, error
 def calcular_cuota_amortizada(capital, tasa_mensual, cuotas_restantes):
     capital = float(capital or 0)
@@ -3154,7 +3118,44 @@ def calcular_interes_libre_a_fecha(prestamo_row, fecha_pago):
     interes_nuevo = (saldo_capital * tasa_mensual).quantize(Decimal("0.01"))
     return (acumulado + interes_nuevo).quantize(Decimal("0.01")), dias
 
-def registrar_pago_interes_libre(prestamo_id, fecha_pago, valor_pago, modo_pago="interes"):
+def preparar_operacion_pago(conn, prestamo_id, operacion_id, enviar_correo):
+    """Called after locking the loan, within the payment transaction."""
+    if not PUEDE_REGISTRAR_PAGOS:
+        return "Tu usuario no tiene permiso para registrar pagos"
+    if not enviar_correo and not ES_ADMIN:
+        return "Solo un administrador puede registrar movimientos sin correo"
+    if operacion_id:
+        r = conn.execute(text("""
+            INSERT INTO operaciones_pago (clave, prestamo_id, usuario, fecha, enviar_correo)
+            VALUES (:clave, :id, :usuario, :fecha, :correo)
+            ON CONFLICT (clave) DO NOTHING RETURNING clave
+        """), {"clave": operacion_id, "id": prestamo_id,
+                 "usuario": st.session_state.get("usuario", "SISTEMA"),
+                 "fecha": ahora_local().isoformat(timespec="seconds"), "correo": enviar_correo}).scalar()
+        if not r:
+            return "Este movimiento ya se registró. Actualiza el crédito antes de volver a cobrar"
+    return None
+
+def clave_operacion_pago(prestamo_id, formulario):
+    k = f"operacion_pago_{prestamo_id}_{formulario}"
+    if k not in st.session_state:
+        st.session_state[k] = uuid.uuid4().hex
+    return st.session_state[k]
+
+def completar_operacion_pago(prestamo_id):
+    for k in list(st.session_state):
+        if str(k).startswith(f"operacion_pago_{prestamo_id}_"):
+            del st.session_state[k]
+
+def registrar_auditoria_pago(conn, prestamo_id, accion, detalle):
+    conn.execute(text("""
+        INSERT INTO auditoria_contratos (prestamo_id, accion, usuario, fecha, detalle)
+        VALUES (:id, :accion, :usuario, :fecha, :detalle)
+    """), {"id": prestamo_id, "accion": accion,
+             "usuario": st.session_state.get("usuario", "SISTEMA"),
+             "fecha": ahora_local().isoformat(timespec="seconds"), "detalle": detalle})
+
+def registrar_pago_interes_libre(prestamo_id, fecha_pago, valor_pago, modo_pago="interes", enviar_correo=True, operacion_id=None, ciclo_esperado=None):
     valor_pago = normalizar_decimal(valor_pago)
     modo_pago = str(modo_pago or "interes").strip().lower()
     if valor_pago <= 0:
@@ -3171,12 +3172,18 @@ def registrar_pago_interes_libre(prestamo_id, fecha_pago, valor_pago, modo_pago=
               AND (
                     es_interes_libre(p.tipo_credito, p.tipo)
               )
+            FOR UPDATE OF p
         """), {"id": prestamo_id}).mappings().first()
         if not prestamo:
             return {"ok": False, "error": "No se encontró el crédito de interés libre"}
-        if int(prestamo.get("contrato_cancelado", 0) or 0) == 1 or str(prestamo.get("estado") or "").strip().lower() in ("cancelado", "anulado"):
+        if int(prestamo.get("contrato_cancelado", 0) or 0) == 1 or str(prestamo.get("estado") or "").strip().lower() != "activo":
             return {"ok": False, "error": "Este crédito no está activo para recibir pagos"}
 
+        if ciclo_esperado is not None and str(prestamo.get("fecha_proximo_interes") or "") != str(ciclo_esperado):
+            return {"ok": False, "error": "El ciclo cambió por otro pago. Actualiza el crédito"}
+        error_operacion = preparar_operacion_pago(conn, prestamo_id, operacion_id, enviar_correo)
+        if error_operacion:
+            return {"ok": False, "error": error_operacion}
         interes_pendiente, dias = calcular_interes_libre_a_fecha(prestamo, fecha_pago)
         saldo_capital = normalizar_decimal(prestamo["saldo_capital"])
 
@@ -3223,16 +3230,17 @@ def registrar_pago_interes_libre(prestamo_id, fecha_pago, valor_pago, modo_pago=
         result = conn.execute(text("""
             INSERT INTO pagos (
                 prestamo_id, fecha_pago, valor, estado, tipo_movimiento, detalle,
-                interes_pagado, capital_pagado, saldo_capital_anterior, saldo_capital_nuevo, cuota_numero
+                interes_pagado, capital_pagado, saldo_capital_anterior, saldo_capital_nuevo, cuota_numero, fecha_ciclo_interes
             )
             VALUES (
                 :id, :fecha, :valor, 'Pagado', :tipo_movimiento, :detalle,
-                :interes_pagado, :capital_pagado, :saldo_capital_anterior, :saldo_capital_nuevo, NULL
+                :interes_pagado, :capital_pagado, :saldo_capital_anterior, :saldo_capital_nuevo, NULL, :fecha_ciclo_interes
             )
             RETURNING id_pago
         """), {
             "id": prestamo_id,
             "fecha": fecha_pago.isoformat(),
+            "fecha_ciclo_interes": fecha_ciclo_programado.isoformat(),
             "valor": valor_pago,
             "tipo_movimiento": tipo_movimiento,
             "detalle": detalle,
@@ -3261,8 +3269,19 @@ def registrar_pago_interes_libre(prestamo_id, fecha_pago, valor_pago, modo_pago=
             "estado": nuevo_estado,
             "fecha_cierre_manual": fecha_cierre_manual,
         })
+        registrar_auditoria_pago(conn, prestamo_id, "CIERRE_PAGADO" if modo_pago == "finalizar" else "PAGO_INTERES",
+                                f"Valor {valor_pago}; capital {capital_pagado}; interés {interes_pagado}; correo solicitado: {enviar_correo}")
         conn.commit()
         clear_app_caches()
+
+    if not enviar_correo:
+        return {"ok": True, "credito": prestamo_id, "id_pago": id_pago, "valor": valor_pago,
+                "interes_pagado": interes_pagado, "capital_pagado": capital_pagado,
+                "saldo_capital": nuevo_capital, "interes_pendiente": nuevo_interes, "dias": dias,
+                "fecha_proximo_interes": fecha_proximo.isoformat() if fecha_proximo else "Finalizado",
+                "modo_pago": modo_pago, "correo": False, "correo_omitido": True,
+                "tiene_correo": bool(prestamo.get("correo")), "correo_error": None,
+                "finalizado": modo_pago == "finalizar"}
 
     pdf = None
     correo_error = None
@@ -3287,12 +3306,14 @@ def registrar_pago_interes_libre(prestamo_id, fecha_pago, valor_pago, modo_pago=
         cuerpo = construir_cuerpo_correo("RECIBO_CUOTA", prestamo["cliente"], **kwargs)
         html_correo = construir_html_correo("RECIBO_CUOTA", prestamo["cliente"], **kwargs)
         correo_cliente = (prestamo.get("correo") or "").strip()
-        if correo_cliente:
+        if correo_cliente and enviar_correo:
             enviar_pdf_por_correo_en_segundo_plano(correo_cliente, f"CREDDT CRNTECH | Confirmación de pago del crédito {prestamo_id}", cuerpo, pdf, f"recibo_{prestamo_id}.pdf", html_override=html_correo)
             pdf = None
             correo_en_segundo_plano = True
         else:
-            correo_error = "Cliente sin correo registrado"
+            correo_error = "Envío omitido por el administrador" if not enviar_correo else "Cliente sin correo registrado"
+    except Exception as error_correo:
+        correo_error = f"El pago quedó registrado; falló la preparación del comprobante: {error_correo}"
     finally:
         if pdf and os.path.exists(pdf):
             try:
@@ -3313,6 +3334,7 @@ def registrar_pago_interes_libre(prestamo_id, fecha_pago, valor_pago, modo_pago=
         "fecha_proximo_interes": fecha_proximo.isoformat() if fecha_proximo else "Finalizado",
         "modo_pago": modo_pago,
         "correo": correo_en_segundo_plano,
+        "correo_omitido": not enviar_correo,
         "tiene_correo": bool(prestamo.get("correo")),
         "correo_error": correo_error,
         "finalizado": modo_pago == "finalizar",
@@ -3528,8 +3550,8 @@ def procesar_recordatorios_automaticos():
             # y generarse un nuevo fecha_proximo_interes, sí se puedan volver a enviar
             # recordatorios en el siguiente ciclo (y no solo una vez por crédito).
             tipo_recordatorio_il = f"IL_{tipo_r}_{r['fecha_proximo_interes'].isoformat()}"
-            id_cuota_sintetico = -int(r['prestamo_id'])
-            ya = conn.execute(text("SELECT COUNT(*) FROM reminders_sent WHERE id_cuota = :id_cuota AND tipo_recordatorio = :tipo"), {"id_cuota": id_cuota_sintetico, "tipo": tipo_recordatorio_il}).scalar()
+            id_cuota_sintetico = -int(r['prestamo_id']) if str(r['prestamo_id']).isdigit() else None
+            ya = conn.execute(text("SELECT COUNT(*) FROM reminders_sent WHERE (prestamo_id = :prestamo_id OR id_cuota = :id_cuota) AND tipo_recordatorio = :tipo"), {"prestamo_id": r['prestamo_id'], "id_cuota": id_cuota_sintetico, "tipo": tipo_recordatorio_il}).scalar()
             if int(ya or 0) > 0:
                 continue
             interes_estimado, _dias_calc = calcular_interes_libre_a_fecha(dict(r), r['fecha_proximo_interes'])
@@ -3542,7 +3564,7 @@ def procesar_recordatorios_automaticos():
             )
             ok, err = enviar_correo_async(r['correo'], asunto_il, cuerpo, html_override=html_correo)
             if ok:
-                conn.execute(text("INSERT INTO reminders_sent (id_cuota, tipo_recordatorio, fecha_envio) VALUES (:id_cuota, :tipo, :fecha_envio)"), {"id_cuota": id_cuota_sintetico, "tipo": tipo_recordatorio_il, "fecha_envio": ahora_local().isoformat(timespec='seconds')})
+                conn.execute(text("INSERT INTO reminders_sent (id_cuota, prestamo_id, tipo_recordatorio, fecha_envio) VALUES (NULL, :prestamo_id, :tipo, :fecha_envio)"), {"prestamo_id": r['prestamo_id'], "tipo": tipo_recordatorio_il, "fecha_envio": ahora_local().isoformat(timespec='seconds')})
                 enviados += 1
             else:
                 fallidos += 1
@@ -3581,7 +3603,7 @@ def render_aceptacion_contrato(token):
         st.error("❌ Este contrato fue anulado y el enlace ya no es válido.")
         motivo = prestamo.get('motivo_cancelacion_contrato') or '-'
         fecha_c = prestamo.get('fecha_cancelacion_contrato') or '-'
-        st.caption(f"Fecha de anulación: {fecha_c} | Motivo: {motivo}")
+        st.caption((f"Fecha de anulación: {fecha_c} | Motivo: {motivo}").replace("$", "\\$"))
         return
     if int(prestamo['contrato_aceptado'] or 0) == 1:
         st.success("✅ Este contrato ya fue aceptado previamente.")
@@ -3705,10 +3727,10 @@ def enviar_correo_cierre_credito(prestamo_id, nombre_cliente, correo_cliente, fe
         html_override=html_correo
     )
 
-def registrar_pago_cuota(prestamo_id, fecha_pago):
-    return registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=1)
+def registrar_pago_cuota(prestamo_id, fecha_pago, enviar_correo=True, operacion_id=None, cuota_esperada=None):
+    return registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=1, enviar_correo=enviar_correo, operacion_id=operacion_id, cuota_esperada=cuota_esperada)
 
-def registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=None, valor_pago_total=None):
+def registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=None, valor_pago_total=None, enviar_correo=True, operacion_id=None, cuota_esperada=None):
     if cantidad_cuotas is None and valor_pago_total is None:
         return {"ok": False, "error": "Debes indicar cuántas cuotas o qué valor aplicar"}
     if cantidad_cuotas is not None:
@@ -3722,15 +3744,25 @@ def registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=None, valor_p
     with get_conn() as conn:
         prestamo_db = conn.execute(text("""
             SELECT id, cliente_cedula, monto_original, COALESCE(saldo_capital, monto_original) AS saldo_capital,
-                   COALESCE(tasa_mensual, 0) AS tasa_mensual, valor_cuota
+                   COALESCE(tasa_mensual, 0) AS tasa_mensual, valor_cuota, estado, contrato_cancelado, tipo_credito, tipo
             FROM prestamos
             WHERE id = :id
+            FOR UPDATE
         """), {"id": prestamo_id}).mappings().first()
         if not prestamo_db:
             return {"ok": False, "error": "No se pudo obtener el préstamo"}
+        if str(prestamo_db.get("estado", "")).strip().lower() != "activo" or int(prestamo_db.get("contrato_cancelado", 0) or 0):
+            return {"ok": False, "error": "El crédito no está activo para recibir pagos"}
+        error_operacion = preparar_operacion_pago(conn, prestamo_id, operacion_id, enviar_correo)
+        if error_operacion:
+            return {"ok": False, "error": error_operacion}
+        if es_credito_interes_libre_row(prestamo_db):
+            return {"ok": False, "error": "Registra este pago desde Interés libre"}
         cuotas_pendientes = obtener_cuotas_pendientes(conn, prestamo_id)
         if not cuotas_pendientes:
             return {"ok": False, "error": "Todas las cuotas ya están pagadas"}
+        if cuota_esperada is not None and cuotas_pendientes[0][0] != cuota_esperada:
+            return {"ok": False, "error": "La cuota cambió por otro pago. Actualiza el crédito antes de registrar"}
         aplicaciones = []
         restante = valor_pago_total
         if cantidad_cuotas is not None:
@@ -3838,11 +3870,19 @@ def registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=None, valor_p
             FROM cuotas
             WHERE prestamo_id = :id AND estado <> 'Pagada'
         """), {"id": prestamo_id}).scalar() or 0
+        registrar_auditoria_pago(conn, prestamo_id, "PAGO_CUOTAS", f"Valor {valor_pago}; correo solicitado: {enviar_correo}")
         conn.commit()
         clear_app_caches()
         cliente = obtener_datos_cliente(conn, prestamo_db["cliente_cedula"])
     nombre_cliente = cliente[0] if cliente else "Cliente"
     correo_cliente = (cliente[1] or "").strip() if cliente else ""
+    if not enviar_correo:
+        return {"ok": True, "credito": prestamo_id, "cuota": primera_cuota[1], "cuota_final": ultima_cuota[1],
+                "cuotas_aplicadas": len([1 for _, _, completa in aplicaciones if completa]),
+                "parcial": any(not completa for _, _, completa in aplicaciones), "valor": valor_pago,
+                "correo": False, "correo_omitido": True, "tiene_correo": bool(correo_cliente),
+                "correo_error": None, "finalizado": finalizado}
+
     pdf = None
     correo_error = None
     correo_en_segundo_plano = False
@@ -3858,7 +3898,7 @@ def registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=None, valor_p
             cuotas_pendientes=cuotas_pendientes_restantes,
             saldo_pendiente=saldo_pendiente_restante
         )
-        if correo_cliente:
+        if correo_cliente and enviar_correo:
             # Antes esto esperaba (hasta 60s) la respuesta de Brevo antes de
             # devolver el resultado a la pantalla. Ahora se manda en un hilo
             # aparte: el pago queda registrado y confirmado de inmediato, y
@@ -3892,7 +3932,9 @@ def registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=None, valor_p
                         print(f"[correo-segundo-plano] Excepción enviando cierre crédito {prestamo_id}: {e}")
                 threading.Thread(target=_enviar_cierre, daemon=True).start()
         else:
-            correo_error = "Cliente sin correo registrado"
+            correo_error = "Envío omitido por el administrador" if not enviar_correo else "Cliente sin correo registrado"
+    except Exception as error_correo:
+        correo_error = f"El pago quedó registrado; falló la preparación del comprobante: {error_correo}"
     finally:
         if pdf and os.path.exists(pdf):
             try:
@@ -3908,11 +3950,12 @@ def registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=None, valor_p
         "parcial": any(not completa for _, _, completa in aplicaciones),
         "valor": valor_pago,
         "correo": correo_en_segundo_plano,
+        "correo_omitido": not enviar_correo,
         "tiene_correo": bool(correo_cliente),
         "correo_error": correo_error,
         "finalizado": finalizado
     }
-def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
+def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono, enviar_correo=True, operacion_id=None, saldo_esperado=None):
     valor_abono = normalizar_decimal(valor_abono)
     if valor_abono <= 0:
         return {"ok": False, "error": "El abono a capital debe ser mayor a cero"}
@@ -3920,13 +3963,21 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
         prestamo_db = conn.execute(text("""
             SELECT id, cliente_cedula, monto_original, COALESCE(saldo_capital, monto_original) AS saldo_capital,
                    COALESCE(tasa_mensual, 0) AS tasa_mensual, COALESCE(interes_acumulado, 0) AS interes_acumulado,
-                   valor_cuota, tipo, tipo_credito, fecha_proximo_interes
+                   valor_cuota, tipo, tipo_credito, fecha_proximo_interes, estado, contrato_cancelado
             FROM prestamos
             WHERE id = :id
+            FOR UPDATE
         """), {"id": prestamo_id}).mappings().first()
         if not prestamo_db:
             return {"ok": False, "error": "No se pudo obtener el préstamo"}
+        if str(prestamo_db.get("estado", "")).strip().lower() != "activo" or int(prestamo_db.get("contrato_cancelado", 0) or 0):
+            return {"ok": False, "error": "El crédito no está activo para recibir pagos"}
+        error_operacion = preparar_operacion_pago(conn, prestamo_id, operacion_id, enviar_correo)
+        if error_operacion:
+            return {"ok": False, "error": error_operacion}
         saldo_capital_actual = normalizar_decimal(prestamo_db["saldo_capital"])
+        if saldo_esperado is not None and saldo_capital_actual != normalizar_decimal(saldo_esperado):
+            return {"ok": False, "error": "El saldo cambió por otro movimiento. Actualiza el crédito"}
         if valor_abono >= saldo_capital_actual:
             return {"ok": False, "error": "El abono a capital no puede ser igual o mayor al saldo capital actual"}
         nuevo_saldo_capital = saldo_capital_actual - valor_abono
@@ -3958,6 +4009,7 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
                     valor_cuota = ROUND(:saldo_capital * tasa_mensual, 2)
                 WHERE id = :id
             """), {"saldo_capital": nuevo_saldo_capital, "id": prestamo_id})
+            registrar_auditoria_pago(conn, prestamo_id, "ABONO_CAPITAL", f"Valor {valor_abono}; correo solicitado: {enviar_correo}")
             conn.commit()
             clear_app_caches()
             cliente = obtener_datos_cliente(conn, prestamo_db["cliente_cedula"])
@@ -3966,6 +4018,12 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
             interes_pendiente = normalizar_decimal(prestamo_db["interes_acumulado"])
             fecha_proximo_interes = prestamo_db.get("fecha_proximo_interes")
             nuevo_interes_30 = (nuevo_saldo_capital * Decimal(str(prestamo_db["tasa_mensual"] or 0))).quantize(Decimal("0.01"))
+
+            if not enviar_correo:
+                return {"ok": True, "credito": prestamo_id, "valor": valor_abono,
+                        "nueva_cuota": nuevo_interes_30, "saldo_capital": nuevo_saldo_capital,
+                        "interes_libre": True, "correo": False, "correo_omitido": True,
+                        "tiene_correo": bool(correo_cliente), "correo_error": None}
 
             pdf = None
             correo_error = None
@@ -3985,7 +4043,7 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
                 )
                 cuerpo = construir_cuerpo_correo("RECIBO_ABONO", nombre_cliente, **kwargs)
                 html_correo = construir_html_correo("RECIBO_ABONO", nombre_cliente, **kwargs)
-                if correo_cliente:
+                if correo_cliente and enviar_correo:
                     enviar_pdf_por_correo_en_segundo_plano(
                         correo_cliente,
                         f"CREDDT CRNTECH | Abono a capital crédito {prestamo_id}",
@@ -3997,7 +4055,9 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
                     pdf = None
                     correo_en_segundo_plano = True
                 else:
-                    correo_error = "Cliente sin correo registrado"
+                    correo_error = "Envío omitido por el administrador" if not enviar_correo else "Cliente sin correo registrado"
+            except Exception as error_correo:
+                correo_error = f"El pago quedó registrado; falló la preparación del comprobante: {error_correo}"
             finally:
                 if pdf and os.path.exists(pdf):
                     try:
@@ -4012,7 +4072,8 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
                 "saldo_capital": nuevo_saldo_capital,
                 "interes_libre": True,
                 "correo": correo_en_segundo_plano,
-                "tiene_correo": bool(correo_cliente),
+                "correo_omitido": not enviar_correo,
+        "tiene_correo": bool(correo_cliente),
                 "correo_error": correo_error
             }
 
@@ -4060,11 +4121,17 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
                 "id_cuota": id_cuota
             })
         actualizar_estado_prestamo(conn, prestamo_id)
+        registrar_auditoria_pago(conn, prestamo_id, "ABONO_CAPITAL", f"Valor {valor_abono}; correo solicitado: {enviar_correo}")
         conn.commit()
         clear_app_caches()
         cliente = obtener_datos_cliente(conn, prestamo_db["cliente_cedula"])
     nombre_cliente = cliente[0] if cliente else "Cliente"
     correo_cliente = (cliente[1] or "").strip() if cliente else ""
+    if not enviar_correo:
+        return {"ok": True, "credito": prestamo_id, "valor": valor_abono,
+                "nueva_cuota": nueva_cuota, "correo": False, "correo_omitido": True,
+                "tiene_correo": bool(correo_cliente), "correo_error": None}
+
     pdf = None
     correo_error = None
     correo_en_segundo_plano = False
@@ -4082,7 +4149,7 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
         )
         cuerpo = construir_cuerpo_correo("RECIBO_ABONO", nombre_cliente, **kwargs)
         html_correo = construir_html_correo("RECIBO_ABONO", nombre_cliente, **kwargs)
-        if correo_cliente:
+        if correo_cliente and enviar_correo:
             enviar_pdf_por_correo_en_segundo_plano(
                 correo_cliente,
                 f"Abono a capital crédito {prestamo_id}",
@@ -4094,7 +4161,9 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
             pdf = None
             correo_en_segundo_plano = True
         else:
-            correo_error = "Cliente sin correo registrado"
+            correo_error = "Envío omitido por el administrador" if not enviar_correo else "Cliente sin correo registrado"
+    except Exception as error_correo:
+        correo_error = f"El pago quedó registrado; falló la preparación del comprobante: {error_correo}"
     finally:
         if pdf and os.path.exists(pdf):
             try:
@@ -4107,6 +4176,7 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono):
         "valor": valor_abono,
         "nueva_cuota": nueva_cuota,
         "correo": correo_en_segundo_plano,
+        "correo_omitido": not enviar_correo,
         "tiene_correo": bool(correo_cliente),
         "correo_error": correo_error
     }
@@ -4331,8 +4401,138 @@ tab_usuarios = SECCION_ACTIVA == "👤 Usuarios"
 # ==========================
 # 📊 RESUMEN
 # ==========================
+@st.cache_data(ttl=45, show_spinner=False)
+def load_cobros_dashboard(inicio_iso, fin_iso):
+    with get_conn() as conn:
+        return pd.read_sql(text("""
+            SELECT pg.fecha_pago::date AS fecha, pg.prestamo_id AS credito,
+                   COALESCE(pg.capital_pagado, 0) AS capital,
+                   COALESCE(pg.interes_pagado, 0) AS interes,
+                   COALESCE(pg.valor, 0) AS total
+            FROM pagos pg JOIN prestamos p ON p.id = pg.prestamo_id
+            WHERE LOWER(TRIM(COALESCE(p.estado, ''))) <> 'anulado'
+              AND COALESCE(p.contrato_cancelado, 0) = 0
+              AND (COALESCE(p.contrato_aceptado, 0) = 1
+                   OR LOWER(TRIM(COALESCE(p.estado, ''))) IN ('activo', 'cancelado'))
+              AND pg.fecha_pago::date BETWEEN :inicio AND :fin
+            ORDER BY pg.fecha_pago::date, pg.id_pago
+        """), conn, params={"inicio": inicio_iso, "fin": fin_iso})
+
+def tarjeta_financiera(titulo, valor, explicacion, acento="#2563eb"):
+    st.markdown(
+        f'<div class="fin-card" style="--accent:{acento}">'
+        f'<div class="fin-label">{html_module.escape(titulo)}</div>'
+        f'<div class="fin-value">{html_module.escape(str(valor))}</div>'
+        f'<div class="fin-help">{html_module.escape(explicacion)}</div></div>',
+        unsafe_allow_html=True)
+
+def render_dashboard_financiero(kpis):
+    st.markdown("""<style>
+    .fin-card{background:#fff;border:1px solid #dce5ef;border-top:3px solid var(--accent);
+        border-radius:14px;padding:20px 18px;min-height:152px;box-shadow:0 5px 18px rgba(7,23,60,.04)}
+    .fin-label{min-height:38px;font-size:13px;font-weight:600;color:#475569;line-height:1.4}
+    .fin-value{font-size:clamp(22px,2.1vw,32px);font-weight:750;color:#07173c;letter-spacing:-.04em;margin:10px 0}
+    .fin-help{min-height:56px;font-size:12px;color:#64748b;line-height:1.55}
+    .fin-story{padding:18px 22px;background:#eff6ff;border:1px solid #dbeafe;border-radius:12px;
+        color:#173266;font-size:16px;line-height:1.65;margin:16px 0 22px}
+    [data-testid="stMetric"]{background:white;border:1px solid #e2e8f0;border-radius:12px;padding:14px}
+    [data-testid="stMetricLabel"]{color:#475569;font-size:13px}
+    [data-testid="stSidebar"] [role="radiogroup"]{gap:2px!important}
+    [data-testid="stSidebar"] [data-testid="stVerticalBlock"]{gap:.6rem}
+    @media(max-width:700px){.fin-card{min-height:0}.fin-value{font-size:28px}}
+    </style>""", unsafe_allow_html=True)
+    capital = float(kpis.get("capital_colocado", 0) or 0)
+    recuperado = float(kpis.get("capital_recuperado", 0) or 0)
+    pendiente = float(kpis.get("capital_vivo", 0) or 0)
+    interes = float(kpis.get("interes_cobrado", 0) or 0)
+    recaudo = float(kpis.get("recaudo_acumulado", 0) or 0)
+    pct = float(kpis.get("recuperacion_capital_pct", 0) or 0)
+    st.caption((f"Valores en COP. Totales acumulados del historial registrado. Actualizado: {ahora_local().strftime('%d/%m/%Y %H:%M')} (hora Colombia).").replace("$", "\\$"))
+    cols = st.columns(4)
+    items = [("Total prestado acumulado", capital, "Suma de desembolsos registrados; no es saldo disponible.", "#173266"),
+             ("Capital devuelto por clientes", recuperado, f"{pct:.2f}% del total prestado ya se recuperó.", "#0891b2"),
+             ("Capital pendiente de recuperar", pendiente, "Capital de créditos activos, sin intereses futuros.", "#2563eb"),
+             ("Intereses cobrados", interes, "Ingreso por intereses antes de gastos y pérdidas.", "#0e7490")]
+    for col, (titulo, valor, ayuda, color) in zip(cols, items):
+        with col:
+            tarjeta_financiera(titulo, pesos(valor), ayuda, color)
+    st.markdown(f'<div class="fin-story">De cada <b>$100 prestados</b>, los clientes han devuelto '
+                f'<b>${pct:.2f} de capital</b>. Quedan <b>{pesos(pendiente)}</b> por recuperar. '
+                f'Los <b>{pesos(interes)}</b> de intereses cobrados se muestran aparte de la devolución de capital.</div>', unsafe_allow_html=True)
+    with st.expander("Cómo se relacionan los números", expanded=False):
+        st.write((f"Total prestado: {pesos(capital)} = capital devuelto {pesos(recuperado)} + capital pendiente {pesos(pendiente)}.").replace("$", "\\$"))
+        st.write((f"Total cobrado: {pesos(recaudo)} = devolución de capital {pesos(recuperado)} + intereses {pesos(interes)}.").replace("$", "\\$"))
+        st.caption("Puede haber diferencias por ajustes y redondeo. Total cobrado no equivale a saldo en caja: faltan desembolsos, gastos y retiros. Intereses sobre capital prestado es un indicador histórico, no rentabilidad anual ni utilidad neta.")
+        st.metric("Intereses cobrados / total prestado", f"{float(kpis.get('margen_realizado_pct', 0) or 0):.2f}%")
+
+    st.markdown("### Cobros reales y capital pendiente")
+    hoy = hoy_local()
+    inicio_default = date(hoy.year - (hoy.month < 6), (hoy.month - 6) % 12 + 1, 1)
+    rango = st.date_input("Período del gráfico de cobros reales", value=(inicio_default, hoy), key="dashboard_periodo_cobros")
+    if len(rango) == 2 and rango[0] <= rango[1]:
+        cobros = load_cobros_dashboard(rango[0].isoformat(), rango[1].isoformat())
+        chart_col, capital_col = st.columns([1.7, 1])
+        with chart_col:
+            st.caption("Cobros por fecha de pago. Capital e intereses se muestran por separado.")
+            if cobros.empty:
+                st.info("No hay cobros registrados en este período.")
+            else:
+                cobros["Mes"] = pd.to_datetime(cobros["fecha"]).dt.strftime("%Y-%m")
+                for key in ["capital", "interes", "total"]:
+                    cobros[key] = pd.to_numeric(cobros[key], errors="raise")
+                mensual = cobros.groupby("Mes")[["capital", "interes"]].sum().rename(columns={"capital": "Capital recuperado", "interes": "Intereses cobrados"})
+                meses = pd.date_range(date(rango[0].year, rango[0].month, 1), date(rango[1].year, rango[1].month, 1), freq="MS").strftime("%Y-%m")
+                mensual = mensual.reindex(meses, fill_value=0).rename_axis("Mes")
+                graf = mensual.reset_index().melt(id_vars="Mes", var_name="Concepto", value_name="COP")
+                st.vega_lite_chart(graf, {"mark": "bar", "height": 265, "encoding": {
+                    "x": {"field": "Mes", "type": "ordinal", "axis": {"labelAngle": 0}},
+                    "y": {"field": "COP", "type": "quantitative", "title": "Cobros (COP)"},
+                    "color": {"field": "Concepto", "type": "nominal", "scale": {"range": ["#2563eb", "#0891b2"]}},
+                    "tooltip": [{"field": "Mes"}, {"field": "Concepto"}, {"field": "COP", "type": "quantitative", "format": ",.0f"}]
+                }}, use_container_width=True)
+                st.caption((f"Total recibido en el período: {pesos(cobros['total'].sum())}. Incluye ajustes registrados en el historial.").replace("$", "\\$"))
+                with st.expander("Ver pagos que explican el gráfico"):
+                    detalle = cobros[["fecha", "credito", "capital", "interes", "total"]].rename(columns={"fecha": "Fecha de pago", "credito": "Crédito", "capital": "Capital", "interes": "Interés", "total": "Total recibido"}).copy()
+                    for k in ["Capital", "Interés", "Total recibido"]:
+                        detalle[k] = detalle[k].apply(pesos)
+                    render_tabla_moderna(detalle)
+        with capital_col:
+            st.caption("Capital acumulado. Los intereses no forman parte de este gráfico.")
+            capital_df = pd.DataFrame({"Concepto": ["Recuperado", "Pendiente"], "COP": [recuperado, pendiente]})
+            st.vega_lite_chart(capital_df, {"mark": "bar", "height": 265, "encoding": {
+                "x": {"field": "Concepto", "type": "nominal", "axis": {"labelAngle": 0}},
+                "y": {"field": "COP", "type": "quantitative", "title": "Capital (COP)"},
+                "color": {"field": "Concepto", "scale": {"domain": ["Recuperado", "Pendiente"], "range": ["#0891b2", "#2563eb"]}, "legend": None},
+                "tooltip": [{"field": "Concepto"}, {"field": "COP", "type": "quantitative", "format": ",.0f"}]
+            }}, use_container_width=True)
+    elif len(rango) == 2:
+        st.warning("La fecha inicial debe ser anterior a la final.")
+    else:
+        st.info("Selecciona el inicio y el fin del período para ver los cobros.")
+
+    st.markdown("### Pendientes y seguimiento")
+    o1, o2, o3, o4 = st.columns(4)
+    total_pendiente = float(kpis.get("cuotas_pendientes", 0) or 0)
+    libre = float(kpis.get("interes_libre_pendiente", 0) or 0)
+    mora = float(kpis.get("cartera_mora", 0) or 0)
+    o1.metric("Cuotas e intereses pendientes", pesos(total_pendiente), help="Cuotas normales/express pendientes más el próximo interés de cada crédito libre. No incluye todo el capital libre ni los intereses futuros estimados.")
+    o2.metric("De ese total: interés libre", pesos(libre), help="Desglose incluido en el total de la izquierda; no sumarlo nuevamente.")
+    o3.metric("De ese total: vencido", pesos(mora), help="Obligaciones con fecha anterior a hoy. Ya están incluidas en los pendientes.")
+    o4.metric("Créditos activos", int(kpis.get("creditos_activos", 0) or 0))
+    st.caption((f"Cuotas normales/express: {pesos(total_pendiente-libre)}. Próximo interés libre: {pesos(libre)}. El capital libre pendiente se muestra arriba como parte del capital por recuperar.").replace("$", "\\$"))
+    proximos = load_cuotas_proyeccion(hoy.isoformat(), (hoy + timedelta(days=30)).isoformat())
+    with st.expander("Ver cobros previstos de hoy a 30 días"):
+        if proximos.empty:
+            st.info("No hay cobros previstos en los próximos 30 días.")
+        else:
+            detalle = proximos[["fecha_vencimiento", "cliente", "credito", "tipo_credito", "valor_cuota", "naturaleza"]].copy()
+            detalle["valor_cuota"] = detalle["valor_cuota"].apply(pesos)
+            detalle = detalle.rename(columns={"fecha_vencimiento": "Vencimiento", "cliente": "Cliente", "credito": "Crédito", "tipo_credito": "Tipo", "valor_cuota": "Valor (COP)", "naturaleza": "Origen"})
+            render_tabla_moderna(detalle)
+            st.caption("Los ciclos futuros de interés libre suponen continuidad del crédito y capital constante. No incluyen mora anterior a hoy ni una devolución de capital no pactada.")
+
 if tab_resumen:
-    st.subheader("📊 Resumen general")
+    st.subheader("Resumen financiero")
     if st.session_state.get("recordatorios_auto_lanzado"):
         st.caption("🔔 Revisando y enviando recordatorios pendientes en segundo plano (no bloquea la app).")
 
@@ -4357,53 +4557,27 @@ if tab_resumen:
     consistencia_ok = bool(kpis_fin.get("consistencia_ok", False))
 
     ultima_reconciliacion = get_app_meta("finanzas_reconciliadas_at", "Sin ejecutar")
-    st.markdown("### 🧭 Control gerencial")
-    g1, g2, g3 = st.columns([1.4, 1.4, 1.8])
-    with g1:
-        st.metric("✅ Recuperación de capital", f"{recuperacion_capital_pct:.2f}%")
-    with g2:
-        st.metric("📈 Margen realizado", f"{margen_realizado_pct:.2f}%")
-    with g3:
-        st.caption(f"Última conciliación financiera: {ultima_reconciliacion}")
-        if ES_ADMIN and st.button("🔄 Reconciliar histórico financiero", key="btn_reconciliar_finanzas", disabled=st.session_state.get("app_busy", False)):
-            try:
-                with st.spinner("Reconstruyendo histórico financiero..."):
-                    resumen_recon = reconstruir_historial_financiero()
-                    set_flash(
-                        "sistema_msg",
-                        "success",
-                        f"✅ Conciliación completada. Préstamos revisados: {resumen_recon['prestamos']} | Pagos recalculados: {resumen_recon['pagos']} | Ajustes negativos detectados: {resumen_recon['ajustes_negativos']}"
-                    )
-                    st.rerun()
-            except Exception as e:
-                st.error(f"❌ No se pudo ejecutar la conciliación financiera: {e}")
-            finally:
-                stop_busy()
-
-    if consistencia_ok:
-        st.success("✅ Los KPI financieros están conciliados. Ya puedes usarlos para decisiones gerenciales con mucha más confianza.")
-    else:
-        st.warning(
-            f"⚠️ Los KPI financieros aún no cierran por completo. Diferencia capital: {pesos(diferencia_capital)} | Diferencia recaudo: {pesos(diferencia_recaudo)}. Ejecuta la conciliación histórica antes de tomar decisiones de retiro de capital o utilidad."
-        )
-
-    st.markdown("### 💼 Indicadores financieros")
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("💰 Capital colocado", pesos(capital_colocado))
-    k2.metric("🏦 Capital recuperado", pesos(capital_recuperado))
-    k3.metric("📈 Interés cobrado", pesos(interes_cobrado))
-    k4.metric("💳 Capital vivo", pesos(capital_vivo))
-
-    st.markdown("### ⚙️ Indicadores operativos")
-    o1, o2, o3, o4, o5 = st.columns(5)
-    o1.metric("✅ Recaudo acumulado", pesos(recaudo_acumulado))
-    o2.metric("⏳ Cuotas pendientes", pesos(cuotas_pendientes_total))
-    o3.metric("🧾 Interés libre pendiente", pesos(interes_libre_pendiente))
-    o4.metric("🚨 Cartera en mora", pesos(cartera_mora_total))
-    o5.metric("📄 Créditos activos", creditos_activos)
+    render_dashboard_financiero(kpis_fin)
+    with st.expander("Control de consistencia y mantenimiento"):
+        st.caption((f"Última reconstrucción del historial: {ultima_reconciliacion}").replace("$", "\\$"))
+        if consistencia_ok:
+            st.success("Los totales cuadran aritméticamente dentro de la tolerancia de redondeo. Esta validación no es una conciliación bancaria.")
+        else:
+            st.warning((f"Diferencia de capital: {pesos(diferencia_capital)}. Diferencia de cobros: {pesos(diferencia_recaudo)}. Revisa el historial antes de distribuir dinero.").replace("$", "\\$"))
+        st.caption("Reconstruir recalcula la clasificación histórica de pagos y saldos; no verifica extractos bancarios.")
+        if ES_ADMIN:
+            confirmar_reconstruccion = st.checkbox("Revisé el historial y quiero recalcularlo", key="confirmar_reconstruccion")
+            if st.button("Reconstruir clasificación histórica", key="btn_reconciliar_finanzas", disabled=not confirmar_reconstruccion or st.session_state.get("app_busy", False)):
+                try:
+                    with st.spinner("Reconstruyendo histórico financiero..."):
+                        resumen_recon = reconstruir_historial_financiero()
+                        set_flash("sistema_msg", "success", f"Historial reconstruido. Créditos: {resumen_recon['prestamos']}. Pagos: {resumen_recon['pagos']}. Ajustes negativos: {resumen_recon['ajustes_negativos']}.")
+                        st.rerun()
+                finally:
+                    stop_busy()
 
     if contratos_pendientes > 0:
-        st.info(f"ℹ️ Tienes {contratos_pendientes} contrato(s) pendiente(s) por aceptación, equivalentes a {pesos(capital_pendiente_aprobacion)}. No se incluyen en los KPI financieros hasta que el contrato sea aceptado.")
+        st.info((f"ℹ️ Tienes {contratos_pendientes} contrato(s) pendiente(s) por aceptación, equivalentes a {pesos(capital_pendiente_aprobacion)}. No se incluyen en los KPI financieros hasta que el contrato sea aceptado.").replace("$", "\\$"))
 
     st.divider()
     df = estado[estado["estado"] != "Anulado"].copy()
@@ -4434,9 +4608,9 @@ if tab_resumen:
     st.divider()
     st.subheader("⚠️ Alertas de cartera")
     a1, a2, a3 = st.columns(3)
-    a1.metric("👥 Clientes en mora", clientes_mora)
+    a1.metric("Créditos en mora", clientes_mora, help="El cálculo cuenta créditos, no clientes únicos.")
     a2.metric("💸 Monto en mora", pesos(cartera_mora_total))
-    a3.metric("📌 Exposición en mora", f"{exposicion_mora_total:.1f}%")
+    a3.metric("Porción vencida de obligaciones pendientes", f"{exposicion_mora_total:.1f}%", help="Monto vencido / cuotas e intereses pendientes. No representa el porcentaje de todo el capital en riesgo.")
 
     detalle_mora_df = load_detalle_mora()
     if detalle_mora_df.empty:
@@ -4458,7 +4632,8 @@ if tab_resumen:
     # 🔎 CONSULTA MENSUAL
     # ==========================
     st.divider()
-    st.subheader("🔎 Consulta mensual (corte 02 → 02)")
+    st.subheader("Cobros del período")
+    st.caption("Corte operativo del día 3 al día 2 siguiente. Interés libre: ciclos pendientes y estimaciones futuras; los ciclos pagados se marcan como cobrados mientras el crédito siga activo.")
     meses_disponibles = pd.date_range("2025-12-01", "2030-12-01", freq="MS").strftime("%Y-%m").tolist()
     mes_actual = hoy_local().strftime("%Y-%m")
     index_actual = meses_disponibles.index(mes_actual) if mes_actual in meses_disponibles else 0
@@ -4469,15 +4644,9 @@ if tab_resumen:
         index=index_actual
     )
     year, month = map(int, mes_consulta.split("-"))
-    if year == 2025 and month == 12:
-        inicio = datetime(2025,12,15)
-        fin = datetime(2026,1,1)
-    elif year == 2026 and month == 1:
-        inicio = datetime(2026,1,1)
-        fin = datetime(2026,2,2)
-    else:
-        inicio = datetime(year, month, 3)
-        fin = datetime(year + (month==12), 1 if month==12 else month+1, 2)
+    inicio_fecha, fin_fecha = fechas_corte_operativo(year, month)
+    inicio = datetime.combine(inicio_fecha, datetime.min.time())
+    fin = datetime.combine(fin_fecha, datetime.min.time())
 
     cuotas_df = load_cuotas_periodo(inicio.date().isoformat(), fin.date().isoformat()).copy()
     # Filtro defensivo: evita que cuotas de créditos anulados/cancelados se pinten como tarjetas
@@ -4491,6 +4660,7 @@ if tab_resumen:
     total_periodo = cuotas_df["valor_cuota"].sum() if not cuotas_df.empty else 0
     pagado_periodo = cuotas_df[cuotas_df["estado"]=="Pagada"]["valor_cuota"].sum() if not cuotas_df.empty else 0
     pendiente_periodo = cuotas_df[cuotas_df["estado"].isin(["Pendiente","Parcial"])]["valor_cuota"].sum() if not cuotas_df.empty else 0
+    st.caption("Pagado en este corte refleja cuotas/ciclos aplicados al período, no necesariamente la fecha de ingreso del dinero. Consulta el gráfico de cobros reales para ver caja por fecha de pago.")
 
     c1,c2,c3 = st.columns(3)
     with c1:
@@ -4528,7 +4698,7 @@ if tab_resumen:
         if buscar_detalle.strip():
             df_detalle = df_detalle[df_detalle["cliente"].astype(str).str.contains(buscar_detalle.strip(), case=False, na=False)]
 
-        st.caption(f"Mostrando {len(df_detalle)} cuota(s) en este detalle.")
+        st.caption((f"Mostrando {len(df_detalle)} cuota(s) en este detalle.").replace("$", "\\$"))
 
         if df_detalle.empty:
             st.info("No hay cuotas para mostrar con el filtro actual.")
@@ -4552,7 +4722,7 @@ if tab_resumen:
                     st.markdown(f"""
                     <div class="cuota-card">
                         <div class="cuota-card-title">{r.cliente}</div>
-                        <div class="cuota-card-meta">Cuota #{r.nro_cuota} · {r.fecha_vencimiento}</div>
+                        <div class="cuota-card-meta">{"Ciclo de interés" if r.tipo_credito == "Interés libre" else "Cuota #" + str(r.nro_cuota)} · {r.fecha_vencimiento}</div>
                         <div class="cuota-card-value">{pesos(r.valor_cuota)}</div>
                         <div class="cuota-status {estado_class}">{estado_icono} {estado_label}</div>
                     </div>
@@ -4561,7 +4731,8 @@ if tab_resumen:
 # 📈 PROYECCIÓN
 # ==========================
 if tab_proyeccion:
-    st.subheader("📈 Proyección mensual")
+    st.subheader("Proyección de cobros")
+    st.caption("Estimación con la cartera activa. Interés libre se repite cada 30 días mientras quede capital; no supone su devolución. Los pagos futuros aún no son ingresos cobrados.")
     st.caption("Planea el próximo corte sin saturar el resumen: meta de recaudo, reinversión, caja, gerencia y créditos sugeridos.")
 
     hoy = hoy_local()
@@ -4653,16 +4824,33 @@ if tab_proyeccion:
             finally:
                 stop_busy()
 
+    with st.expander("Ver seis cortes consecutivos", expanded=True):
+        cortes = []
+        y, m = map(int, mes_proyeccion.split("-"))
+        for i in range(6):
+            yy, mm = y + (m - 1 + i) // 12, (m - 1 + i) % 12 + 1
+            desde, hasta = fechas_corte_operativo(yy, mm)
+            flujo = load_cuotas_proyeccion(desde.isoformat(), hasta.isoformat())
+            libre = flujo[flujo["tipo_credito"].eq("Interés libre")]["valor_cuota"].sum() if not flujo.empty else 0
+            otros = flujo[~flujo["tipo_credito"].eq("Interés libre")]["valor_cuota"].sum() if not flujo.empty else 0
+            cortes.append({"Corte": f"{yy:04d}-{mm:02d}", "Cuotas normales/express": float(otros), "Interés libre recurrente": float(libre)})
+        df_cortes = pd.DataFrame(cortes)
+        graf = df_cortes.melt(id_vars="Corte", var_name="Concepto", value_name="COP")
+        st.vega_lite_chart(graf, {"mark": "bar", "height": 240, "encoding": {
+            "x": {"field": "Corte", "type": "ordinal", "axis": {"labelAngle": 0}},
+            "y": {"field": "COP", "type": "quantitative", "title": "Cobros previstos (COP)"},
+            "color": {"field": "Concepto", "scale": {"range": ["#0891b2", "#2563eb"]}},
+            "tooltip": [{"field": "Corte"}, {"field": "Concepto"}, {"field": "COP", "type": "quantitative", "format": ",.0f"}]
+        }}, use_container_width=True)
+        for c in ["Cuotas normales/express", "Interés libre recurrente"]:
+            df_cortes[c] = df_cortes[c].apply(pesos)
+        render_tabla_moderna(df_cortes)
+        st.caption("Escenario de cobro, no deuda ya causada. Asume pago de ciclos y capital libre constante; una liquidación completa elimina sus ciclos futuros al actualizar la cartera.")
+
     year_proy, month_proy = map(int, mes_proyeccion.split("-"))
-    if year_proy == 2025 and month_proy == 12:
-        inicio_proy = datetime(2025, 12, 15)
-        fin_proy = datetime(2026, 1, 1)
-    elif year_proy == 2026 and month_proy == 1:
-        inicio_proy = datetime(2026, 1, 1)
-        fin_proy = datetime(2026, 2, 2)
-    else:
-        inicio_proy = datetime(year_proy, month_proy, 3)
-        fin_proy = datetime(year_proy + (month_proy == 12), 1 if month_proy == 12 else month_proy + 1, 2)
+    inicio_fecha, fin_fecha = fechas_corte_operativo(year_proy, month_proy)
+    inicio_proy = datetime.combine(inicio_fecha, datetime.min.time())
+    fin_proy = datetime.combine(fin_fecha, datetime.min.time())
 
     cuotas_proy = load_cuotas_proyeccion(inicio_proy.date().isoformat(), fin_proy.date().isoformat()).copy()
     # Filtro defensivo para que la proyección no use cuotas de créditos anulados/cancelados.
@@ -4700,20 +4888,14 @@ if tab_proyeccion:
     d2.metric("🏦 Guardar en caja", pesos(valor_caja), f"{pct_caja:.0f}%")
     d3.metric("👔 Gerencia", pesos(valor_gerencia), f"{pct_gerencia:.0f}%")
 
-    st.markdown("### 🎯 Recomendación del sistema")
+    st.markdown("### Lectura de la proyección")
+    st.caption("La distribución es un escenario sobre cobros esperados, no utilidad disponible. Debe considerar gastos, liquidez y pagos efectivamente recibidos.")
     if recaudo_proyectado <= 0:
-        st.error("🚨 No hay recaudo proyectado para este corte. Revisa si existen cuotas pendientes con vencimiento dentro del período seleccionado.")
+        st.info("No hay cobros previstos para este corte. Revisa la cartera y sus fechas.")
     elif faltante_meta > 0:
-        st.warning(
-            f"⚠️ Para no bajar de {pesos(meta_mensual)}, faltan {pesos(faltante_meta)} en el corte proyectado. "
-            f"Como referencia, necesitas aproximadamente {express_necesarios_faltante} crédito(s) express de {pesos(valor_express_ref)} "
-            f"o {normales_necesarios_faltante} crédito(s) normal(es) de {pesos(valor_normal_ref)}."
-        )
+        st.warning((f"Faltan {pesos(faltante_meta)} de cobros para la meta. Desembolsar nuevos créditos no cubre automáticamente ese faltante: sus cuotas dependerán del plazo y la fecha de desembolso.").replace("$", "\\$"))
     else:
-        st.success(
-            f"✅ Con la cartera actual sí alcanzas la meta mínima. Puedes planear reinvertir {pesos(capital_reinvertir)} "
-            f"sin bajar del objetivo de {pesos(meta_mensual)}."
-        )
+        st.success((f"Los cobros previstos superan la meta en {pesos(excedente_meta)}. La asignación solo debe ejecutarse con dinero efectivamente cobrado.").replace("$", "\\$"))
 
     r1, r2 = st.columns(2)
     with r1:
@@ -4747,9 +4929,9 @@ if tab_proyeccion:
         st.metric("Capital simulado", pesos(capital_mix), pesos(diferencia_mix))
 
     if capital_mix >= capital_reinvertir and capital_reinvertir > 0:
-        st.success(f"✅ La mezcla cubre la reinversión sugerida de {pesos(capital_reinvertir)}.")
+        st.success((f"✅ La mezcla cubre la reinversión sugerida de {pesos(capital_reinvertir)}.").replace("$", "\\$"))
     elif capital_reinvertir > 0:
-        st.info(f"ℹ️ A esta mezcla le faltan {pesos(abs(diferencia_mix))} para cubrir la reinversión sugerida.")
+        st.info((f"ℹ️ A esta mezcla le faltan {pesos(abs(diferencia_mix))} para cubrir la reinversión sugerida.").replace("$", "\\$"))
 
     st.markdown("### 📋 Cuotas que soportan esta proyección")
     if cuotas_proy.empty:
@@ -4760,7 +4942,7 @@ if tab_proyeccion:
         resumen_tipo = resumen_tipo.rename(columns={"tipo_credito": "Tipo de crédito", "valor_cuota": "Recaudo proyectado"})
         render_tabla_moderna(resumen_tipo)
 
-        detalle_proy = cuotas_proy[["fecha_vencimiento", "cliente", "credito", "nro_cuota", "tipo_credito", "valor_cuota", "estado_cuota"]].copy()
+        detalle_proy = cuotas_proy[["fecha_vencimiento", "cliente", "credito", "nro_cuota", "tipo_credito", "valor_cuota", "estado_cuota", "naturaleza"]].copy()
         detalle_proy["valor_cuota"] = detalle_proy["valor_cuota"].apply(pesos)
         detalle_proy = detalle_proy.rename(columns={
             "fecha_vencimiento": "Fecha vencimiento",
@@ -4769,7 +4951,8 @@ if tab_proyeccion:
             "nro_cuota": "Cuota",
             "tipo_credito": "Tipo",
             "valor_cuota": "Valor cuota",
-            "estado_cuota": "Estado cuota"
+            "estado_cuota": "Estado cuota",
+            "naturaleza": "Origen del valor"
         })
         render_tabla_moderna(detalle_proy, columna_estado="Estado cuota")
 
@@ -4843,7 +5026,7 @@ if tab_clientes:
                                     set_flash("clientes_msg", "success", "✅ Cliente registrado correctamente")
                                     st.rerun()
                             except Exception as e:
-                                st.error(f"❌ No se pudo registrar el cliente: {e}")
+                                st.error((f"❌ No se pudo registrar el cliente: {e}").replace("$", "\\$"))
                             finally:
                                 stop_busy()
 
@@ -4916,7 +5099,7 @@ if tab_clientes:
                                                     st.session_state["reset_sel_cliente_gestion"] = True
                                                     st.rerun()
                                             except Exception as e:
-                                                st.error(f"❌ No se pudo actualizar el cliente: {e}")
+                                                st.error((f"❌ No se pudo actualizar el cliente: {e}").replace("$", "\\$"))
                                             finally:
                                                 stop_busy()
 
@@ -4933,7 +5116,7 @@ if tab_clientes:
                                                     set_flash("clientes_msg", "success", "✅ Cliente eliminado correctamente")
                                                     st.rerun()
                                                 else:
-                                                    st.error(f"❌ {err_del}")
+                                                    st.error((f"❌ {err_del}").replace("$", "\\$"))
                                         finally:
                                             stop_busy()
 
@@ -5026,7 +5209,7 @@ if tab_creditos:
                                         set_flash("credito_msg", "success", f"✅ Crédito {prestamo_creado['id']} creado. El contrato se está enviando por correo (puede tardar unos segundos).")
                                         st.rerun()
                                     else:
-                                        st.error(f"❌ {err_c}")
+                                        st.error((f"❌ {err_c}").replace("$", "\\$"))
                             finally:
                                 stop_busy()
 
@@ -5047,7 +5230,7 @@ if tab_creditos:
                             "Confirmo que validé cliente, monto, correo y autorizo el envío del contrato",
                             key="confirmar_envio_express"
                         )
-                        st.caption(f"Crédito express a {cuotas_express_new} cuotas de frecuencia {frecuencia_express_new.lower()}.")
+                        st.caption((f"Crédito express a {cuotas_express_new} cuotas de frecuencia {frecuencia_express_new.lower()}.").replace("$", "\\$"))
                         submit_express = st.form_submit_button("Registrar crédito express", type="primary", disabled=st.session_state.get("app_busy", False))
                     if submit_express:
                         if cliente_express is None:
@@ -5063,7 +5246,7 @@ if tab_creditos:
                                         set_flash("credito_msg", "success", f"✅ Crédito {prestamo_creado['id']} creado. El contrato se está enviando por correo (puede tardar unos segundos).")
                                         st.rerun()
                                     else:
-                                        st.error(f"❌ {err_c}")
+                                        st.error((f"❌ {err_c}").replace("$", "\\$"))
                             finally:
                                 stop_busy()
 
@@ -5083,7 +5266,7 @@ if tab_creditos:
                         fecha_inicio_interes_libre = st.date_input("Fecha de desembolso/inicio", value=hoy_local(), key="fecha_inicio_interes_libre")
                         interes_30 = monto_interes_libre * (tasa_interes_libre_pct / 100)
                         proximo_interes = fecha_inicio_interes_libre + timedelta(days=30)
-                        st.info(f"Interés estimado cada 30 días: {pesos(interes_30)} · Próximo pago: {proximo_interes.isoformat()}")
+                        st.info((f"Interés estimado cada 30 días: {pesos(interes_30)} · Próximo pago: {proximo_interes.isoformat()}").replace("$", "\\$"))
                         confirmar_envio_interes_libre = st.checkbox(
                             "Confirmo que validé cliente, capital, tasa, correo y autorizo el envío del contrato",
                             key="confirmar_envio_interes_libre"
@@ -5104,7 +5287,7 @@ if tab_creditos:
                                         set_flash("credito_msg", "success", f"✅ Crédito interés libre {prestamo_creado['id']} creado. El contrato se está enviando por correo (puede tardar unos segundos).")
                                         st.rerun()
                                     else:
-                                        st.error(f"❌ {err_c}")
+                                        st.error((f"❌ {err_c}").replace("$", "\\$"))
                             finally:
                                 stop_busy()
 
@@ -5260,7 +5443,7 @@ if tab_detalle:
 
             det_tab_activos, det_tab_cancelados, det_tab_anulados = st.tabs([
                 "🟢 Créditos activos",
-                "📚 Cerrados / cancelados",
+                "Pagados / cerrados",
                 "🚫 Contratos anulados"
             ])
 
@@ -5286,7 +5469,7 @@ if tab_detalle:
                             motivo_a = row.get("motivo_cancelacion_contrato") or "Sin motivo registrado"
                             fecha_a = row.get("fecha_cancelacion_contrato") or "-"
                             usuario_a = row.get("cancelado_por") or "-"
-                            st.error(f"🚫 Contrato anulado. Fecha: {fecha_a} | Usuario: {usuario_a} | Motivo: {motivo_a}")
+                            st.error((f"🚫 Contrato anulado. Fecha: {fecha_a} | Usuario: {usuario_a} | Motivo: {motivo_a}").replace("$", "\\$"))
 
                         c1, c2, c3, c4 = st.columns(4)
                         c1.metric("💰 Total crédito", pesos(row["monto_total_credito"]))
@@ -5524,6 +5707,14 @@ if tab_pagos:
                     )
 
 
+                    enviar_comprobante = st.checkbox(
+                        "Enviar comprobante al cliente por correo", value=True,
+                        disabled=not ES_ADMIN, key="enviar_comprobante_pago",
+                        help="Solo un administrador puede omitir el correo. La decisión queda en auditoría."
+                    )
+                    if not enviar_comprobante:
+                        st.info("El movimiento se registrará sin enviar comprobante ni correo de cierre.")
+
                     if subtab_choice == "✅ Pago de cuota":
                         if getattr(prestamo, "tipo_credito_codigo", "") == "interes_libre":
                             fecha_prox = getattr(prestamo, "fecha_proximo_interes", None) or "-"
@@ -5561,31 +5752,35 @@ if tab_pagos:
                             fecha_prox_date = _fecha_iso_a_date(getattr(prestamo, "fecha_proximo_interes", None), fecha_pago_il)
                             dias_mora = (fecha_pago_il - fecha_prox_date).days
                             if dias_mora > 0:
-                                st.caption(f"⚠️ {dias_mora} día(s) en mora frente a la fecha programada ({fecha_prox_date.isoformat()}). El interés no aumenta por la mora, se mantiene fijo en la tasa mensual pactada.")
+                                st.caption((f"⚠️ {dias_mora} día(s) en mora frente a la fecha programada ({fecha_prox_date.isoformat()}). El interés no aumenta por la mora, se mantiene fijo en la tasa mensual pactada.").replace("$", "\\$"))
 
                             if modo_pago_il == "Pagar cuota interés":
-                                st.info(f"Se pagará el interés fijo del ciclo (tasa mensual sobre el capital vigente): {pesos(interes_exacto)}. Capital vigente: {pesos(prestamo.saldo_capital)}")
+                                st.info((f"Se pagará el interés fijo del ciclo (tasa mensual sobre el capital vigente): {pesos(interes_exacto)}. Capital vigente: {pesos(prestamo.saldo_capital)}").replace("$", "\\$"))
                                 valor_a_pagar = interes_exacto
                                 modo_backend_il = "interes"
                             else:
-                                st.warning(f"Se pagará interés ({pesos(interes_exacto)}) + capital ({pesos(saldo_capital_dec)}) y el crédito quedará cerrado. Total: {pesos(total_cierre_exacto)}")
+                                st.warning((f"Se pagará interés ({pesos(interes_exacto)}) + capital ({pesos(saldo_capital_dec)}) y el crédito quedará cerrado. Total: {pesos(total_cierre_exacto)}").replace("$", "\\$"))
                                 valor_a_pagar = total_cierre_exacto
                                 modo_backend_il = "finalizar"
 
                             st.metric("💵 Valor a registrar", pesos(valor_a_pagar))
                             with st.form("form_pago_interes_libre", clear_on_submit=True):
                                 st.caption("El valor se calcula automáticamente según la fecha de pago seleccionada arriba; no se puede editar para evitar descuadres.")
-                                submit_pago_il = st.form_submit_button("Registrar movimiento interés libre", type="primary", disabled=st.session_state.get("app_busy", False))
-                            if submit_pago_il:
+                                confirmar_pago_il = st.checkbox("Confirmo que recibí el valor indicado y revisé la fecha y el movimiento", key="confirmar_pago_il")
+                                submit_pago_il = st.form_submit_button("Registrar movimiento", type="primary", disabled=st.session_state.get("app_busy", False))
+                            if submit_pago_il and not confirmar_pago_il:
+                                st.warning("Confirma el valor recibido antes de registrar el movimiento.")
+                            if submit_pago_il and confirmar_pago_il:
                                 try:
                                     with st.spinner("Aplicando movimiento interés libre..."):
-                                        resultado = registrar_pago_interes_libre(prestamo.id, fecha_pago_il, valor_a_pagar, modo_pago=modo_backend_il)
+                                        resultado = registrar_pago_interes_libre(prestamo.id, fecha_pago_il, valor_a_pagar, modo_pago=modo_backend_il, enviar_correo=enviar_comprobante, operacion_id=clave_operacion_pago(prestamo.id, "interes"), ciclo_esperado=str(getattr(prestamo, "fecha_proximo_interes", None) or ""))
                                         if resultado.get("ok"):
                                             st.session_state.pago_msg = {"tipo": "INTERES_LIBRE", **resultado}
+                                            completar_operacion_pago(prestamo.id)
                                             st.session_state.reset_select_prestamo_pago = True
                                             st.rerun()
                                         else:
-                                            st.error(f"❌ {resultado.get('error')}")
+                                            st.error((f"❌ {resultado.get('error')}").replace("$", "\\$"))
                                 finally:
                                     stop_busy()
                         elif not proxima_cuota:
@@ -5604,13 +5799,14 @@ if tab_pagos:
                             if submit_pago_cuota:
                                 try:
                                     with st.spinner("⏳ Aplicando pago, por favor espera..."):
-                                        resultado = registrar_pago_cuota(prestamo.id, fecha_pago)
+                                        resultado = registrar_pago_cuota(prestamo.id, fecha_pago, enviar_correo=enviar_comprobante, operacion_id=clave_operacion_pago(prestamo.id, "cuota"), cuota_esperada=proxima_cuota[0])
                                         if resultado.get("ok"):
                                             st.session_state.pago_msg = {"tipo": "CUOTA", **resultado}
+                                            completar_operacion_pago(prestamo.id)
                                             st.session_state.reset_select_prestamo_pago = True
                                             st.rerun()
                                         else:
-                                            st.error(f"❌ {resultado.get('error')}")
+                                            st.error((f"❌ {resultado.get('error')}").replace("$", "\\$"))
                                 finally:
                                     stop_busy()
                             with get_conn() as conn:
@@ -5638,7 +5834,7 @@ if tab_pagos:
                                         key="cantidad_cuotas_pago_multi"
                                     )
                                     valor_estimado_multi = sum((normalizar_decimal(c[2]) for c in cuotas_pendientes_pago[:int(cantidad_cuotas_multi)]), Decimal("0.00"))
-                                    st.info(f"Se aplicará {pesos(valor_estimado_multi)} a {int(cantidad_cuotas_multi)} cuota(s).")
+                                    st.info((f"Se aplicará {pesos(valor_estimado_multi)} a {int(cantidad_cuotas_multi)} cuota(s).").replace("$", "\\$"))
                                 else:
                                     valor_pago_multi = st.number_input(
                                         "Valor recibido",
@@ -5648,21 +5844,22 @@ if tab_pagos:
                                         value=0.0,
                                         key="valor_pago_multi"
                                     )
-                                    st.info(f"Saldo máximo aplicable en cuotas pendientes: {pesos(total_pendiente_pago)}.")
+                                    st.info((f"Saldo máximo aplicable en cuotas pendientes: {pesos(total_pendiente_pago)}.").replace("$", "\\$"))
                                 submit_pago_multiple = st.form_submit_button("Registrar pago múltiple", disabled=st.session_state.get("app_busy", False))
                             if submit_pago_multiple:
                                 try:
                                     with st.spinner("⏳ Aplicando pago múltiple..."):
                                         if modo_pago_multi == "Por número de cuotas":
-                                            resultado = registrar_pago_cuotas(prestamo.id, fecha_pago_multi, cantidad_cuotas=int(cantidad_cuotas_multi))
+                                            resultado = registrar_pago_cuotas(prestamo.id, fecha_pago_multi, cantidad_cuotas=int(cantidad_cuotas_multi), enviar_correo=enviar_comprobante, operacion_id=clave_operacion_pago(prestamo.id, "multiple"), cuota_esperada=cuotas_pendientes_pago[0][0] if cuotas_pendientes_pago else None)
                                         else:
-                                            resultado = registrar_pago_cuotas(prestamo.id, fecha_pago_multi, valor_pago_total=valor_pago_multi)
+                                            resultado = registrar_pago_cuotas(prestamo.id, fecha_pago_multi, valor_pago_total=valor_pago_multi, enviar_correo=enviar_comprobante, operacion_id=clave_operacion_pago(prestamo.id, "multiple"), cuota_esperada=cuotas_pendientes_pago[0][0] if cuotas_pendientes_pago else None)
                                         if resultado.get("ok"):
                                             st.session_state.pago_msg = {"tipo": "CUOTA", **resultado}
+                                            completar_operacion_pago(prestamo.id)
                                             st.session_state.reset_select_prestamo_pago = True
                                             st.rerun()
                                         else:
-                                            st.error(f"❌ {resultado.get('error')}")
+                                            st.error((f"❌ {resultado.get('error')}").replace("$", "\\$"))
                                 finally:
                                     stop_busy()
 
@@ -5681,43 +5878,46 @@ if tab_pagos:
                         if submit_abono_capital:
                             try:
                                 with st.spinner("⏳ Aplicando abono a capital..."):
-                                    resultado = registrar_abono_capital(prestamo.id, fecha_pago, abono_capital)
+                                    resultado = registrar_abono_capital(prestamo.id, fecha_pago, abono_capital, enviar_correo=enviar_comprobante, operacion_id=clave_operacion_pago(prestamo.id, "abono"), saldo_esperado=prestamo.saldo_capital)
                                     if resultado.get("ok"):
                                         st.session_state.pago_msg = {"tipo": "ABONO_CAPITAL", **resultado}
+                                        completar_operacion_pago(prestamo.id)
                                         st.session_state.reset_select_prestamo_pago = True
                                         st.rerun()
                                     else:
-                                        st.error(f"❌ {resultado.get('error')}")
+                                        st.error((f"❌ {resultado.get('error')}").replace("$", "\\$"))
                             finally:
                                 stop_busy()
             if st.session_state.pago_msg:
                 m = st.session_state.pago_msg
+                if m.get("correo_omitido"):
+                    st.info("Movimiento registrado sin envío de correo, por decisión del administrador.")
                 if m["tipo"] == "CUOTA":
                     cuota_txt = f"Cuotas #{m['cuota']} a #{m.get('cuota_final')}" if m.get("cuota_final") and m.get("cuota_final") != m.get("cuota") else f"Cuota #{m['cuota']}"
                     cierre_txt = " | Crédito finalizado y cuenta cerrada" if m.get("finalizado") else ""
                     if m.get("tiene_correo") and m.get("correo"):
-                        st.success(f"✅ Pago de cuota registrado y correo enviado - Crédito {m['credito']} | {cuota_txt}{cierre_txt}")
-                    elif m.get("tiene_correo") and not m.get("correo"):
-                        st.warning(f"⚠️ Pago de cuota registrado, pero el correo no se pudo enviar - Crédito {m['credito']} | {cuota_txt}{cierre_txt}")
+                        st.success((f"✅ Pago de cuota registrado; envío de correo solicitado - Crédito {m['credito']} | {cuota_txt}{cierre_txt}").replace("$", "\\$"))
+                    elif m.get("tiene_correo") and not m.get("correo") and not m.get("correo_omitido"):
+                        st.warning((f"⚠️ Pago de cuota registrado, pero el correo no se pudo enviar - Crédito {m['credito']} | {cuota_txt}{cierre_txt}").replace("$", "\\$"))
                         if m.get("correo_error"):
-                            st.error(f"Detalle correo: {m['correo_error']}")
+                            st.error((f"Detalle correo: {m['correo_error']}").replace("$", "\\$"))
                     else:
-                        st.success(f"✅ Pago de cuota registrado - Crédito {m['credito']} | {cuota_txt}{cierre_txt}")
+                        st.success((f"✅ Pago de cuota registrado - Crédito {m['credito']} | {cuota_txt}{cierre_txt}").replace("$", "\\$"))
                 if m["tipo"] == "INTERES_LIBRE":
                     st.success(
-                        f"✅ Pago interés libre registrado - Crédito {m['credito']} | "
+                        (f"✅ Pago interés libre registrado - Crédito {m['credito']} | "
                         f"Interés: {pesos(m['interes_pagado'])} | Capital: {pesos(m['capital_pagado'])} | "
-                        f"Próximo interés: {m['fecha_proximo_interes']}"
+                        f"Próximo interés: {m['fecha_proximo_interes']}").replace("$", "\\$")
                     )
                 if m["tipo"] == "ABONO_CAPITAL":
                     if m.get("tiene_correo") and m.get("correo"):
-                        st.success(f"✅ Abono a capital registrado y correo enviado - Crédito {m['credito']} | Nueva cuota: {pesos(m['nueva_cuota'])}")
-                    elif m.get("tiene_correo") and not m.get("correo"):
-                        st.warning(f"⚠️ Abono a capital registrado, pero el correo no se pudo enviar - Crédito {m['credito']}")
+                        st.success((f"✅ Abono a capital registrado; envío de correo solicitado - Crédito {m['credito']} | Nueva cuota: {pesos(m['nueva_cuota'])}").replace("$", "\\$"))
+                    elif m.get("tiene_correo") and not m.get("correo") and not m.get("correo_omitido"):
+                        st.warning((f"⚠️ Abono a capital registrado, pero el correo no se pudo enviar - Crédito {m['credito']}").replace("$", "\\$"))
                         if m.get("correo_error"):
-                            st.error(f"Detalle correo: {m['correo_error']}")
+                            st.error((f"Detalle correo: {m['correo_error']}").replace("$", "\\$"))
                     else:
-                        st.success(f"✅ Abono a capital registrado - Crédito {m['credito']}")
+                        st.success((f"✅ Abono a capital registrado - Crédito {m['credito']}").replace("$", "\\$"))
                 st.session_state.pago_msg = None
 # ==========================
 # 🧮 SIMULADOR
@@ -5749,9 +5949,9 @@ if tab_sim:
                 if st.button("Calcular crédito normal"):
                     cuota = calcular_cuota_normal(monto_normal, cuotas_normal)
                     st.success(
-                        f"📌 Cuota mensual: **{pesos(cuota)}**\n\n"
+                        (f"📌 Cuota mensual: **{pesos(cuota)}**\n\n"
                         f"📆 Total cuotas: **{cuotas_normal}**\n\n"
-                        f"💰 Total a pagar: **{pesos(cuota * cuotas_normal)}**"
+                        f"💰 Total a pagar: **{pesos(cuota * cuotas_normal)}**").replace("$", "\\$")
                     )
             # --------------------------
             # ⚡ CRÉDITO EXPRESS
@@ -5778,10 +5978,10 @@ if tab_sim:
                         frecuencia
                     )
                     st.success(
-                        f"📌 Cuota {frecuencia.lower()}: **{pesos(cuota)}**\n\n"
+                        (f"📌 Cuota {frecuencia.lower()}: **{pesos(cuota)}**\n\n"
                         f"📆 Total cuotas: **{cuotas_express}**\n\n"
                         f"💰 Total a pagar estimado: **{pesos(cuota * cuotas_express)}**\n\n"
-                        f"📈 Tasa aplicada: **{calcular_tasa_express(frecuencia)*100:.2f}%**"
+                        f"📈 Tasa aplicada: **{calcular_tasa_express(frecuencia)*100:.2f}%**").replace("$", "\\$")
                     )
 
             with t3:
@@ -5806,9 +6006,9 @@ if tab_sim:
                     interes_30 = monto_il_sim * (tasa_il_sim / 100)
                     proximo = fecha_il_sim + timedelta(days=30)
                     st.success(
-                        f"📌 Interés a pagar cada 30 días: **{pesos(interes_30)}**\n\n"
+                        (f"📌 Interés a pagar cada 30 días: **{pesos(interes_30)}**\n\n"
                         f"📅 Próximo pago de interés: **{proximo.isoformat()}**\n\n"
-                        f"🏦 Capital vigente hasta abono/pago: **{pesos(monto_il_sim)}**"
+                        f"🏦 Capital vigente hasta abono/pago: **{pesos(monto_il_sim)}**").replace("$", "\\$")
                     )
 
 
@@ -5862,11 +6062,11 @@ if tab_cuenta:
                         st.info("ℹ️ No había recordatorios pendientes para enviar en este momento.")
                     else:
                         if enviados_r:
-                            st.success(f"✅ {enviados_r} recordatorio(s) enviado(s) correctamente.")
+                            st.success((f"✅ {enviados_r} recordatorio(s) enviado(s) correctamente.").replace("$", "\\$"))
                         if fallidos_r:
-                            st.error(f"❌ {fallidos_r} recordatorio(s) fallaron al enviarse:")
+                            st.error((f"❌ {fallidos_r} recordatorio(s) fallaron al enviarse:").replace("$", "\\$"))
                             for linea in detalle_r:
-                                st.write(f"- {linea}")
+                                st.write((f"- {linea}").replace("$", "\\$"))
             finally:
                 stop_busy()
 

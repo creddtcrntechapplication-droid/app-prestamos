@@ -77,3 +77,16 @@ html body [data-testid="stSidebar"] [data-testid="stSidebarUserContent"]{padding
 html body [data-testid="stSidebarHeader"]{height:38px!important;min-height:38px!important}
 html body .st-key-compact_navigation button>div{justify-content:flex-start!important;width:100%}
 html body [data-testid="stPopoverBody"] hr{margin:8px 0!important}
+
+.account-identity{display:flex;align-items:center;gap:18px;padding:25px 28px;background:linear-gradient(115deg,#142b4a,#233f66);color:white;border-radius:18px;margin:4px 0 22px;max-width:1000px;box-shadow:0 10px 25px #17375e12}.account-avatar{display:grid;place-items:center;width:62px;height:62px;flex-shrink:0;border-radius:19px;background:#ffffff19;border:1px solid #ffffff30;font-size:27px;font-weight:700}.account-eyebrow{font-size:10px;letter-spacing:.13em;color:#bdcce2}.account-identity h2{color:white!important;font-size:23px!important;padding:3px 0!important;margin:0!important}.account-role{font-size:13px;color:#cfdded}.account-protected{margin-left:auto;font-size:11px;color:#d1e8e0;border:1px solid #ffffff30;border-radius:20px;padding:7px 10px}
+html body .st-key-account_security,html body .st-key-account_reminders{max-width:1000px;margin-top:12px}
+html body .st-key-account_security [data-testid="stForm"]{background:white!important;border:1px solid #dbe4ef!important;border-radius:16px!important;padding:24px!important}
+html body .st-key-account_security [data-baseweb="input"]{background:#f5f8fc!important;border:1px solid #cbd7e7!important;border-radius:9px!important}
+html body .st-key-account_security h4{font-size:18px!important}html body .st-key-account_security [data-testid="stTextInput"]{margin-bottom:9px}
+@media(max-width:560px){.account-identity{padding:20px 16px;gap:12px}.account-protected{display:none}.account-avatar{width:48px;height:48px;border-radius:14px}.account-identity h2{font-size:20px!important}}
+
+html body .st-key-account_section [role="radiogroup"]{display:flex;gap:8px;flex-wrap:wrap;padding:4px;border-bottom:1px solid #dbe4ef;max-width:1000px}
+html body .st-key-account_section label[data-baseweb="radio"]{padding:10px 16px!important;border-radius:9px!important;margin:0 0 8px!important;min-height:44px;background:#e9eef6;border:1px solid transparent}
+html body .st-key-account_section label[data-baseweb="radio"]>div:first-child{display:none!important}
+html body .st-key-account_section label:has(input:checked){background:#e4edff!important;border-color:#a9c0ee!important;color:#174aa4!important}
+html body .st-key-account_section label:has(input:focus-visible){outline:3px solid #7bb5ff;outline-offset:2px}

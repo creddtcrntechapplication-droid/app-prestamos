@@ -6267,71 +6267,77 @@ if tab_sim:
 # 🔒 MI CUENTA
 # ==========================
 if tab_cuenta:
-    # El encabezado común identifica este módulo.
-    show_flash("cuenta_msg")
-    st.markdown(f"**Usuario:** {st.session_state.get('usuario', '-')}")
-    st.markdown(f"**Rol:** {st.session_state.get('rol', '-')}")
-    st.divider()
-    st.markdown("### Cambiar contraseña")
-    with st.form("form_cambiar_password", clear_on_submit=True):
-        clave_actual = st.text_input("Contraseña actual", type="password", key="clave_actual_cuenta")
-        clave_nueva = st.text_input("Nueva contraseña", type="password", key="clave_nueva_cuenta", help="Mínimo 8 caracteres.")
-        clave_nueva_confirmar = st.text_input("Confirma la nueva contraseña", type="password", key="clave_nueva_confirmar_cuenta")
-        submit_cambiar_clave = st.form_submit_button("Actualizar contraseña", type="primary", disabled=st.session_state.get("app_busy", False))
-    if submit_cambiar_clave:
-        if not clave_actual or not clave_nueva or not clave_nueva_confirmar:
-            st.warning("ℹ️ Completa los tres campos para actualizar la contraseña.")
-        elif clave_nueva != clave_nueva_confirmar:
-            st.error("❌ La nueva contraseña y su confirmación no coinciden.")
-        elif clave_nueva == clave_actual:
-            st.warning("ℹ️ La nueva contraseña debe ser diferente a la actual.")
-        else:
-            try:
-                with st.spinner("Actualizando contraseña..."):
-                    ok_clave, msg_clave = cambiar_password(st.session_state.get("usuario", ""), clave_actual, clave_nueva)
-                    if ok_clave:
-                        set_flash("cuenta_msg", "success", f"✅ {msg_clave}")
-                    else:
-                        set_flash("cuenta_msg", "error", f"❌ {msg_clave}")
-                    st.rerun()
-            except PermissionError:
-                st.error('Tus permisos o tu sesión cambiaron. Actualiza e inicia sesión otra vez.')
-            except ValueError as exc:
-                st.warning(str(exc))
-            except SQLAlchemyError:
-                st.error('No se pudo confirmar el resultado por un problema de conexión. Actualiza y revisa el historial antes de repetir la operación.')
-            finally:
-                stop_busy()
+    show_flash('cuenta_msg')
+    creddt_ui.account_identity(st.session_state.get('usuario',''), st.session_state.get('rol',''))
+    account_section = st.radio('Configuración de mi cuenta', ['Acceso y seguridad','Recordatorios'] if ES_ADMIN else ['Acceso y seguridad'], horizontal=True, key='account_section', label_visibility='collapsed')
+    if account_section == 'Acceso y seguridad':
+        with st.container(key='account_security'):
+            security_form, security_help = st.columns([1.65,1])
+            with security_help:
+                st.markdown('#### Protege tu acceso')
+                st.caption('Usa una contraseña única de al menos 8 caracteres. Evita nombres y fechas fáciles de adivinar.')
+                st.info('Al cambiarla, las sesiones anteriores dejarán de ser válidas y tendrás que ingresar nuevamente.')
+            with security_form:
+                st.markdown('#### Cambiar contraseña')
+                st.caption('Confirma tu contraseña actual antes de establecer una nueva.')
+                with st.form('form_cambiar_password', clear_on_submit=True):
+                    clave_actual = st.text_input('Contraseña actual', type='password', key='clave_actual_cuenta')
+                    clave_nueva = st.text_input('Nueva contraseña', type='password', key='clave_nueva_cuenta', help='Mínimo 8 caracteres.')
+                    clave_nueva_confirmar = st.text_input('Confirma la nueva contraseña', type='password', key='clave_nueva_confirmar_cuenta')
+                    submit_cambiar_clave = st.form_submit_button('Guardar nueva contraseña', icon=':material/lock_reset:', type='primary', disabled=st.session_state.get('app_busy',False))
+        if submit_cambiar_clave:
+            if not clave_actual or not clave_nueva or not clave_nueva_confirmar:
+                st.warning("ℹ️ Completa los tres campos para actualizar la contraseña.")
+            elif clave_nueva != clave_nueva_confirmar:
+                st.error("❌ La nueva contraseña y su confirmación no coinciden.")
+            elif clave_nueva == clave_actual:
+                st.warning("ℹ️ La nueva contraseña debe ser diferente a la actual.")
+            else:
+                try:
+                    with st.spinner("Actualizando contraseña..."):
+                        ok_clave, msg_clave = cambiar_password(st.session_state.get("usuario", ""), clave_actual, clave_nueva)
+                        if ok_clave:
+                            set_flash("cuenta_msg", "success", f"✅ {msg_clave}")
+                        else:
+                            set_flash("cuenta_msg", "error", f"❌ {msg_clave}")
+                        st.rerun()
+                except PermissionError:
+                    st.error('Tus permisos o tu sesión cambiaron. Actualiza e inicia sesión otra vez.')
+                except ValueError as exc:
+                    st.warning(str(exc))
+                except SQLAlchemyError:
+                    st.error('No se pudo confirmar el resultado por un problema de conexión. Actualiza y revisa el historial antes de repetir la operación.')
+                finally:
+                    stop_busy()
 
-    if ES_ADMIN:
-        st.divider()
-        st.markdown("### 🔔 Diagnóstico de recordatorios")
-        st.caption(
-            "Corre el proceso de recordatorios/mora ahora mismo (de forma síncrona) y muestra "
-            "el resultado en pantalla — útil para confirmar que Brevo esté entregando los correos "
-            "sin tener que revisar los logs de Render."
-        )
-        if st.button("▶️ Ejecutar recordatorios ahora", disabled=st.session_state.get("app_busy", False)):
-            try:
-                with st.spinner("Procesando recordatorios..."):
-                    enviados_r, fallidos_r, detalle_r = procesar_recordatorios_automaticos()
-                    if enviados_r == 0 and fallidos_r == 0:
-                        st.info("ℹ️ No había recordatorios pendientes para enviar en este momento.")
-                    else:
+
+    elif ES_ADMIN and account_section == 'Recordatorios':
+        with st.container(key='account_reminders', border=True):
+            st.markdown('#### Recordatorios por correo')
+            st.caption('Avisos de vencimiento y mora para créditos activos. Esta pantalla no envía correos al abrirse.')
+            sender_ready = bool(BREVO_API_KEY and BREVO_FROM_EMAIL)
+            st.badge('Proveedor configurado' if sender_ready else 'Configuración incompleta', icon=':material/mail:', color='green' if sender_ready else 'orange')
+            st.write('Los avisos aceptados por el proveedor no equivalen a una entrega confirmada en la bandeja del cliente.')
+            with st.expander('Herramientas de administración', icon=':material/tune:'):
+                st.caption('Procesa los recordatorios pendientes conforme a las reglas actuales. Puede enviar correos reales; consulta los resultados antes de repetirlo.')
+                confirm_reminders = st.checkbox('Quiero procesar los avisos pendientes', key='confirm_reminders')
+                run_reminders = st.button('Procesar recordatorios', icon=':material/send:', key='manual_reminders', disabled=not confirm_reminders or not sender_ready or st.session_state.get('app_busy',False))
+                if run_reminders:
+                    try:
+                        with st.spinner('Procesando avisos pendientes...'):
+                            enviados_r, fallidos_r, detalle_r = procesar_recordatorios_automaticos()
+                        if enviados_r == 0 and fallidos_r == 0:
+                            st.info('No había avisos pendientes en este momento.')
                         if enviados_r:
-                            st.success((f"✅ {enviados_r} recordatorio(s) enviado(s) correctamente.").replace("$", "\\$"))
+                            st.success(f'{enviados_r} aviso(s) aceptado(s) por el proveedor.')
                         if fallidos_r:
-                            st.error((f"❌ {fallidos_r} recordatorio(s) fallaron al enviarse:").replace("$", "\\$"))
-                            for linea in detalle_r:
-                                st.write((f"- {linea}").replace("$", "\\$"))
-            except PermissionError:
-                st.error('Tus permisos o tu sesión cambiaron. Actualiza e inicia sesión otra vez.')
-            except ValueError as exc:
-                st.warning(str(exc))
-            except SQLAlchemyError:
-                st.error('No se pudo confirmar el resultado por un problema de conexión. Actualiza y revisa el historial antes de repetir la operación.')
-            finally:
-                stop_busy()
+                            st.warning(f'{fallidos_r} aviso(s) no pudieron procesarse. Revisa la configuración del proveedor y el registro del servidor.')
+                    except PermissionError:
+                        st.error('La sesión o tus permisos cambiaron. Ingresa otra vez.')
+                    except (ValueError, SQLAlchemyError):
+                        st.error('No fue posible confirmar el proceso. Revisa los registros antes de intentarlo de nuevo.')
+                    finally:
+                        stop_busy()
 
 # ==========================
 # 👤 GESTIÓN DE USUARIOS (solo ADMIN)

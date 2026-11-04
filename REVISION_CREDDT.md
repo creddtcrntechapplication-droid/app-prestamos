@@ -40,7 +40,7 @@ La pantalla actual se recupera mediante vista en la URL. Los filtros y seleccion
 
 ## Integridad y rendimiento
 
-El pago y su distribución se ejecutan en una transacción bajo bloqueo del préstamo. Se conserva idempotencia y comprobación del estado esperado. Una falla revierte pago, cuotas, distribución y clave de operación. Se verifica la igualdad entre saldos del calendario y capital restante antes y después del pago.
+El pago y su distribución se ejecutan en una transacción bajo bloqueo del préstamo. Se conserva idempotencia y comprobación del estado esperado. La interfaz conserva una referencia de la cuota, su importe pendiente, el capital y el ciclo que vio el operador; no la reemplaza silenciosamente por una lectura posterior al enviar el formulario. Un segundo pago parcial concurrente con un saldo desactualizado se rechaza y exige actualizar. Una falla revierte pago, cuotas, distribución y clave de operación. Se verifica la igualdad entre saldos del calendario y capital restante antes y después del pago.
 
 SQLAlchemy usa un motor compartido con pool limitado, pre-ping, reciclaje y tiempos de espera. Cachés cortas de lectura se invalidan al escribir. No hay un caché independiente de saldos para autorizar pagos: se consultan bajo bloqueo.
 
@@ -50,7 +50,7 @@ Se añadieron dos pruebas de navegación con una misma sesión: cambios sucesivo
 
 Mediciones del laboratorio local (medianas, no tiempos prometidos de Render): simulación Decimal 0,01 ms; consulta real de cartera 23,06 ms; indicadores operativos 27,67 ms; verificación PBKDF2 203,06 ms; registro de pago sin correo 15,65 ms. No incluyen latencia de Internet, despertar de Render Free, envío real de correo ni representación del navegador.
 
-Pruebas aisladas con PostgreSQL local real, nunca con datos ni credenciales de producción. Suite de cálculo e integración: 36 comprobaciones, incluidas distribución completa, fraccionamiento, abono, exceso, rollback, concurrencia, roles, expiración y revocación. Comprobación automática de 26 combinaciones de página y rol. La matriz visual y evidencias se entregan por separado.
+Pruebas aisladas con PostgreSQL local real, nunca con datos ni credenciales de producción. Suite de cálculo e integración: 37 comprobaciones, incluidas distribución completa, fraccionamiento, abono, exceso, rollback, concurrencia, roles, expiración y revocación. Comprobación automática de 26 combinaciones de página y rol. La matriz visual y evidencias se entregan por separado.
 
 No se ha acreditado entrega real de correos: las pruebas desactivan proveedores y recordatorios automáticos. Una tarea en segundo plano iniciada no equivale a entrega al destinatario. No se han firmado contratos reales ni originado créditos reales durante la revisión.
 

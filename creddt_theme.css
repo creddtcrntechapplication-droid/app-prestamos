@@ -63,3 +63,4 @@ html body [data-testid="stMetricValue"]{font-size:23px!important}
 html body [data-testid="stSidebar"]{max-width:calc(100vw - 38px)!important}
 .workspace-kicker{font-size:10px;letter-spacing:.08em}.workspace-head{padding-bottom:18px;margin-bottom:18px}
 }
+@media(max-width:359px){html body [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:has([data-testid="stMetric"]){min-width:100%!important;flex-basis:100%!important}}

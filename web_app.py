@@ -1504,6 +1504,7 @@ if not token_aceptar:
     creddt_ui.page_context(SECCION_ACTIVA,usuario_hdr,rol_hdr)
     with st.container(key='workspace_toolbar'):
         if st.button('Actualizar datos',key='refresh_workspace',icon=':material/refresh:'):
+            st.session_state.pop('_creddt_payment_snapshot',None)
             clear_app_caches();st.rerun()
 
 if st.session_state.get("app_busy") and st.session_state.get("app_busy_label"):
@@ -3863,10 +3864,10 @@ def enviar_correo_cierre_credito(prestamo_id, nombre_cliente, correo_cliente, fe
         html_override=html_correo
     )
 
-def registrar_pago_cuota(prestamo_id, fecha_pago, enviar_correo=True, operacion_id=None, cuota_esperada=None):
-    return registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=1, enviar_correo=enviar_correo, operacion_id=operacion_id, cuota_esperada=cuota_esperada)
+def registrar_pago_cuota(prestamo_id, fecha_pago, enviar_correo=True, operacion_id=None, cuota_esperada=None, saldo_cuota_esperado=None):
+    return registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=1, enviar_correo=enviar_correo, operacion_id=operacion_id, cuota_esperada=cuota_esperada,saldo_cuota_esperado=saldo_cuota_esperado)
 
-def registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=None, valor_pago_total=None, enviar_correo=True, operacion_id=None, cuota_esperada=None):
+def registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=None, valor_pago_total=None, enviar_correo=True, operacion_id=None, cuota_esperada=None,saldo_cuota_esperado=None):
     require_role('ADMIN','ASESOR')
     if cantidad_cuotas is None and valor_pago_total is None:
         return {"ok": False, "error": "Debes indicar cuántas cuotas o qué valor aplicar"}
@@ -3900,6 +3901,8 @@ def registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=None, valor_p
             return {"ok": False, "error": "Todas las cuotas ya están pagadas"}
         if cuota_esperada is not None and cuotas_pendientes[0][0] != cuota_esperada:
             return {"ok": False, "error": "La cuota cambió por otro pago. Actualiza el crédito antes de registrar"}
+        if saldo_cuota_esperado is not None and normalizar_decimal(cuotas_pendientes[0][2]) != normalizar_decimal(saldo_cuota_esperado):
+            return {'ok':False,'error':'La cuota recibió otro movimiento. Actualiza y revisa el historial antes de cobrar.'}
         aplicaciones = []
         restante = valor_pago_total
         if cantidad_cuotas is not None:
@@ -5867,7 +5870,7 @@ if "reset_select_prestamo_pago" not in st.session_state:
 if tab_pagos:
             # El encabezado común identifica este módulo.
             st.caption("Aquí solo se muestran créditos activos con saldo pendiente. Los créditos cerrados siguen visibles en Resumen e Historial, pero no interfieren en la operación diaria.")
-            activos = estado[(~estado["estado"].isin(["Cancelado", "Anulado"])) & (pd.to_numeric(estado["saldo"], errors="coerce").fillna(0) > 0)].copy()
+            activos = estado[(estado["estado"].astype(str).str.lower()=='activo') & (estado['contrato_cancelado'].fillna(0)==0) & (pd.to_numeric(estado["saldo"], errors="coerce").fillna(0) > 0)].copy()
             if activos.empty:
                 st.info("ℹ️ No hay préstamos activos con saldo pendiente.")
             else:
@@ -5886,11 +5889,18 @@ if tab_pagos:
                 )
 
                 if seleccion is None:
+                    st.session_state.pop('_creddt_payment_snapshot',None)
                     st.info("ℹ️ Selecciona un crédito para ver su información y registrar el movimiento.")
                 else:
                     prestamo = opciones[seleccion]
                     with get_conn() as conn:
                         proxima_cuota = obtener_proxima_cuota(conn, prestamo.id)
+                    expected_payment=st.session_state.get('_creddt_payment_snapshot')
+                    if not expected_payment or expected_payment['loan']!=prestamo.id:
+                        expected_payment={'loan':prestamo.id,'quota':proxima_cuota[0] if proxima_cuota else None,
+                            'quota_balance':proxima_cuota[2] if proxima_cuota else None,
+                            'capital':prestamo.saldo_capital,'cycle':str(getattr(prestamo,'fecha_proximo_interes',None) or '')}
+                        st.session_state['_creddt_payment_snapshot']=expected_payment
                     info1, info2, info3, info4 = st.columns(4)
                     info1.metric("💳 Cuota actual", pesos(prestamo.valor_cuota))
                     info2.metric("🏦 Saldo capital", pesos(prestamo.saldo_capital))
@@ -5978,7 +5988,7 @@ if tab_pagos:
                             if submit_pago_il and confirmar_pago_il:
                                 try:
                                     with st.spinner("Aplicando movimiento interés libre..."):
-                                        resultado = registrar_pago_interes_libre(prestamo.id, fecha_pago_il, valor_a_pagar, modo_pago=modo_backend_il, enviar_correo=enviar_comprobante, operacion_id=clave_operacion_pago(prestamo.id, "interes"), ciclo_esperado=str(getattr(prestamo, "fecha_proximo_interes", None) or ""))
+                                        resultado = registrar_pago_interes_libre(prestamo.id, fecha_pago_il, valor_a_pagar, modo_pago=modo_backend_il, enviar_correo=enviar_comprobante, operacion_id=clave_operacion_pago(prestamo.id, "interes"), ciclo_esperado=expected_payment['cycle'])
                                         if resultado.get("ok"):
                                             st.session_state.pago_msg = {"tipo": "INTERES_LIBRE", **resultado}
                                             completar_operacion_pago(prestamo.id)
@@ -6004,7 +6014,7 @@ if tab_pagos:
                             if submit_pago_cuota:
                                 try:
                                     with st.spinner("⏳ Aplicando pago, por favor espera..."):
-                                        resultado = registrar_pago_cuota(prestamo.id, fecha_pago, enviar_correo=enviar_comprobante, operacion_id=clave_operacion_pago(prestamo.id, "cuota"), cuota_esperada=proxima_cuota[0])
+                                        resultado = registrar_pago_cuota(prestamo.id, fecha_pago, enviar_correo=enviar_comprobante, operacion_id=clave_operacion_pago(prestamo.id, "cuota"), cuota_esperada=expected_payment['quota'],saldo_cuota_esperado=expected_payment['quota_balance'])
                                         if resultado.get("ok"):
                                             st.session_state.pago_msg = {"tipo": "CUOTA", **resultado}
                                             completar_operacion_pago(prestamo.id)
@@ -6055,9 +6065,9 @@ if tab_pagos:
                                 try:
                                     with st.spinner("⏳ Aplicando pago múltiple..."):
                                         if modo_pago_multi == "Por número de cuotas":
-                                            resultado = registrar_pago_cuotas(prestamo.id, fecha_pago_multi, cantidad_cuotas=int(cantidad_cuotas_multi), enviar_correo=enviar_comprobante, operacion_id=clave_operacion_pago(prestamo.id, "multiple"), cuota_esperada=cuotas_pendientes_pago[0][0] if cuotas_pendientes_pago else None)
+                                            resultado = registrar_pago_cuotas(prestamo.id, fecha_pago_multi, cantidad_cuotas=int(cantidad_cuotas_multi), enviar_correo=enviar_comprobante, operacion_id=clave_operacion_pago(prestamo.id, "multiple"), cuota_esperada=expected_payment['quota'],saldo_cuota_esperado=expected_payment['quota_balance'])
                                         else:
-                                            resultado = registrar_pago_cuotas(prestamo.id, fecha_pago_multi, valor_pago_total=valor_pago_multi, enviar_correo=enviar_comprobante, operacion_id=clave_operacion_pago(prestamo.id, "multiple"), cuota_esperada=cuotas_pendientes_pago[0][0] if cuotas_pendientes_pago else None)
+                                            resultado = registrar_pago_cuotas(prestamo.id, fecha_pago_multi, valor_pago_total=valor_pago_multi, enviar_correo=enviar_comprobante, operacion_id=clave_operacion_pago(prestamo.id, "multiple"), cuota_esperada=expected_payment['quota'],saldo_cuota_esperado=expected_payment['quota_balance'])
                                         if resultado.get("ok"):
                                             st.session_state.pago_msg = {"tipo": "CUOTA", **resultado}
                                             completar_operacion_pago(prestamo.id)
@@ -6083,7 +6093,7 @@ if tab_pagos:
                         if submit_abono_capital:
                             try:
                                 with st.spinner("⏳ Aplicando abono a capital..."):
-                                    resultado = registrar_abono_capital(prestamo.id, fecha_pago, abono_capital, enviar_correo=enviar_comprobante, operacion_id=clave_operacion_pago(prestamo.id, "abono"), saldo_esperado=prestamo.saldo_capital)
+                                    resultado = registrar_abono_capital(prestamo.id, fecha_pago, abono_capital, enviar_correo=enviar_comprobante, operacion_id=clave_operacion_pago(prestamo.id, "abono"), saldo_esperado=expected_payment['capital'])
                                     if resultado.get("ok"):
                                         st.session_state.pago_msg = {"tipo": "ABONO_CAPITAL", **resultado}
                                         completar_operacion_pago(prestamo.id)

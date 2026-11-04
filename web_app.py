@@ -3,6 +3,13 @@ import pandas as pd
 import os
 import hashlib
 import hmac
+import logging
+import creddt_sessions
+import creddt_ledger
+import creddt_cookie
+import creddt_ui
+from creddt_finance import cotizar_normal, decimal_finito
+from sqlalchemy.exc import SQLAlchemyError
 import secrets
 import threading
 from streamlit.errors import StreamlitSecretNotFoundError
@@ -36,6 +43,7 @@ import html as html_module
 # CONFIGURACIÓN
 # ==========================
 st.set_page_config(page_title="CREDDT | CRNTECH", layout="wide")
+creddt_ui.styles()
 # ==========================
 # CONEXIÓN A SUPABASE
 # ==========================
@@ -56,15 +64,15 @@ def ahora_local():
 
 def hoy_local():
     return ahora_local().date()
+@st.cache_resource(show_spinner=False)
+def database_engine(url, ssl_mode):
+    return create_engine(url,connect_args={"sslmode":ssl_mode,"connect_timeout":10},
+                         pool_pre_ping=True,pool_size=5,max_overflow=5,pool_timeout=15,pool_recycle=300)
+
 try:
-    # Creamos el motor de conexión usando el puerto 6543 y SSL
-    engine = create_engine(
-        DATABASE_URL,
-        connect_args={"sslmode": "require"},
-        pool_pre_ping=True # Esto ayuda a que si la conexión se duerme, se despierte sola
-    )
-except Exception as e:
-    st.error((f"❌ Error al conectar con la base de datos: {e}").replace("$", "\\$"))
+    engine = database_engine(DATABASE_URL,get_config("DATABASE_SSLMODE","require"))
+except Exception:
+    st.error("No se pudo preparar la conexión. Revisa la configuración del servicio.")
     st.stop()
 # ==========================
 # FUNCIONES DE UTILIDAD
@@ -117,7 +125,7 @@ asegurar_funcion_es_interes_libre()
 
 def clear_app_caches():
     for nombre in ("load_estado", "load_mora", "load_cuotas_periodo", "load_cuotas_proyeccion",
-                   "load_detalle_mora", "load_kpis_financieros", "load_cobros_dashboard"):
+                   "load_detalle_mora", "load_kpis_financieros", "load_cobros_dashboard", "load_operational_kpis"):
         loader = globals().get(nombre)
         if loader is not None:
             try:
@@ -518,6 +526,7 @@ def load_kpis_financieros():
         """), {"hoy": hoy_local().isoformat()}).mappings().first()
 
     data = dict(row or {})
+    data['_loaded_at']=ahora_local().strftime('%d/%m/%Y %H:%M:%S')
     capital_colocado = float(data.get("capital_colocado", 0) or 0)
     capital_recuperado = float(data.get("capital_recuperado", 0) or 0)
     interes_cobrado = float(data.get("interes_cobrado", 0) or 0)
@@ -565,6 +574,8 @@ def _verificar_password(password, hash_guardado, salt_guardado):
     return hmac.compare_digest(hash_calculado, hash_guardado)
 
 def cambiar_password(usuario, password_actual, password_nueva):
+    actor=require_role("ADMIN","ASESOR","CONSULTA")
+    if actor["usuario"]!=usuario:raise PermissionError("Solo puedes cambiar tu propia contraseña.")
     if not password_nueva or len(password_nueva) < 8:
         return False, "La nueva contraseña debe tener al menos 8 caracteres"
     with get_conn() as conn:
@@ -584,12 +595,14 @@ def cambiar_password(usuario, password_actual, password_nueva):
 ROLES_DISPONIBLES = ["ADMIN", "ASESOR", "CONSULTA"]
 
 def listar_usuarios():
+    require_role('ADMIN')
     with get_conn() as conn:
         return conn.execute(text("""
-            SELECT usuario, rol FROM usuarios ORDER BY usuario
+            SELECT usuario, rol, activo FROM usuarios ORDER BY usuario
         """)).mappings().all()
 
 def crear_usuario(usuario, password_inicial, rol):
+    require_role('ADMIN')
     usuario = (usuario or "").strip()
     rol = (rol or "").strip().upper()
     if not usuario:
@@ -599,7 +612,7 @@ def crear_usuario(usuario, password_inicial, rol):
     if rol not in ROLES_DISPONIBLES:
         return False, "Rol inválido"
     with get_conn() as conn:
-        existe = conn.execute(text("SELECT 1 FROM usuarios WHERE usuario = :usuario"), {"usuario": usuario}).first()
+        existe = conn.execute(text("SELECT 1 FROM usuarios WHERE LOWER(usuario) = LOWER(:usuario)"), {"usuario": usuario}).first()
         if existe:
             return False, "Ese nombre de usuario ya existe"
         hash_hex, salt = _hash_password(password_inicial)
@@ -611,13 +624,15 @@ def crear_usuario(usuario, password_inicial, rol):
     return True, f"Usuario '{usuario}' creado con rol {rol}"
 
 def actualizar_rol_usuario(usuario, nuevo_rol, usuario_actual):
+    require_role('ADMIN')
     nuevo_rol = (nuevo_rol or "").strip().upper()
     if nuevo_rol not in ROLES_DISPONIBLES:
         return False, "Rol inválido"
     with get_conn() as conn:
+        conn.execute(text("SELECT pg_advisory_xact_lock(178231903)"))
         if usuario == usuario_actual and nuevo_rol != "ADMIN":
             admins_restantes = conn.execute(text("""
-                SELECT COUNT(*) FROM usuarios WHERE rol = 'ADMIN' AND usuario <> :usuario
+                SELECT COUNT(*) FROM usuarios WHERE rol = 'ADMIN' AND activo AND usuario <> :usuario
             """), {"usuario": usuario}).scalar()
             if int(admins_restantes or 0) == 0:
                 return False, "No puedes quitarte el rol ADMIN: eres el único administrador"
@@ -626,6 +641,7 @@ def actualizar_rol_usuario(usuario, nuevo_rol, usuario_actual):
     return True, f"Rol de '{usuario}' actualizado a {nuevo_rol}"
 
 def resetear_password_usuario(usuario, password_nueva):
+    require_role('ADMIN')
     if not password_nueva or len(password_nueva) < 8:
         return False, "La nueva contraseña debe tener al menos 8 caracteres"
     hash_hex, salt = _hash_password(password_nueva)
@@ -637,22 +653,32 @@ def resetear_password_usuario(usuario, password_nueva):
         conn.commit()
     return True, f"Contraseña de '{usuario}' restablecida"
 
+def activar_usuario(usuario):
+    require_role('ADMIN')
+    with get_conn() as conn:
+        result=conn.execute(text('UPDATE usuarios SET activo=TRUE WHERE usuario=:u'),{'u':usuario})
+        conn.commit()
+    return result.rowcount==1,'Usuario reactivado.' if result.rowcount==1 else 'Usuario no encontrado.'
+
 def eliminar_usuario(usuario, usuario_actual):
+    require_role('ADMIN')
     if usuario == usuario_actual:
         return False, "No puedes eliminar tu propio usuario mientras tienes la sesión abierta"
     with get_conn() as conn:
+        conn.execute(text("SELECT pg_advisory_xact_lock(178231903)"))
         fila = conn.execute(text("SELECT rol FROM usuarios WHERE usuario = :usuario"), {"usuario": usuario}).mappings().first()
         if not fila:
             return False, "Ese usuario no existe"
         if fila["rol"] == "ADMIN":
             admins_restantes = conn.execute(text("""
-                SELECT COUNT(*) FROM usuarios WHERE rol = 'ADMIN' AND usuario <> :usuario
+                SELECT COUNT(*) FROM usuarios WHERE rol = 'ADMIN' AND activo AND usuario <> :usuario
             """), {"usuario": usuario}).scalar()
             if int(admins_restantes or 0) == 0:
                 return False, "No puedes eliminar al único administrador"
-        conn.execute(text("DELETE FROM usuarios WHERE usuario = :usuario"), {"usuario": usuario})
+        conn.execute(text("UPDATE usuarios SET activo=FALSE WHERE usuario=:usuario"), {"usuario":usuario})
+        creddt_sessions.revoke_user(conn,usuario)
         conn.commit()
-    return True, f"Usuario '{usuario}' eliminado"
+    return True, f"Usuario '{usuario}' desactivado"
 
 @st.cache_resource(show_spinner=False)
 def init_usuario_admin():
@@ -671,6 +697,7 @@ def init_usuario_admin():
                 rol TEXT
             )
         """))
+        conn.execute(text("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS activo BOOLEAN NOT NULL DEFAULT TRUE"))
         # Columnas nuevas si la tabla ya existía de antes
         conn.execute(text("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS password_hash TEXT"))
         conn.execute(text("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS password_salt TEXT"))
@@ -712,6 +739,69 @@ def init_usuario_admin():
     clear_app_caches()
 
 init_usuario_admin()
+
+@st.cache_resource(show_spinner=False)
+def asegurar_sesiones_dispositivo():
+    with get_conn() as conn:
+        conn.execute(text(creddt_sessions.SCHEMA_SQL))
+        conn.execute(text(creddt_ledger.SCHEMA_SQL))
+        conn.commit()
+    return True
+
+asegurar_sesiones_dispositivo()
+
+def duracion_sesion_dias():
+    try:return max(1,min(30,int(get_config('SESSION_DAYS','7'))))
+    except (ValueError,TypeError):return 7
+
+def require_role(*roles):
+    if not st.session_state.get('auth') or not st.session_state.get('usuario'):
+        raise PermissionError('Debes iniciar sesión para realizar esta operación.')
+    with get_conn() as conn:
+        user=creddt_sessions.current_user(conn,st.session_state.usuario)
+        token=st.session_state.get('_creddt_auth_token')
+        if token and not creddt_sessions.restore(conn,token):
+            raise PermissionError('La sesión venció o fue revocada.')
+    if not user or user['rol'] not in roles or creddt_sessions.credential_stamp(user)!=st.session_state.get('_creddt_auth_stamp'):
+        raise PermissionError('Tu usuario no tiene permiso para realizar esta operación.')
+    if time.time()>=st.session_state.get('_creddt_auth_expires',0):
+        raise PermissionError('La sesión venció. Vuelve a ingresar.')
+    return user
+
+def cerrar_sesion_segura():
+    token=st.session_state.get('_creddt_auth_token')
+    try:
+        if token:
+            with get_conn() as conn:
+                creddt_sessions.revoke(conn,token);conn.commit()
+    except SQLAlchemyError:
+        st.error('No se pudo cerrar la sesión en el servidor. Revisa la conexión e inténtalo otra vez.')
+        st.stop()
+    st.session_state.clear();creddt_cookie.queue('clear');st.rerun()
+
+def restaurar_sesion_segura():
+    device=creddt_cookie.browser()
+    try:
+        with get_conn() as conn:
+            if st.session_state.get('auth'):
+                token=st.session_state.get('_creddt_auth_token')
+                user=creddt_sessions.restore(conn,token) if token else creddt_sessions.current_user(conn,st.session_state.get('usuario'))
+                valid=user and creddt_sessions.credential_stamp(user)==st.session_state.get('_creddt_auth_stamp') and time.time()<st.session_state.get('_creddt_auth_expires',0)
+                if not valid:
+                    st.session_state.clear();creddt_cookie.queue('clear');st.rerun()
+                st.session_state.rol=user['rol']
+            elif device and device.get('token'):
+                user=creddt_sessions.restore(conn,device['token'])
+                if user:
+                    st.session_state.update(auth=True,usuario=user['usuario'],rol=user['rol'],
+                        _creddt_auth_token=device['token'],_creddt_auth_stamp=creddt_sessions.credential_stamp(user),_creddt_auth_expires=user['expires_at'])
+                    st.rerun()
+                creddt_cookie.queue('clear');st.rerun()
+    except SQLAlchemyError:
+        st.warning('No se pudo comprobar la sesión. Conservamos el acceso guardado para volver a intentarlo.')
+        if st.button('Volver a conectar',key='auth_retry'):st.rerun()
+        st.stop()
+
 # ==========================
 # 🔐 ACCESO OBLIGATORIO
 # ==========================
@@ -724,6 +814,8 @@ if "auth" not in st.session_state:
     st.session_state.auth = False
     st.session_state.usuario = None
     st.session_state.rol = None
+if not token_aceptar:
+    restaurar_sesion_segura()
 if not st.session_state.auth and not token_aceptar:
     st.markdown("""
     <style>
@@ -924,27 +1016,42 @@ if not st.session_state.auth and not token_aceptar:
     with st.form("login_form", clear_on_submit=False):
         usuario = st.text_input("Usuario", placeholder="Ingresa tu usuario")
         clave = st.text_input("Contraseña", type="password", placeholder="Ingresa tu contraseña")
+        recordar_dispositivo = st.checkbox(f"Mantener sesión por {duracion_sesion_dias()} días en este dispositivo",help="Actívalo solo en tu equipo de confianza. Cerrar sesión revoca este acceso.")
         ingresar = st.form_submit_button("Ingresar", use_container_width=True, type="primary")
 
     if ingresar:
         with st.spinner("🔐 Verificando credenciales..."):
-            with get_conn() as conn:
-                user = conn.execute(
-                    text("""
-                        SELECT usuario, rol, password_hash, password_salt
-                        FROM usuarios
-                        WHERE usuario=:usuario
-                    """),
-                    {"usuario": usuario}
-                ).mappings().first()
-            login_ok = bool(user) and _verificar_password(clave, user["password_hash"], user["password_salt"])
+            try:
+                with get_conn() as conn:
+                    usuario=usuario.strip()
+                    allowed=creddt_sessions.login_allowed(conn,usuario.casefold())
+                    users=conn.execute(text("SELECT usuario,rol,password_hash,password_salt,activo FROM usuarios WHERE LOWER(usuario)=LOWER(:usuario)"),{'usuario':usuario}).mappings().all()
+                    user=dict(users[0]) if len(users)==1 else None
+                    # Comparación de hash también para usuarios inexistentes.
+                    dummy_hash,dummy_salt=_hash_password('dummy-check','creddt-dummy-salt')
+                    verified=_verificar_password(clave,user['password_hash'] if user else dummy_hash,user['password_salt'] if user else dummy_salt)
+                    login_ok=allowed and user and user['activo'] and user['rol'] in ROLES_DISPONIBLES and verified
+                    if login_ok:
+                        creddt_sessions.login_success(conn,usuario.casefold())
+                        expires=time.time()+duracion_sesion_dias()*86400
+                        if recordar_dispositivo:
+                            token,expires=creddt_sessions.issue(conn,user,duracion_sesion_dias())
+                        conn.commit()
+                    else:
+                        creddt_sessions.login_failure(conn,usuario.casefold());conn.commit()
+            except SQLAlchemyError:
+                st.error('No fue posible comprobar el acceso. Revisa la conexión e inténtalo nuevamente.')
+                st.stop()
         if login_ok:
-            st.session_state.auth = True
-            st.session_state.usuario = user["usuario"]
-            st.session_state.rol = user["rol"]
+            st.session_state.update(auth=True,usuario=user['usuario'],rol=user['rol'],
+                _creddt_auth_stamp=creddt_sessions.credential_stamp(user),_creddt_auth_expires=expires)
+            if recordar_dispositivo:
+                st.session_state['_creddt_auth_token']=token;creddt_cookie.queue('set',token,expires)
+            else:
+                st.session_state.pop('_creddt_auth_token',None);creddt_cookie.queue('clear')
             st.rerun()
         else:
-            st.error("❌ Usuario o contraseña incorrectos")
+            st.error('Usuario o contraseña incorrectos. Tras varios intentos espera 15 minutos.')
 
     st.markdown("<div class='login-note'>Acceso privado • Plataforma de operación interna</div>", unsafe_allow_html=True)
     st.markdown("</div></div></div>", unsafe_allow_html=True)
@@ -996,7 +1103,7 @@ if ES_ADMIN:
 MENU_LABELS.append("🔒 Mi cuenta")
 
 if "menu_activo" not in st.session_state or st.session_state.menu_activo not in MENU_LABELS:
-    st.session_state.menu_activo = MENU_LABELS[0]
+    st.session_state.menu_activo = next((x for x in MENU_LABELS if x==st.query_params.get('vista')),MENU_LABELS[0])
 
 st.markdown("""
 <style>
@@ -1181,8 +1288,8 @@ if not token_aceptar:
             f"<div class='sidebar-avatar'>C</div>"
             f"<div>"
             f"<div class='sidebar-user-pill'>Sesión activa</div>"
-            f"<div class='sidebar-user-name'>{st.session_state.get('usuario','-')}</div>"
-            f"<div class='sidebar-user-role'>Rol: {st.session_state.get('rol','-')}</div>"
+            f"<div class='sidebar-user-name'>{html_module.escape(str(st.session_state.get('usuario','-')))}</div>"
+            f"<div class='sidebar-user-role'>Rol: {html_module.escape(str(st.session_state.get('rol','-')))}</div>"
             f"</div>"
             f"</div>"
             f"</div>",
@@ -1190,14 +1297,13 @@ if not token_aceptar:
         )
 
         if st.button("Cerrar sesión", key="btn_logout_sidebar"):
-            for k in ["auth", "usuario", "rol", "menu_activo", "pago_msg", "detalle", "detalle_mora"]:
-                if k in st.session_state:
-                    del st.session_state[k]
-            st.rerun()
+            cerrar_sesion_segura()
 
         st.markdown("<div class='sidebar-foot'>v1.0.0 • CREDDT | CRNTECH</div>", unsafe_allow_html=True)
 
 SECCION_ACTIVA = st.session_state.menu_activo
+if not token_aceptar:
+    st.query_params["vista"] = SECCION_ACTIVA
 
 # ==========================
 # HEADER - TITULO
@@ -1390,24 +1496,10 @@ usuario_hdr = st.session_state.get("usuario", "-")
 rol_hdr = st.session_state.get("rol", "-")
 
 if not token_aceptar:
-    with st.container():
-        st.markdown("<div class='home-hero-wrap'></div>", unsafe_allow_html=True)
-        col_logo, col_centro, col_derecha = st.columns([.65, 4.9, 2.2], gap="small")
-        with col_logo:
-            st.image("logo_creddt.png", width=80)
-        with col_centro:
-            st.markdown("<div class='home-title'>CREDDT | CRNTECH</div>", unsafe_allow_html=True)
-            st.markdown("<div class='home-subtitle'>Plataforma inteligente de gestión de créditos</div>", unsafe_allow_html=True)
-        with col_derecha:
-            st.markdown(
-                f"<div style='text-align:right; padding-top:12px;'>"
-                f"<span class='home-chip'>Usuario: <strong>{usuario_hdr}</strong></span>"
-                f"<span class='home-chip'>Rol: <strong>{rol_hdr}</strong></span>"
-                f"</div>",
-                unsafe_allow_html=True
-            )
-
-    st.markdown("<div class='home-blue-line'></div>", unsafe_allow_html=True)
+    creddt_ui.page_context(SECCION_ACTIVA,usuario_hdr,rol_hdr)
+    with st.container(key='workspace_toolbar'):
+        if st.button('Actualizar datos',key='refresh_workspace',icon=':material/refresh:'):
+            clear_app_caches();st.rerun()
 
 if st.session_state.get("app_busy") and st.session_state.get("app_busy_label"):
     st.info((f"⏳ {st.session_state.get('app_busy_label')}").replace("$", "\\$"))
@@ -1651,6 +1743,7 @@ def _asegurar_estructura_financiera_impl():
     clear_app_caches()
 asegurar_estructura_financiera()
 
+@st.cache_resource(show_spinner=False)
 def limpiar_cuotas_creditos_no_vigentes():
     with get_conn() as conn:
         conn.execute(text("""
@@ -1783,6 +1876,7 @@ def clasificar_pago_historico(pago, saldo_anterior, tasa_mensual):
     return valor - capital, capital
 
 def reconstruir_historial_financiero():
+    require_role('ADMIN')
     resumen = {"prestamos": 0, "pagos": 0, "ajustes_negativos": 0}
     asegurar_estructura_control_financiero()
     with get_conn() as conn:
@@ -1797,6 +1891,8 @@ def reconstruir_historial_financiero():
         """)).mappings().all()
 
         for prestamo in prestamos:
+            if creddt_ledger.tiene_plan(conn,prestamo['id']):
+                continue
             resumen["prestamos"] += 1
             saldo_actual = normalizar_decimal(prestamo["monto_original"])
             tasa_mensual = Decimal(str(prestamo["tasa_mensual"] or 0)).quantize(Decimal("0.000001"))
@@ -2104,7 +2200,7 @@ def pesos(valor):
     except Exception:
         return "$0"
 def normalizar_decimal(valor):
-    return Decimal(str(valor or 0)).quantize(Decimal("0.01"))
+    return decimal_finito(valor or 0).quantize(Decimal("0.01"))
 
 
 def es_credito_interes_libre_valor(tipo_credito, tipo):
@@ -2929,6 +3025,7 @@ def enviar_correo_desembolso_credito(prestamo_row):
     return ok_mail, err_mail
 
 def guardar_cliente_db(data):
+    require_role('ADMIN','ASESOR')
     with get_conn() as conn:
         conn.execute(text("""
             INSERT INTO clientes (cedula, nombres, apellidos, ciudad, telefono, correo, direccion, empresa, fecha_nacimiento, cargo)
@@ -2937,6 +3034,7 @@ def guardar_cliente_db(data):
         conn.commit()
     clear_app_caches()
 def actualizar_cliente_db(cedula, data):
+    require_role('ADMIN','ASESOR')
     with get_conn() as conn:
         conn.execute(text("""
             UPDATE clientes
@@ -2947,6 +3045,7 @@ def actualizar_cliente_db(cedula, data):
         conn.commit()
     clear_app_caches()
 def eliminar_cliente_db(cedula):
+    require_role('ADMIN')
     with get_conn() as conn:
         existe = conn.execute(text("SELECT COUNT(*) FROM prestamos WHERE cliente_cedula = :cedula"), {"cedula": cedula}).scalar()
         if int(existe or 0) > 0:
@@ -2976,10 +3075,17 @@ def _fecha_cliente_db(valor):
     if isinstance(valor, date):
         return valor.isoformat()
     return str(valor).strip()
-def crear_credito_db(cliente_cedula, monto, cuotas, frecuencia, tipo, fecha_inicio=None):
+def crear_credito_db(cliente_cedula, monto, cuotas, frecuencia, tipo, fecha_inicio=None, tasa_personalizada_pct=None):
+    require_role('ADMIN','ASESOR')
     fecha_inicio = fecha_inicio or hoy_local()
-    monto = float(monto or 0)
-    cuotas = int(cuotas or 0)
+    try:
+        monto = float(decimal_finito(monto or 0).quantize(Decimal('.01')))
+        cantidad = decimal_finito(cuotas or 0)
+        if cantidad != int(cantidad):
+            return False,'El número de cuotas debe ser entero.',None
+        cuotas = int(cantidad)
+    except (ValueError,OverflowError):
+        return False,'Monto o cuotas inválidos.',None
     frecuencia = str(frecuencia or "Mensual").title()
     tipo = str(tipo or "Normal").title()
     if monto <= 0 or cuotas <= 0:
@@ -2994,8 +3100,17 @@ def crear_credito_db(cliente_cedula, monto, cuotas, frecuencia, tipo, fecha_inic
             tasa_mensual = calcular_tasa_express(frecuencia)
             valor_cuota = calcular_cuota_express(monto, cuotas, frecuencia)
         else:
-            tasa_mensual = calcular_tasa_normal(cuotas)
-            valor_cuota = calcular_cuota_normal(monto, cuotas, frecuencia)
+            try:
+                rate=None if tasa_personalizada_pct is None else decimal_finito(tasa_personalizada_pct)/100
+                quote=cotizar_normal(monto,cuotas,frecuencia,rate,permitir_cero=get_config('ALLOW_ZERO_NORMAL_RATE','false').lower()=='true')
+            except ValueError as exc:
+                return False,str(exc),None
+            tasa_mensual=quote['tasa_mensual']
+            valor_cuota=quote['cuota']
+        try:
+            creddt_ledger.plan_imputacion_fija(monto,cuotas,valor_cuota)
+        except ValueError as exc:
+            return False,str(exc),None
         conn.execute(text("""
             INSERT INTO prestamos (id, cliente_cedula, monto_original, cuotas, frecuencia, valor_cuota, estado, tipo,
                                    saldo_capital, tasa_mensual, contrato_aceptado, contrato_token, fecha_inicio)
@@ -3014,6 +3129,10 @@ def crear_credito_db(cliente_cedula, monto, cuotas, frecuencia, tipo, fecha_inic
             "contrato_token": contrato_token,
             "fecha_inicio": fecha_inicio.isoformat()
         })
+        conn.execute(text("""INSERT INTO auditoria_contratos(prestamo_id,accion,usuario,fecha,detalle)
+            VALUES(:id,'CONDICIONES_ORIGINACION',:usuario,:fecha,:detalle)"""),{
+            'id':prestamo_id,'usuario':st.session_state.get('usuario'),'fecha':ahora_local().isoformat(),
+            'detalle':f"Tipo {tipo}; tasa mensual {tasa_mensual}; frecuencia {frecuencia}; cuotas {cuotas}; cuota {valor_cuota}; fórmula vigente conservada; imputación flat_contract_v1"})
         for nro in range(1, cuotas + 1):
             fecha_v = calcular_fecha_vencimiento(fecha_inicio, nro, frecuencia)
             conn.execute(text("""
@@ -3025,6 +3144,7 @@ def crear_credito_db(cliente_cedula, monto, cuotas, frecuencia, tipo, fecha_inic
                 "fecha_vencimiento": fecha_v.isoformat(),
                 "valor_cuota": valor_cuota
             })
+        creddt_ledger.crear_plan(conn,prestamo_id,monto,cuotas,valor_cuota)
         conn.commit()
         clear_app_caches()
         prestamo_row = {
@@ -3036,6 +3156,7 @@ def crear_credito_db(cliente_cedula, monto, cuotas, frecuencia, tipo, fecha_inic
             "frecuencia": frecuencia,
             "valor_cuota": valor_cuota,
             "tipo": tipo,
+            "tasa_mensual": tasa_mensual,
             "contrato_token": contrato_token
         }
     enviar_contrato_credito_en_segundo_plano(prestamo_row)
@@ -3043,9 +3164,16 @@ def crear_credito_db(cliente_cedula, monto, cuotas, frecuencia, tipo, fecha_inic
 
 
 def crear_credito_interes_libre_db(cliente_cedula, monto, tasa_interes_pct, fecha_inicio=None):
+    require_role('ADMIN','ASESOR')
     fecha_inicio = fecha_inicio or hoy_local()
-    monto = float(monto or 0)
-    tasa_mensual = max(float(tasa_interes_pct or 0), 0) / 100
+    try:
+        monto = float(decimal_finito(monto or 0).quantize(Decimal('.01')))
+        tasa = decimal_finito(tasa_interes_pct or 0)
+        if tasa <= 0 or tasa > 100:
+            return False,'La tasa debe ser mayor que cero y hasta 100 %. ',None
+        tasa_mensual = float(tasa / 100)
+    except (ValueError,OverflowError):
+        return False,'Monto o tasa inválidos.',None
     if monto <= 0 or tasa_mensual <= 0:
         return False, "Monto o tasa inválidos", None
     fecha_proximo = fecha_inicio + timedelta(days=30)
@@ -3156,6 +3284,7 @@ def registrar_auditoria_pago(conn, prestamo_id, accion, detalle):
              "fecha": ahora_local().isoformat(timespec="seconds"), "detalle": detalle})
 
 def registrar_pago_interes_libre(prestamo_id, fecha_pago, valor_pago, modo_pago="interes", enviar_correo=True, operacion_id=None, ciclo_esperado=None):
+    require_role('ADMIN','ASESOR')
     valor_pago = normalizar_decimal(valor_pago)
     modo_pago = str(modo_pago or "interes").strip().lower()
     if valor_pago <= 0:
@@ -3341,6 +3470,7 @@ def registrar_pago_interes_libre(prestamo_id, fecha_pago, valor_pago, modo_pago=
     }
 
 def cerrar_credito_interes_libre(prestamo_id):
+    require_role('ADMIN','ASESOR')
     with get_conn() as conn:
         prestamo = conn.execute(text("""
             SELECT id, COALESCE(saldo_capital, monto_original) AS saldo_capital, COALESCE(interes_acumulado, 0) AS interes_acumulado
@@ -3362,6 +3492,7 @@ def cerrar_credito_interes_libre(prestamo_id):
     return True, "Crédito interés libre cerrado manualmente"
 
 def cancelar_contrato_prestamo(prestamo_id, motivo, usuario=None):
+    require_role('ADMIN','ASESOR')
     motivo = (motivo or "").strip()
     if not motivo:
         return False, "Debes indicar el motivo de la anulación"
@@ -3731,6 +3862,7 @@ def registrar_pago_cuota(prestamo_id, fecha_pago, enviar_correo=True, operacion_
     return registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=1, enviar_correo=enviar_correo, operacion_id=operacion_id, cuota_esperada=cuota_esperada)
 
 def registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=None, valor_pago_total=None, enviar_correo=True, operacion_id=None, cuota_esperada=None):
+    require_role('ADMIN','ASESOR')
     if cantidad_cuotas is None and valor_pago_total is None:
         return {"ok": False, "error": "Debes indicar cuántas cuotas o qué valor aplicar"}
     if cantidad_cuotas is not None:
@@ -3793,17 +3925,28 @@ def registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=None, valor_p
         saldo_iterado = saldo_capital_actual
         interes_total = Decimal("0.00")
         capital_total = Decimal("0.00")
-        for _, valor_aplicado, _ in aplicaciones:
-            interes_periodo = (saldo_iterado * tasa_mensual).quantize(Decimal("0.01")) if tasa_mensual > 0 else Decimal("0.00")
-            interes_aplicado = min(interes_periodo, valor_aplicado)
-            capital_aplicado = valor_aplicado - interes_aplicado
-            if capital_aplicado < 0:
-                capital_aplicado = Decimal("0.00")
-            saldo_iterado -= capital_aplicado
-            if saldo_iterado < 0:
-                saldo_iterado = Decimal("0.00")
-            interes_total += interes_aplicado
-            capital_total += capital_aplicado
+        plan_versionado = creddt_ledger.tiene_plan(conn,prestamo_id)
+        if plan_versionado:
+            creddt_ledger.verificar(conn,prestamo_id,saldo_capital_actual)
+            for cuota,valor_aplicado,_ in aplicaciones:
+                interes_aplicado,capital_aplicado=creddt_ledger.aplicar(conn,prestamo_id,cuota[0],valor_aplicado)
+                saldo_iterado-=capital_aplicado
+                interes_total+=interes_aplicado
+                capital_total+=capital_aplicado
+            if saldo_iterado<0 or capital_total+interes_total!=valor_pago:
+                raise ValueError('El pago no concilia con el capital y los intereses; operación revertida.')
+        else:
+            for _, valor_aplicado, _ in aplicaciones:
+                interes_periodo = (saldo_iterado * tasa_mensual).quantize(Decimal("0.01")) if tasa_mensual > 0 else Decimal("0.00")
+                interes_aplicado = min(interes_periodo, valor_aplicado)
+                capital_aplicado = valor_aplicado - interes_aplicado
+                if capital_aplicado < 0:
+                    capital_aplicado = Decimal("0.00")
+                saldo_iterado -= capital_aplicado
+                if saldo_iterado < 0:
+                    saldo_iterado = Decimal("0.00")
+                interes_total += interes_aplicado
+                capital_total += capital_aplicado
         nuevo_saldo_capital = saldo_iterado
         primera_cuota = aplicaciones[0][0]
         ultima_cuota = aplicaciones[-1][0]
@@ -3854,6 +3997,8 @@ def registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=None, valor_p
                     WHERE id_cuota = :id_cuota
                 """), {"id_cuota": id_cuota, "saldo_cuota": saldo_cuota})
         conn.execute(text("UPDATE prestamos SET saldo_capital = :saldo_capital WHERE id = :id"), {"saldo_capital": nuevo_saldo_capital, "id": prestamo_id})
+        if plan_versionado:
+            creddt_ledger.verificar(conn,prestamo_id,nuevo_saldo_capital)
         actualizar_estado_prestamo(conn, prestamo_id)
         finalizado = int(conn.execute(text("""
             SELECT COUNT(*)
@@ -3956,6 +4101,7 @@ def registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=None, valor_p
         "finalizado": finalizado
     }
 def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono, enviar_correo=True, operacion_id=None, saldo_esperado=None):
+    require_role('ADMIN','ASESOR')
     valor_abono = normalizar_decimal(valor_abono)
     if valor_abono <= 0:
         return {"ok": False, "error": "El abono a capital debe ser mayor a cero"}
@@ -4087,7 +4233,15 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono, enviar_correo=
         if not cuotas_pendientes:
             return {"ok": False, "error": "No hay cuotas pendientes para recalcular"}
         cuotas_restantes = len(cuotas_pendientes)
-        nueva_cuota = Decimal(str(calcular_cuota_amortizada(nuevo_saldo_capital, prestamo_db["tasa_mensual"], cuotas_restantes))).quantize(Decimal("0.01"))
+        plan_versionado=creddt_ledger.tiene_plan(conn,prestamo_id)
+        if plan_versionado:
+            creddt_ledger.verificar(conn,prestamo_id,saldo_capital_actual)
+            hay_parcial=conn.execute(text("SELECT 1 FROM cuotas WHERE prestamo_id=:id AND estado='Parcial' LIMIT 1"),{'id':prestamo_id}).scalar()
+            if hay_parcial:
+                return {'ok':False,'error':'Completa la cuota parcialmente pagada antes de recalcular por abono a capital.'}
+            nueva_cuota=creddt_ledger.recalcular_abono(conn,prestamo_id,nuevo_saldo_capital,prestamo_db['tasa_mensual'])
+        else:
+            nueva_cuota = Decimal(str(calcular_cuota_amortizada(nuevo_saldo_capital, prestamo_db["tasa_mensual"], cuotas_restantes))).quantize(Decimal("0.01"))
         result_pago = conn.execute(text("""
             INSERT INTO pagos (
                 prestamo_id, fecha_pago, valor, estado, tipo_movimiento, detalle,
@@ -4115,11 +4269,14 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono, enviar_correo=
             "valor_cuota": nueva_cuota,
             "id": prestamo_id
         })
-        for id_cuota, _ in cuotas_pendientes:
-            conn.execute(text("UPDATE cuotas SET valor_cuota = :valor_cuota WHERE id_cuota = :id_cuota AND estado <> 'Pagada'"), {
-                "valor_cuota": nueva_cuota,
-                "id_cuota": id_cuota
-            })
+        if not plan_versionado:
+            for id_cuota, _ in cuotas_pendientes:
+                conn.execute(text("UPDATE cuotas SET valor_cuota = :valor_cuota WHERE id_cuota = :id_cuota AND estado <> 'Pagada'"), {
+                    "valor_cuota": nueva_cuota,
+                    "id_cuota": id_cuota
+                })
+        else:
+            creddt_ledger.verificar(conn,prestamo_id,nuevo_saldo_capital)
         actualizar_estado_prestamo(conn, prestamo_id)
         registrar_auditoria_pago(conn, prestamo_id, "ABONO_CAPITAL", f"Valor {valor_abono}; correo solicitado: {enviar_correo}")
         conn.commit()
@@ -4325,7 +4482,7 @@ if token_aceptar:
 # CARGAR ESTADO GENERAL
 # ==========================
 estado = load_estado().copy()
-if "recordatorios_auto_lanzado" not in st.session_state:
+if get_config("ENABLE_AUTOMATIC_REMINDERS","true").lower()=="true" and "recordatorios_auto_lanzado" not in st.session_state:
     st.session_state.recordatorios_auto_lanzado = True
     st.session_state.recordatorios_auto = 0
 
@@ -4356,19 +4513,11 @@ def calcular_tasa_normal(cuotas):
     return 0.0427
 def calcular_tasa_express(frecuencia):
     return 0.10 if str(frecuencia).lower() == "mensual" else 0.055
-def calcular_cuota_normal(monto, cuotas, frecuencia="Mensual"):
-    monto = float(monto or 0)
-    cuotas = int(cuotas or 0)
-    if monto <= 0 or cuotas <= 0:
-        return 0
-    tasa = calcular_tasa_normal(cuotas)
-    cuota_base = monto / cuotas
-    interes_total = monto * tasa
-    valor_cuota = cuota_base + interes_total
-    if str(frecuencia).lower() == "quincenal":
-        valor_cuota /= 2
-    valor_cuota = round(valor_cuota / 1000) * 1000
-    return round(valor_cuota)
+def calcular_cuota_normal(monto, cuotas, frecuencia="Mensual", tasa_mensual=None):
+    if float(monto or 0)<=0 or int(cuotas or 0)<=0:return 0
+    return int(cotizar_normal(monto,cuotas,frecuencia,tasa_mensual,
+        permitir_cero=get_config('ALLOW_ZERO_NORMAL_RATE','false').lower()=='true')['cuota'])
+
 def calcular_cuota_express(monto, cuotas, frecuencia):
     monto = float(monto or 0)
     cuotas = int(cuotas or 0)
@@ -4418,6 +4567,31 @@ def load_cobros_dashboard(inicio_iso, fin_iso):
             ORDER BY pg.fecha_pago::date, pg.id_pago
         """), conn, params={"inicio": inicio_iso, "fin": fin_iso})
 
+@st.cache_data(ttl=15,show_spinner=False)
+def load_operational_kpis():
+    today=hoy_local()
+    with get_conn() as conn:
+        row=conn.execute(text("""
+            WITH cartera AS (
+                SELECT * FROM prestamos WHERE COALESCE(contrato_cancelado,0)=0
+                AND LOWER(COALESCE(estado,'')) IN ('activo','cancelado')
+            ), recibos AS (
+                SELECT pg.* FROM pagos pg JOIN cartera p ON p.id=pg.prestamo_id
+            ), vigentes AS (
+                SELECT * FROM cartera WHERE LOWER(estado)='activo'
+            )
+            SELECT
+                COALESCE((SELECT SUM(valor) FROM recibos WHERE fecha_pago::date=:hoy),0) AS recaudo_hoy,
+                COALESCE((SELECT SUM(valor) FROM recibos WHERE fecha_pago::date BETWEEN :mes AND :hoy),0) AS recaudo_mes,
+                (SELECT COUNT(*) FROM cuotas c JOIN vigentes p ON p.id=c.prestamo_id
+                  WHERE c.estado IN ('Pendiente','Parcial') AND c.fecha_vencimiento::date<:hoy
+                  AND NOT es_interes_libre(p.tipo_credito,p.tipo)) AS vencidas,
+                (SELECT COUNT(*) FROM cuotas c JOIN vigentes p ON p.id=c.prestamo_id
+                  WHERE c.estado IN ('Pendiente','Parcial') AND c.fecha_vencimiento::date BETWEEN :hoy AND :proximo
+                  AND NOT es_interes_libre(p.tipo_credito,p.tipo)) AS proximas
+        """),{'hoy':today.isoformat(),'mes':today.replace(day=1).isoformat(),'proximo':(today+timedelta(days=7)).isoformat()}).mappings().one()
+    return {**dict(row),'consultado':ahora_local().isoformat(timespec='seconds')}
+
 def tarjeta_financiera(titulo, valor, explicacion, acento="#2563eb"):
     st.markdown(
         f'<div class="fin-card" style="--accent:{acento}">'
@@ -4441,13 +4615,28 @@ def render_dashboard_financiero(kpis):
     [data-testid="stSidebar"] [data-testid="stVerticalBlock"]{gap:.6rem}
     @media(max-width:700px){.fin-card{min-height:0}.fin-value{font-size:28px}}
     </style>""", unsafe_allow_html=True)
+    operative=load_operational_kpis()
+    st.caption('OPERACIÓN DE HOY · '+hoy_local().strftime('%d/%m/%Y'))
+    ocols=st.columns(4)
+    ocols[0].metric('Recaudo de hoy',pesos(operative['recaudo_hoy']),help='Pagos reales registrados hoy, con capital e interés.')
+    ocols[1].metric('Recaudo del mes',pesos(operative['recaudo_mes']),help='Pagos reales desde el primer día del mes hasta hoy.')
+    ocols[2].metric('Cuotas vencidas',int(operative['vencidas']),help='Cuotas pendientes o parciales de Normal y Express. El interés libre se consulta en seguimiento.')
+    ocols[3].metric('Vencen en 7 días',int(operative['proximas']),help='Cuotas pendientes de Normal y Express desde hoy hasta los próximos siete días.')
+    action1,action2=st.columns(2)
+    with action1:
+        if PUEDE_REGISTRAR_PAGOS and st.button('Registrar un pago',key='go_pay_dashboard',type='primary',use_container_width=True):
+            st.session_state.menu_activo='💰 Pagos';st.rerun()
+    with action2:
+        if st.button('Revisar cartera',key='go_portfolio_dashboard',use_container_width=True):
+            st.session_state.menu_activo='🗂️ Cartera por cliente';st.rerun()
+    st.markdown('### Cartera e ingresos acumulados')
     capital = float(kpis.get("capital_colocado", 0) or 0)
     recuperado = float(kpis.get("capital_recuperado", 0) or 0)
     pendiente = float(kpis.get("capital_vivo", 0) or 0)
     interes = float(kpis.get("interes_cobrado", 0) or 0)
     recaudo = float(kpis.get("recaudo_acumulado", 0) or 0)
     pct = float(kpis.get("recuperacion_capital_pct", 0) or 0)
-    st.caption((f"Valores en COP. Totales acumulados del historial registrado. Actualizado: {ahora_local().strftime('%d/%m/%Y %H:%M')} (hora Colombia).").replace("$", "\\$"))
+    st.caption((f"Valores en COP. Totales acumulados del historial registrado. Actualizado: {kpis.get('_loaded_at','Sin fecha')} (hora Colombia).").replace("$", "\\$"))
     cols = st.columns(4)
     items = [("Total prestado acumulado", capital, "Suma de desembolsos registrados; no es saldo disponible.", "#173266"),
              ("Capital devuelto por clientes", recuperado, f"{pct:.2f}% del total prestado ya se recuperó.", "#0891b2"),
@@ -4666,15 +4855,15 @@ if tab_resumen:
     with c1:
         if st.button("📥 Cuotas del período", key="btn_total_periodo"):
             st.session_state.detalle = "total"
-        st.metric("", pesos(total_periodo))
+        st.metric("Cuotas del período", pesos(total_periodo))
     with c2:
         if st.button("✅ Pagado en el período", key="btn_pagado_periodo"):
             st.session_state.detalle = "pagado"
-        st.metric("", pesos(pagado_periodo))
+        st.metric("Pagado en el período", pesos(pagado_periodo))
     with c3:
         if st.button("⏳ Pendiente del período", key="btn_pendiente_periodo"):
             st.session_state.detalle = "pendiente"
-        st.metric("", pesos(pendiente_periodo))
+        st.metric("Pendiente del período", pesos(pendiente_periodo))
 
     if "detalle" in st.session_state and not cuotas_df.empty:
         st.divider()
@@ -4721,7 +4910,7 @@ if tab_resumen:
 
                     st.markdown(f"""
                     <div class="cuota-card">
-                        <div class="cuota-card-title">{r.cliente}</div>
+                        <div class="cuota-card-title">{html_module.escape(str(r.cliente))}</div>
                         <div class="cuota-card-meta">{"Ciclo de interés" if r.tipo_credito == "Interés libre" else "Cuota #" + str(r.nro_cuota)} · {r.fecha_vencimiento}</div>
                         <div class="cuota-card-value">{pesos(r.valor_cuota)}</div>
                         <div class="cuota-status {estado_class}">{estado_icono} {estado_label}</div>
@@ -4755,7 +4944,7 @@ if tab_proyeccion:
             min_value=0.0,
             step=100000.0,
             value=float(get_app_meta("proy_meta_mensual", 6000000) or 6000000),
-            key="proy_meta_mensual_input"
+            key="proy_meta_mensual_input", format="%.0f"
         )
     with cparam3:
         valor_express_ref = st.number_input(
@@ -4764,7 +4953,7 @@ if tab_proyeccion:
             step=50000.0,
             value=float(get_app_meta("proy_valor_express", 700000) or 700000),
             key="proy_valor_express_input"
-        )
+        , format="%.0f")
     with cparam4:
         valor_normal_ref = st.number_input(
             "Valor promedio crédito normal",
@@ -4772,7 +4961,7 @@ if tab_proyeccion:
             step=50000.0,
             value=float(get_app_meta("proy_valor_normal", 1800000) or 1800000),
             key="proy_valor_normal_input"
-        )
+        , format="%.0f")
 
     pcol1, pcol2, pcol3, pcol4 = st.columns(4)
     with pcol1:
@@ -4960,7 +5149,7 @@ if tab_proyeccion:
 # 👥 CLIENTES
 # ==========================
 if tab_clientes:
-        st.subheader("👥 Gestión de clientes")
+        # El encabezado común identifica este módulo.
         show_flash("clientes_msg")
 
         with get_conn() as conn:
@@ -4988,14 +5177,26 @@ if tab_clientes:
         if cli_tab1 is not None:
             with cli_tab1:
                 with st.form("form_nuevo_cliente", clear_on_submit=True):
-                    cedula_new = st.text_input("Cédula *")
-                    nombres_new = st.text_input("Nombres *")
-                    apellidos_new = st.text_input("Apellidos *")
-                    ciudad_new = st.text_input("Ciudad")
-                    telefono_new = st.text_input("Teléfono")
-                    correo_new = st.text_input("Correo")
-                    direccion_new = st.text_input("Dirección")
-                    empresa_new = st.text_input("Empresa")
+                    cli_pair_0=st.columns(2)
+                    with cli_pair_0[0]:
+                        cedula_new = st.text_input("Cédula *")
+                    with cli_pair_0[1]:
+                        nombres_new = st.text_input("Nombres *")
+                    cli_pair_2=st.columns(2)
+                    with cli_pair_2[0]:
+                        apellidos_new = st.text_input("Apellidos *")
+                    with cli_pair_2[1]:
+                        ciudad_new = st.text_input("Ciudad")
+                    cli_pair_4=st.columns(2)
+                    with cli_pair_4[0]:
+                        telefono_new = st.text_input("Teléfono")
+                    with cli_pair_4[1]:
+                        correo_new = st.text_input("Correo")
+                    cli_pair_6=st.columns(2)
+                    with cli_pair_6[0]:
+                        direccion_new = st.text_input("Dirección")
+                    with cli_pair_6[1]:
+                        empresa_new = st.text_input("Empresa")
                     fecha_nacimiento_new = st.date_input(
                         "Fecha de nacimiento",
                         value=None,
@@ -5146,7 +5347,7 @@ if tab_clientes:
 # 🆕 NUEVO CRÉDITO
 # ==========================
 if tab_creditos:
-            st.subheader("🆕 Registrar nuevo crédito")
+            # El encabezado común identifica este módulo.
             show_flash("credito_msg")
             show_flash("contrato_msg")
 
@@ -5171,47 +5372,46 @@ if tab_creditos:
 
                 if st.session_state.pop("reset_cliente_normal_credito", False):
                     st.session_state["cliente_normal_credito"] = None
+                    st.session_state["nuevo_monto_normal"] = 0.0
+                    st.session_state["confirmar_envio_normal"] = False
                 if st.session_state.pop("reset_cliente_express_credito", False):
                     st.session_state["cliente_express_credito"] = None
                 if st.session_state.pop("reset_cliente_interes_libre", False):
                     st.session_state["cliente_interes_libre_credito"] = None
 
                 with cred_tab1:
-                    with st.form("form_credito_normal", clear_on_submit=True):
-                        cliente_normal = st.selectbox(
-                            "Cliente",
-                            cliente_options,
-                            key="cliente_normal_credito",
-                            format_func=nombre_cliente,
-                            index=0
-                        )
-                        monto_normal_new = st.number_input("Monto a prestar", min_value=0.0, step=100000.0, value=0.0, key="nuevo_monto_normal", help="Escribe el valor exacto a prestar. El campo inicia en 0 para evitar confusiones.")
-                        cuotas_normal_new = st.selectbox("Número de cuotas", [12, 15], key="nuevo_cuotas_normal")
-                        frecuencia_normal_new = st.selectbox("Frecuencia", ["Mensual", "Quincenal"], key="nuevo_frec_normal")
-                        fecha_inicio_normal = st.date_input("Fecha de inicio", value=hoy_local(), key="fecha_inicio_normal")
-                        confirmar_envio_normal = st.checkbox(
-                            "Confirmo que validé cliente, monto, correo y autorizo el envío del contrato",
-                            key="confirmar_envio_normal"
-                        )
-                        st.caption("La simulación final se procesa al registrar el crédito.")
-                        submit_normal = st.form_submit_button("Registrar crédito normal", type="primary", disabled=st.session_state.get("app_busy", False))
+                    cliente_normal=st.selectbox('Cliente',cliente_options,key='cliente_normal_credito',format_func=nombre_cliente,index=0)
+                    a,b,c=st.columns(3)
+                    with a:monto_normal_new=st.number_input('Monto a prestar',min_value=0.0,step=100000.0,value=0.0,key='nuevo_monto_normal', format="%.0f")
+                    with b:cuotas_normal_new=st.selectbox('Número de cuotas',[12,15],key='nuevo_cuotas_normal')
+                    with c:frecuencia_normal_new=st.selectbox('Frecuencia',['Mensual','Quincenal'],key='nuevo_frec_normal')
+                    fecha_inicio_normal=st.date_input('Fecha de inicio',value=hoy_local(),key='fecha_inicio_normal')
+                    custom=st.toggle('Usar tasa personalizada',key='normal_custom_rate')
+                    rate_pct=st.number_input('Tasa mensual pactada (%)',min_value=0.0,max_value=100.0,value=float(calcular_tasa_normal(cuotas_normal_new)*100),step=0.01,format='%.2f',key='normal_custom_rate_value') if custom else None
+                    quote=None
+                    if monto_normal_new>0:
+                        try:
+                            quote=cotizar_normal(monto_normal_new,cuotas_normal_new,frecuencia_normal_new,None if rate_pct is None else decimal_finito(rate_pct)/100,
+                                permitir_cero=get_config('ALLOW_ZERO_NORMAL_RATE','false').lower()=='true')
+                            creddt_ui.quote_preview(quote,fecha_inicio_normal,pesos)
+                        except ValueError as exc:st.error(str(exc))
+                    else:st.info('Ingresa el capital para revisar la cuota y el calendario antes de confirmar.')
+                    with st.form('form_credito_normal'):
+                        confirmar_envio_normal=st.checkbox('Revisé la simulación, el cliente y autorizo el envío del contrato',key='confirmar_envio_normal')
+                        submit_normal=st.form_submit_button('Confirmar crédito y enviar contrato',type='primary',disabled=quote is None or quote['total']<quote['capital'] or st.session_state.get('app_busy',False))
                     if submit_normal:
-                        if cliente_normal is None:
-                            st.warning("ℹ️ Selecciona un cliente para registrar un crédito normal.")
-                        elif not confirmar_envio_normal:
-                            st.warning("ℹ️ Debes confirmar la validación antes de enviar el contrato.")
+                        if cliente_normal is None:st.warning('Selecciona un cliente.')
+                        elif not confirmar_envio_normal:st.warning('Confirma la revisión antes de continuar.')
                         else:
                             try:
-                                with st.spinner("Creando crédito normal..."):
-                                    ok_c, err_c, prestamo_creado = crear_credito_db(cliente_normal, monto_normal_new, cuotas_normal_new, frecuencia_normal_new, "Normal", fecha_inicio_normal)
+                                with st.spinner('Creando crédito normal...'):
+                                    ok_c,err_c,prestamo_creado=crear_credito_db(cliente_normal,monto_normal_new,cuotas_normal_new,frecuencia_normal_new,'Normal',fecha_inicio_normal,tasa_personalizada_pct=rate_pct)
                                     if ok_c:
-                                        st.session_state["reset_cliente_normal_credito"] = True
-                                        set_flash("credito_msg", "success", f"✅ Crédito {prestamo_creado['id']} creado. El contrato se está enviando por correo (puede tardar unos segundos).")
+                                        st.session_state['reset_cliente_normal_credito']=True
+                                        set_flash('credito_msg','success',f"Crédito {prestamo_creado['id']} creado. Revisa el estado del envío en Contratos pendientes.")
                                         st.rerun()
-                                    else:
-                                        st.error((f"❌ {err_c}").replace("$", "\\$"))
-                            finally:
-                                stop_busy()
+                                    else:st.error(str(err_c))
+                            finally:stop_busy()
 
                 with cred_tab2:
                     with st.form("form_credito_express", clear_on_submit=True):
@@ -5222,7 +5422,7 @@ if tab_creditos:
                             format_func=nombre_cliente,
                             index=0
                         )
-                        monto_express_new = st.number_input("Monto a prestar", min_value=0.0, step=50000.0, value=0.0, key="nuevo_monto_express", help="Escribe el valor exacto a prestar. El campo inicia en 0 para evitar confusiones.")
+                        monto_express_new = st.number_input("Monto a prestar", min_value=0.0, step=50000.0, value=0.0, key="nuevo_monto_express", help="Escribe el valor exacto a prestar. El campo inicia en 0 para evitar confusiones.", format="%.0f")
                         frecuencia_express_new = st.selectbox("Frecuencia", ["Mensual", "Quincenal"], key="nuevo_frec_express")
                         cuotas_express_new = 5 if frecuencia_express_new == "Mensual" else 6
                         fecha_inicio_express = st.date_input("Fecha de inicio", value=hoy_local(), key="fecha_inicio_express")
@@ -5261,7 +5461,7 @@ if tab_creditos:
                             format_func=nombre_cliente,
                             index=0
                         )
-                        monto_interes_libre = st.number_input("Capital a prestar", min_value=0.0, step=100000.0, value=0.0, key="nuevo_monto_interes_libre", help="Escribe el valor exacto a prestar. El campo inicia en 0 para evitar confusiones.")
+                        monto_interes_libre = st.number_input("Capital a prestar", min_value=0.0, step=100000.0, value=0.0, key="nuevo_monto_interes_libre", help="Escribe el valor exacto a prestar. El campo inicia en 0 para evitar confusiones.", format="%.0f")
                         tasa_interes_libre_pct = st.number_input("Tasa de interés cada 30 días (%)", min_value=0.0, max_value=100.0, step=0.5, value=0.0, key="nuevo_tasa_interes_libre", help="Escribe la tasa pactada. El campo inicia en 0 para evitar confusiones.")
                         fecha_inicio_interes_libre = st.date_input("Fecha de desembolso/inicio", value=hoy_local(), key="fecha_inicio_interes_libre")
                         interes_30 = monto_interes_libre * (tasa_interes_libre_pct / 100)
@@ -5317,7 +5517,7 @@ if tab_creditos:
                             st.markdown(f"""
                             <div class="creddt-card" style="padding:14px 16px;margin-bottom:10px;">
                                 <div class="creddt-strong" style="font-size:18px;font-weight:800;">Crédito {fila_p['id']}</div>
-                                <div class="creddt-muted" style="font-size:13px;margin-top:4px;">{fila_p['cliente']} · {fila_p['tipo']} · Estado: {fila_p['estado']}</div>
+                                <div class="creddt-muted" style="font-size:13px;margin-top:4px;">{html_module.escape(str(fila_p['cliente']))} · {fila_p['tipo']} · Estado: {fila_p['estado']}</div>
                             </div>
                             """, unsafe_allow_html=True)
 
@@ -5432,7 +5632,7 @@ if tab_creditos:
 # 📄 DETALLE
 # ==========================
 if tab_detalle:
-            st.subheader("📄 Detalle por crédito")
+            # El encabezado común identifica este módulo.
             st.caption("Consulta la ficha del crédito, su plan de cuotas y sus movimientos. Los anulados quedan separados del historial normal para evitar confusiones.")
             show_flash("detalle_msg")
 
@@ -5461,7 +5661,7 @@ if tab_detalle:
                         st.markdown(f"""
                         <div class="creddt-card" style="padding:14px 16px;margin-bottom:10px;">
                             <div class="creddt-strong" style="font-size:18px;font-weight:800;">Crédito {row['id']}</div>
-                            <div class="creddt-muted" style="font-size:13px;margin-top:4px;">{row['cliente']} · {row['tipo']} · {row['estado']} · Frecuencia: {row.get('frecuencia', 'Mensual')} · Contrato: {estado_contrato}</div>
+                            <div class="creddt-muted" style="font-size:13px;margin-top:4px;">{html_module.escape(str(row['cliente']))} · {row['tipo']} · {row['estado']} · Frecuencia: {row.get('frecuencia', 'Mensual')} · Contrato: {estado_contrato}</div>
                         </div>
                         """, unsafe_allow_html=True)
 
@@ -5479,7 +5679,7 @@ if tab_detalle:
                         c5, c6, c7 = st.columns(3)
                         c5.metric("💳 Cuota actual", pesos(row["valor_cuota"]))
                         c6.metric("📆 N.° cuotas", int(row["cuotas"]))
-                        c7.metric("📊 Tasa mensual", f"{float(row['tasa_mensual'] or 0):.4f}")
+                        c7.metric("📊 Tasa mensual", f"{float(row['tasa_mensual'] or 0)*100:.2f} %")
 
                         with get_conn() as conn:
                             cuotas_credito = pd.read_sql(text("""
@@ -5549,7 +5749,7 @@ if tab_detalle:
 # 🗂️ CARTERA POR CLIENTE
 # ==========================
 if tab_cartera_cliente:
-    st.subheader("🗂️ Cartera por cliente")
+    # El encabezado común identifica este módulo.
     st.caption("Busca un cliente por nombre o cédula para ver todos sus créditos discriminados, el total de su cartera, y descargar el detalle.")
 
     estado_cartera = estado[estado["estado"] != "Anulado"].copy()
@@ -5660,7 +5860,7 @@ if "pago_msg" not in st.session_state:
 if "reset_select_prestamo_pago" not in st.session_state:
     st.session_state.reset_select_prestamo_pago = False
 if tab_pagos:
-            st.subheader("💰 Pagos del crédito")
+            # El encabezado común identifica este módulo.
             st.caption("Aquí solo se muestran créditos activos con saldo pendiente. Los créditos cerrados siguen visibles en Resumen e Historial, pero no interfieren en la operación diaria.")
             activos = estado[(~estado["estado"].isin(["Cancelado", "Anulado"])) & (pd.to_numeric(estado["saldo"], errors="coerce").fillna(0) > 0)].copy()
             if activos.empty:
@@ -5690,7 +5890,7 @@ if tab_pagos:
                     info1.metric("💳 Cuota actual", pesos(prestamo.valor_cuota))
                     info2.metric("🏦 Saldo capital", pesos(prestamo.saldo_capital))
                     info3.metric("⏳ Saldo cuotas", pesos(prestamo.saldo))
-                    info4.metric("📊 Tasa mensual", f"{float(prestamo.tasa_mensual or 0):.4f}")
+                    info4.metric("📊 Tasa mensual", f"{float(prestamo.tasa_mensual or 0)*100:.2f} %")
                     st.divider()
                     # st.tabs no conserva la pestaña activa entre reruns (por ejemplo al registrar
                     # un pago), así que usamos un selector persistido en session_state para que,
@@ -5812,16 +6012,16 @@ if tab_pagos:
                             with get_conn() as conn:
                                 cuotas_pendientes_pago = obtener_cuotas_pendientes(conn, prestamo.id)
                             total_pendiente_pago = sum((normalizar_decimal(c[2]) for c in cuotas_pendientes_pago), Decimal("0.00"))
-                            st.markdown("#### Pago de varias cuotas")
+                            st.markdown("#### Varias cuotas o pago parcial")
                             st.caption("Opción adicional para aplicar varias cuotas completas o ingresar el valor recibido y que se aplique desde la cuota pendiente más antigua.")
+                            modo_pago_multi = st.radio(
+                                "Forma de aplicar",
+                                ["Por número de cuotas", "Por valor pagado"],
+                                horizontal=True,
+                                key="modo_pago_multiple"
+                            )
                             with st.form("form_pago_multiple", clear_on_submit=True):
                                 fecha_pago_multi = st.date_input("📅 Fecha de movimiento", value=hoy_local(), key="fecha_movimiento_pago_multi")
-                                modo_pago_multi = st.radio(
-                                    "Forma de aplicar",
-                                    ["Por número de cuotas", "Por valor pagado"],
-                                    horizontal=True,
-                                    key="modo_pago_multiple"
-                                )
                                 cantidad_cuotas_multi = 1
                                 valor_pago_multi = 0.0
                                 if modo_pago_multi == "Por número de cuotas":
@@ -5843,7 +6043,7 @@ if tab_pagos:
                                         step=1000.0,
                                         value=0.0,
                                         key="valor_pago_multi"
-                                    )
+                                    , format="%.0f")
                                     st.info((f"Saldo máximo aplicable en cuotas pendientes: {pesos(total_pendiente_pago)}.").replace("$", "\\$"))
                                 submit_pago_multiple = st.form_submit_button("Registrar pago múltiple", disabled=st.session_state.get("app_busy", False))
                             if submit_pago_multiple:
@@ -5873,7 +6073,7 @@ if tab_pagos:
                                 step=1000.0,
                                 value=0.0,
                                 key="abono_capital"
-                            )
+                            , format="%.0f")
                             submit_abono_capital = st.form_submit_button("Aplicar abono a capital", disabled=st.session_state.get("app_busy", False))
                         if submit_abono_capital:
                             try:
@@ -5893,16 +6093,18 @@ if tab_pagos:
                 if m.get("correo_omitido"):
                     st.info("Movimiento registrado sin envío de correo, por decisión del administrador.")
                 if m["tipo"] == "CUOTA":
+                    descripcion_pago = 'Pago parcial' if m.get('parcial') else 'Pago de cuota'
+                    st.caption('Importe recibido: '+pesos(m.get('valor',0)))
                     cuota_txt = f"Cuotas #{m['cuota']} a #{m.get('cuota_final')}" if m.get("cuota_final") and m.get("cuota_final") != m.get("cuota") else f"Cuota #{m['cuota']}"
                     cierre_txt = " | Crédito finalizado y cuenta cerrada" if m.get("finalizado") else ""
                     if m.get("tiene_correo") and m.get("correo"):
-                        st.success((f"✅ Pago de cuota registrado; envío de correo solicitado - Crédito {m['credito']} | {cuota_txt}{cierre_txt}").replace("$", "\\$"))
+                        st.success((f"✅ {descripcion_pago} registrado; envío de correo solicitado - Crédito {m['credito']} | {cuota_txt}{cierre_txt}").replace("$", "\\$"))
                     elif m.get("tiene_correo") and not m.get("correo") and not m.get("correo_omitido"):
-                        st.warning((f"⚠️ Pago de cuota registrado, pero el correo no se pudo enviar - Crédito {m['credito']} | {cuota_txt}{cierre_txt}").replace("$", "\\$"))
+                        st.warning((f"⚠️ {descripcion_pago} registrado, pero el correo no se pudo enviar - Crédito {m['credito']} | {cuota_txt}{cierre_txt}").replace("$", "\\$"))
                         if m.get("correo_error"):
                             st.error((f"Detalle correo: {m['correo_error']}").replace("$", "\\$"))
                     else:
-                        st.success((f"✅ Pago de cuota registrado - Crédito {m['credito']} | {cuota_txt}{cierre_txt}").replace("$", "\\$"))
+                        st.success((f"✅ {descripcion_pago} registrado - Crédito {m['credito']} | {cuota_txt}{cierre_txt}").replace("$", "\\$"))
                 if m["tipo"] == "INTERES_LIBRE":
                     st.success(
                         (f"✅ Pago interés libre registrado - Crédito {m['credito']} | "
@@ -5923,7 +6125,7 @@ if tab_pagos:
 # 🧮 SIMULADOR
 # ==========================
 if tab_sim:
-            st.subheader("🧮 Simulador de crédito")
+            # El encabezado común identifica este módulo.
             t1, t2, t3 = st.tabs([
                 "💳 Crédito normal",
                 "⚡ Crédito express",
@@ -5933,26 +6135,18 @@ if tab_sim:
             # 💳 CRÉDITO NORMAL
             # --------------------------
             with t1:
-                st.markdown("### 💳 Crédito normal")
-                monto_normal = st.number_input(
-                    "Monto del crédito",
-                    min_value=100_000,
-                    step=100_000,
-                    value=1_000_000,
-                    key="monto_normal"
-                )
-                cuotas_normal = st.selectbox(
-                    "Número de cuotas",
-                    [12, 15],
-                    key="cuotas_normal"
-                )
-                if st.button("Calcular crédito normal"):
-                    cuota = calcular_cuota_normal(monto_normal, cuotas_normal)
-                    st.success(
-                        (f"📌 Cuota mensual: **{pesos(cuota)}**\n\n"
-                        f"📆 Total cuotas: **{cuotas_normal}**\n\n"
-                        f"💰 Total a pagar: **{pesos(cuota * cuotas_normal)}**").replace("$", "\\$")
-                    )
+                sim_cols=st.columns(3)
+                with sim_cols[0]:monto_normal=st.number_input('Monto del crédito',min_value=100000,step=100000,value=1000000,key='monto_normal')
+                with sim_cols[1]:cuotas_normal=st.selectbox('Número de cuotas',[12,15],key='cuotas_normal')
+                with sim_cols[2]:freq_normal=st.selectbox('Frecuencia',['Mensual','Quincenal'],key='sim_normal_freq')
+                sim_custom=st.toggle('Usar tasa personalizada',key='sim_normal_custom')
+                sim_rate=st.number_input('Tasa mensual pactada (%)',min_value=0.0,max_value=100.0,value=float(calcular_tasa_normal(cuotas_normal)*100),step=0.01,format='%.2f',key='sim_normal_rate') if sim_custom else None
+                sim_start=st.date_input('Inicio del calendario',value=hoy_local(),key='sim_normal_start')
+                try:
+                    simulated=cotizar_normal(monto_normal,cuotas_normal,freq_normal,None if sim_rate is None else decimal_finito(sim_rate)/100,
+                        permitir_cero=get_config('ALLOW_ZERO_NORMAL_RATE','false').lower()=='true')
+                    creddt_ui.quote_preview(simulated,sim_start,pesos)
+                except ValueError as exc:st.error(str(exc))
             # --------------------------
             # ⚡ CRÉDITO EXPRESS
             # --------------------------
@@ -6016,7 +6210,7 @@ if tab_sim:
 # 🔒 MI CUENTA
 # ==========================
 if tab_cuenta:
-    st.subheader("🔒 Mi cuenta")
+    # El encabezado común identifica este módulo.
     show_flash("cuenta_msg")
     st.markdown(f"**Usuario:** {st.session_state.get('usuario', '-')}")
     st.markdown(f"**Rol:** {st.session_state.get('rol', '-')}")
@@ -6074,7 +6268,7 @@ if tab_cuenta:
 # 👤 GESTIÓN DE USUARIOS (solo ADMIN)
 # ==========================
 if tab_usuarios:
-    st.subheader("👤 Gestión de usuarios")
+    # El encabezado común identifica este módulo.
     if not ES_ADMIN:
         st.error("❌ No tienes permiso para ver esta sección.")
     else:
@@ -6094,7 +6288,7 @@ if tab_usuarios:
         st.markdown("### Usuarios existentes")
         usuarios_actuales = listar_usuarios()
         if usuarios_actuales:
-            df_usuarios = pd.DataFrame(usuarios_actuales, columns=["usuario", "rol"])
+            df_usuarios = pd.DataFrame(usuarios_actuales, columns=["usuario", "rol", "activo"])
             render_tabla_moderna(df_usuarios)
         else:
             st.info("No hay usuarios registrados todavía.")
@@ -6152,14 +6346,18 @@ if tab_usuarios:
                     finally:
                         stop_busy()
 
-            st.markdown("**Eliminar usuario**")
-            confirmar_eliminar_usuario = st.checkbox(f"Confirmo que quiero eliminar a '{usuario_seleccionado}'", key="confirmar_eliminar_usuario")
-            if st.button("🗑️ Eliminar usuario", key="btn_eliminar_usuario", disabled=st.session_state.get("app_busy", False)):
+            if not next((u['activo'] for u in usuarios_actuales if u['usuario']==usuario_seleccionado),False):
+                if st.button('Reactivar usuario',key='reactivar_usuario'):
+                    ok_a,msg_a=activar_usuario(usuario_seleccionado)
+                    set_flash('usuarios_msg','success' if ok_a else 'error',msg_a);st.rerun()
+            st.markdown("**Desactivar usuario**")
+            confirmar_eliminar_usuario = st.checkbox(f"Confirmo que quiero desactivar a '{usuario_seleccionado}'", key="confirmar_eliminar_usuario")
+            if st.button("Desactivar usuario", key="btn_eliminar_usuario", disabled=st.session_state.get("app_busy", False)):
                 if not confirmar_eliminar_usuario:
                     st.warning("ℹ️ Marca la casilla de confirmación antes de eliminar.")
                 else:
                     try:
-                        with st.spinner("Eliminando usuario..."):
+                        with st.spinner("Desactivando usuario..."):
                             ok_e, msg_e = eliminar_usuario(usuario_seleccionado, st.session_state.get("usuario", ""))
                             set_flash("usuarios_msg", "success" if ok_e else "error", ("✅ " if ok_e else "❌ ") + msg_e)
                             st.rerun()

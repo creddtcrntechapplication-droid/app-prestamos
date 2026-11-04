@@ -46,6 +46,10 @@ SQLAlchemy usa un motor compartido con pool limitado, pre-ping, reciclaje y tiem
 
 ## Pruebas y limitaciones
 
+Se añadieron dos pruebas de navegación con una misma sesión: cambios sucesivos de módulo, actualización que conserva la sección y acceso rápido desde Resumen. La corrección asigna una identidad estable al menú; evita recrearlo por su índice predeterminado. No depende de volver a pulsar la opción.
+
+Mediciones del laboratorio local (medianas, no tiempos prometidos de Render): simulación Decimal 0,01 ms; consulta real de cartera 23,06 ms; indicadores operativos 27,67 ms; verificación PBKDF2 203,06 ms; registro de pago sin correo 15,65 ms. No incluyen latencia de Internet, despertar de Render Free, envío real de correo ni representación del navegador.
+
 Pruebas aisladas con PostgreSQL local real, nunca con datos ni credenciales de producción. Suite de cálculo e integración: 36 comprobaciones, incluidas distribución completa, fraccionamiento, abono, exceso, rollback, concurrencia, roles, expiración y revocación. Comprobación automática de 26 combinaciones de página y rol. La matriz visual y evidencias se entregan por separado.
 
 No se ha acreditado entrega real de correos: las pruebas desactivan proveedores y recordatorios automáticos. Una tarea en segundo plano iniciada no equivale a entrega al destinatario. No se han firmado contratos reales ni originado créditos reales durante la revisión.

@@ -630,6 +630,7 @@ def actualizar_rol_usuario(usuario, nuevo_rol, usuario_actual):
         return False, "Rol inválido"
     with get_conn() as conn:
         conn.execute(text("SELECT pg_advisory_xact_lock(178231903)"))
+        require_role('ADMIN')
         if usuario == usuario_actual and nuevo_rol != "ADMIN":
             admins_restantes = conn.execute(text("""
                 SELECT COUNT(*) FROM usuarios WHERE rol = 'ADMIN' AND activo AND usuario <> :usuario
@@ -666,6 +667,7 @@ def eliminar_usuario(usuario, usuario_actual):
         return False, "No puedes eliminar tu propio usuario mientras tienes la sesión abierta"
     with get_conn() as conn:
         conn.execute(text("SELECT pg_advisory_xact_lock(178231903)"))
+        require_role('ADMIN')
         fila = conn.execute(text("SELECT rol FROM usuarios WHERE usuario = :usuario"), {"usuario": usuario}).mappings().first()
         if not fila:
             return False, "Ese usuario no existe"
@@ -1102,6 +1104,8 @@ if ES_ADMIN:
     MENU_LABELS.append("👤 Usuarios")
 MENU_LABELS.append("🔒 Mi cuenta")
 
+if '_creddt_pending_menu' in st.session_state:
+    st.session_state.menu_activo=st.session_state.pop('_creddt_pending_menu')
 if "menu_activo" not in st.session_state or st.session_state.menu_activo not in MENU_LABELS:
     st.session_state.menu_activo = next((x for x in MENU_LABELS if x==st.query_params.get('vista')),MENU_LABELS[0])
 
@@ -1274,10 +1278,11 @@ if not token_aceptar:
         st.markdown("<div class='sidebar-menu-title'>Menú principal</div>", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
-        st.session_state.menu_activo = st.radio(
+        st.radio(
             "Opciones",
             MENU_LABELS,
-            index=MENU_LABELS.index(st.session_state.menu_activo),
+            index=None,
+            key="menu_activo",
             format_func=lambda label: label.split(" ", 1)[-1],
             label_visibility="collapsed"
         )
@@ -1836,6 +1841,7 @@ def get_app_meta(clave, default=None):
 
 
 def set_app_meta(conn, clave, valor):
+    require_role('ADMIN')
     conn.execute(text("""
         INSERT INTO app_meta (clave, valor, updated_at)
         VALUES (:clave, :valor, :updated_at)
@@ -3248,9 +3254,8 @@ def calcular_interes_libre_a_fecha(prestamo_row, fecha_pago):
 
 def preparar_operacion_pago(conn, prestamo_id, operacion_id, enviar_correo):
     """Called after locking the loan, within the payment transaction."""
-    if not PUEDE_REGISTRAR_PAGOS:
-        return "Tu usuario no tiene permiso para registrar pagos"
-    if not enviar_correo and not ES_ADMIN:
+    actor=require_role('ADMIN','ASESOR')
+    if not enviar_correo and actor['rol'] != 'ADMIN':
         return "Solo un administrador puede registrar movimientos sin correo"
     if operacion_id:
         r = conn.execute(text("""
@@ -4625,10 +4630,10 @@ def render_dashboard_financiero(kpis):
     action1,action2=st.columns(2)
     with action1:
         if PUEDE_REGISTRAR_PAGOS and st.button('Registrar un pago',key='go_pay_dashboard',type='primary',use_container_width=True):
-            st.session_state.menu_activo='💰 Pagos';st.rerun()
+            st.session_state['_creddt_pending_menu']='💰 Pagos';st.rerun()
     with action2:
         if st.button('Revisar cartera',key='go_portfolio_dashboard',use_container_width=True):
-            st.session_state.menu_activo='🗂️ Cartera por cliente';st.rerun()
+            st.session_state['_creddt_pending_menu']='🗂️ Cartera por cliente';st.rerun()
     st.markdown('### Cartera e ingresos acumulados')
     capital = float(kpis.get("capital_colocado", 0) or 0)
     recuperado = float(kpis.get("capital_recuperado", 0) or 0)
@@ -6289,7 +6294,8 @@ if tab_usuarios:
         usuarios_actuales = listar_usuarios()
         if usuarios_actuales:
             df_usuarios = pd.DataFrame(usuarios_actuales, columns=["usuario", "rol", "activo"])
-            render_tabla_moderna(df_usuarios)
+            df_usuarios['activo']=df_usuarios['activo'].map({True:'Activo',False:'Inactivo'})
+            render_tabla_moderna(df_usuarios.rename(columns={'usuario':'Usuario','rol':'Rol','activo':'Estado'}),columna_estado='Estado')
         else:
             st.info("No hay usuarios registrados todavía.")
 

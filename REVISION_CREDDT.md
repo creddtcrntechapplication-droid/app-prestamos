@@ -70,3 +70,10 @@ Antes de publicar se debe conservar la revisión anterior y el respaldo habitual
 ## Navegación compacta
 
 Cinco áreas principales con iconos simples: Inicio, Clientes, Créditos, Cobros y Análisis. Créditos reúne Nuevo crédito, Detalle y Cartera; Análisis reúne Proyección y Simulador. El menú de perfil contiene Mi cuenta, administración de usuarios (solo ADMIN) y Cerrar sesión. Se conservan los permisos del servidor y la vista al actualizar. Las opciones secundarias aparecen únicamente dentro del área seleccionada.
+
+
+## Mi cuenta y traducción del navegador
+
+Mi cuenta separa Acceso y seguridad de Recordatorios. Los campos de contraseña conservan sus validaciones; el diagnóstico técnico no ocupa el formulario. Procesar avisos manualmente requiere abrir las herramientas y marcar la intención de envío. El estado del proveedor no acredita entrega.
+
+La captura reportada muestra nombres traducidos y un error removeChild compatible con mutaciones externas de React (https://github.com/react/react/issues/11538). Se protege el HTML inicial con lang=es, translate=no y meta notranslate, sin interceptar ni ocultar errores de React. El comando de construcción de Render debe ser `pip install -r requirements.txt && python prepare_frontend.py`. Las pestañas ya traducidas requieren recarga completa; las extensiones pueden ignorar estas indicaciones. Pruebas de plantilla idempotente, navegación y validaciones de cuenta aprobadas; no se envían correos reales durante la revisión.

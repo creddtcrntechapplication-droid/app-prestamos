@@ -70,3 +70,9 @@ def compact_navigation(allowed, logout):
                 st.radio('Opciones de '+title, destinations, index=destinations.index(current),
                          key='subnav_'+title, format_func=lambda x:x.split(' ',1)[-1],
                          on_change=lambda k='subnav_'+title:go(st.session_state[k]), label_visibility='collapsed')
+
+
+def account_identity(user, role):
+    friendly = {'ADMIN':'Administrador','ASESOR':'Asesor','CONSULTA':'Consulta'}.get(role,'Usuario')
+    initial = html.escape(str(user)[:1].upper() or 'U')
+    st.markdown(f'<div class="account-identity"><div class="account-avatar">{initial}</div><div><span class="account-eyebrow">PERFIL PERSONAL</span><h2>{html.escape(str(user))}</h2><span class="account-role">{friendly}</span></div><span class="account-protected">Acceso privado</span></div>',unsafe_allow_html=True)

@@ -3,6 +3,9 @@ import uuid
 import streamlit as st
 JS = r"""
 export default function(component) {
+  // Atributos solamente: no sustituye ni elimina nodos controlados por React.
+  document.documentElement.lang = 'es';
+  document.documentElement.setAttribute('translate', 'no');
   const {data, parentElement, setStateValue} = component;
   const host = parentElement.host || parentElement;
   if (host.dataset.request === data.request) return;

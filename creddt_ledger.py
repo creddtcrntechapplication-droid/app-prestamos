@@ -78,17 +78,20 @@ def verificar(conn, loan, capital):
 
 
 def plan_amortizado(capital,tasa,count):
-    """Misma fórmula de abono vigente, Decimal y última cuota ajustada al centavo."""
+    """Fórmula de abono vigente; última cuota ajustada sin centavos ocultos."""
     capital,tasa=map(decimal_finito,(capital,tasa))
     if capital<=0 or tasa<0 or count<=0:
         raise ValueError('Condiciones de abono inválidas.')
     n=int(count)
     factor=(1+tasa)**n
-    cuota=(capital/n if tasa==0 else capital*tasa*factor/(factor-1)).quantize(Decimal('.01'))
+    quantum=Decimal('1') if capital==capital.to_integral_value() else Decimal('.01')
+    cuota=(capital/n if tasa==0 else capital*tasa*factor/(factor-1)).quantize(quantum)
+    if cuota<=0:
+        raise ValueError('El saldo es demasiado pequeño para conservar este número de cuotas. Revisa la liquidación.')
     saldo=capital
     plan=[]
     for i in range(n):
-        interes=(saldo*tasa).quantize(Decimal('.01'))
+        interes=(saldo*tasa).quantize(quantum)
         amortizacion=saldo if i==n-1 else min(saldo,cuota-interes)
         if amortizacion<0:
             raise ValueError('La cuota no cubre el interés del período.')

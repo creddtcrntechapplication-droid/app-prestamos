@@ -67,7 +67,7 @@ def plan_imputacion_fija(capital, cantidad, cuota):
     """Descompone el calendario pactado sin inflar capital ni dinero recibido.
 
     Para la fórmula vigente sobre capital inicial, el interés contractual total
-    es la diferencia entre el total de cuotas y el principal. Los centavos se
+    es la diferencia entre el total de cuotas y el principal. Los ajustes se
     distribuyen en el calendario, sin agregar cargos a la última cuota.
     No modifica ni reconstruye préstamos históricos.
     """
@@ -79,10 +79,12 @@ def plan_imputacion_fija(capital, cantidad, cuota):
     if cuota * n < capital:
         raise ValueError('Las cuotas programadas no cubren el capital. Revisa el plazo y la frecuencia antes de crear el crédito.')
     # Diferencias de acumulados redondeados conservan exactamente el principal.
+    # Capital entero: imputaciones al peso, coherentes con el cobro en COP.
     rows = []
     previo = Decimal(0)
+    quantum = Decimal('1') if capital == capital.to_integral_value() else CENT
     for numero in range(1, n + 1):
-        acumulado = (capital * numero / n).quantize(CENT)
+        acumulado = (capital * numero / n).quantize(quantum)
         amortizacion = acumulado - previo
         interes = cuota - amortizacion
         if interes < 0:

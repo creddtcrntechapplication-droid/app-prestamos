@@ -12,13 +12,13 @@ Los ensayos originales aislados de un Normal de COP 1.000.000 muestran interés 
 
 La autorización posterior del propietario permite corregir imputaciones, conservando registros históricos y las condiciones de los contratos anteriores. Los créditos nuevos Normal y Express guardan una distribución por cuota versionada en un esquema privado. No se aplica una migración retroactiva de saldos.
 
-Se conserva la fórmula de cuota vigente y sus redondeos. Para contratos nuevos, el capital se distribuye entre las cuotas; el interés contractual total es la diferencia entre la suma pactada de cuotas y el capital. Los centavos se distribuyen sin cambiar el dinero total pactado. Cada cuota guarda por separado su capital e interés pendientes: pagarla por partes sólo consume esos saldos, no vuelve a causar interés.
+Se conserva la fórmula de cuota inicial vigente y su redondeo a miles. Para contratos nuevos Normal y Express, el capital se distribuye entre las cuotas; el interés contractual total es la diferencia entre la suma pactada de cuotas y el capital. Las imputaciones y nuevos movimientos se expresan en pesos enteros, sin cambiar el dinero total pactado ni ocultar centavos al operador. Cada cuota guarda por separado su capital e interés pendientes: pagarla por partes sólo consume esos saldos, no vuelve a causar interés.
 
-Ejemplo nuevo: capital COP 1.000.000, 12 cuotas de COP 126.000, total COP 1.512.000. Capital total devuelto: COP 1.000.000. Interés total: COP 512.000. La primera cuota contiene COP 83.333,33 de capital y COP 42.666,67 de interés. La tasa de referencia de la fórmula es 4,27 % mensual; la diferencia se debe al redondeo de la cuota vigente. La clasificación no convierte el interés proyectado en ingreso cobrado.
+Ejemplo nuevo: capital COP 1.000.000, 12 cuotas de COP 126.000, total COP 1.512.000. Capital total devuelto: COP 1.000.000. Interés total: COP 512.000. La primera cuota contiene COP 83.333 de capital y COP 42.667 de interés; las diferencias de redondeo se distribuyen en el calendario. La tasa de referencia de la fórmula es 4,27 % mensual; la diferencia se debe al redondeo de la cuota vigente. La clasificación no convierte el interés proyectado en ingreso cobrado.
 
 Los calendarios nuevos que no cubren el principal se rechazan antes de guardar el préstamo. Esto afecta a las condiciones quincenales heredadas inconsistentes; no se duplica automáticamente el número de cuotas ni se inventa una condonación. La simulación muestra la advertencia. Un calendario quincenal viable con tasa personalizada también está cubierto por pruebas.
 
-El abono a capital conserva el recálculo amortizado ya existente sobre las cuotas futuras. La nueva distribución usa Decimal y ajusta la última cuota al centavo para devolver exactamente el saldo. Si hay una cuota parcialmente pagada, se exige completarla antes del recálculo para no borrar obligaciones pendientes. No se recalcula Interés libre con este mecanismo.
+El abono a capital conserva la fórmula amortizada ya existente sobre las cuotas futuras. La nueva distribución usa Decimal, redondea al peso con mitad al par y ajusta la última cuota para devolver exactamente el saldo. Si el saldo restante resulta demasiado pequeño para programar cuotas positivas, se pide revisar la liquidación en vez de crear cuotas de cero. Si hay una cuota parcialmente pagada, se exige completarla antes del recálculo para no borrar obligaciones pendientes. No se recalcula Interés libre con este mecanismo.
 
 Los históricos conservan su modelo. Sus inconsistencias previas requieren una conciliación específica con soportes antes de corregirlos; este cambio no acredita que esos datos antiguos sean correctos. La herramienta administrativa de reconstrucción omite los créditos versionados para no alterar su distribución.
 
@@ -50,7 +50,7 @@ Se añadieron dos pruebas de navegación con una misma sesión: cambios sucesivo
 
 Mediciones del laboratorio local (medianas, no tiempos prometidos de Render): simulación Decimal 0,01 ms; consulta real de cartera 23,06 ms; indicadores operativos 27,67 ms; verificación PBKDF2 203,06 ms; registro de pago sin correo 15,65 ms. No incluyen latencia de Internet, despertar de Render Free, envío real de correo ni representación del navegador.
 
-Pruebas aisladas con PostgreSQL local real, nunca con datos ni credenciales de producción. Suite de cálculo e integración: 37 comprobaciones, incluidas distribución completa, fraccionamiento, abono, exceso, rollback, concurrencia, roles, expiración y revocación. Comprobación automática de 26 combinaciones de página y rol. La matriz visual y evidencias se entregan por separado.
+Pruebas aisladas con PostgreSQL local real, nunca con datos ni credenciales de producción. Suite de cálculo e integración: 38 comprobaciones, incluidas distribución completa, fraccionamiento, abono, exceso, rollback, concurrencia, roles, expiración y revocación. Comprobación automática de 26 combinaciones de página y rol. La matriz visual y evidencias se entregan por separado.
 
 No se ha acreditado entrega real de correos: las pruebas desactivan proveedores y recordatorios automáticos. Una tarea en segundo plano iniciada no equivale a entrega al destinatario. No se han firmado contratos reales ni originado créditos reales durante la revisión.
 
@@ -65,3 +65,8 @@ web_app.py integra los controles. creddt_finance.py concentra cálculo Decimal. 
 Publicar únicamente archivos de ejecución y documentación revisados. Excluir bases de laboratorio, binarios PostgreSQL, credenciales ficticias, wrappers de preautenticación y scripts de preparación local. Las adiciones de esquema son idempotentes: activo en usuarios y tablas privadas de sesiones, intentos y distribución; no hay UPDATE masivo de pagos ni eliminación de tablas.
 
 Antes de publicar se debe conservar la revisión anterior y el respaldo habitual de la base. Si se revierte el código, las tablas nuevas se conservan; no borrar distribuciones ni sesiones para simular una reversión. Si ya se originaron créditos con distribución nueva, no regresar al motor financiero anterior: eso perdería la política de imputación. Preferir corregir hacia adelante o desactivar temporalmente la originación mientras se revisa el problema.
+
+
+## Navegación compacta
+
+Cinco áreas principales con iconos simples: Inicio, Clientes, Créditos, Cobros y Análisis. Créditos reúne Nuevo crédito, Detalle y Cartera; Análisis reúne Proyección y Simulador. El menú de perfil contiene Mi cuenta, administración de usuarios (solo ADMIN) y Cerrar sesión. Se conservan los permisos del servidor y la vista al actualizar. Las opciones secundarias aparecen únicamente dentro del área seleccionada.

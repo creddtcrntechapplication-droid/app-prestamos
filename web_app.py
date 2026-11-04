@@ -1270,41 +1270,7 @@ st.markdown("""
 
 if not token_aceptar:
     with st.sidebar:
-        st.markdown("<div class='sidebar-logo-wrap'>", unsafe_allow_html=True)
-        if os.path.exists("logo_creddt.png"):
-            st.image("logo_creddt.png", width=88)
-        st.markdown("<div class='sidebar-brand'>CREDDT | <span class='sidebar-brand-accent'>CRNTECH</span></div>", unsafe_allow_html=True)
-        st.markdown("<div class='sidebar-sub'>Gestión principal de créditos, clientes, pagos y seguimiento operativo.</div>", unsafe_allow_html=True)
-        st.markdown("<div class='sidebar-menu-title'>Menú principal</div>", unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        st.radio(
-            "Opciones",
-            MENU_LABELS,
-            index=None,
-            key="menu_activo",
-            format_func=lambda label: label.split(" ", 1)[-1],
-            label_visibility="collapsed"
-        )
-
-        st.markdown(
-            f"<div class='sidebar-user-card'>"
-            f"<div class='sidebar-user-top'>"
-            f"<div class='sidebar-avatar'>C</div>"
-            f"<div>"
-            f"<div class='sidebar-user-pill'>Sesión activa</div>"
-            f"<div class='sidebar-user-name'>{html_module.escape(str(st.session_state.get('usuario','-')))}</div>"
-            f"<div class='sidebar-user-role'>Rol: {html_module.escape(str(st.session_state.get('rol','-')))}</div>"
-            f"</div>"
-            f"</div>"
-            f"</div>",
-            unsafe_allow_html=True
-        )
-
-        if st.button("Cerrar sesión", key="btn_logout_sidebar"):
-            cerrar_sesion_segura()
-
-        st.markdown("<div class='sidebar-foot'>v1.0.0 • CREDDT | CRNTECH</div>", unsafe_allow_html=True)
+        creddt_ui.compact_navigation(MENU_LABELS, cerrar_sesion_segura)
 
 SECCION_ACTIVA = st.session_state.menu_activo
 if not token_aceptar:
@@ -3086,7 +3052,10 @@ def crear_credito_db(cliente_cedula, monto, cuotas, frecuencia, tipo, fecha_inic
     require_role('ADMIN','ASESOR')
     fecha_inicio = fecha_inicio or hoy_local()
     try:
-        monto = float(decimal_finito(monto or 0).quantize(Decimal('.01')))
+        capital_nuevo=decimal_finito(monto or 0)
+        if capital_nuevo != capital_nuevo.to_integral_value():
+            return False,'Escribe el capital en pesos enteros, sin centavos.',None
+        monto = float(capital_nuevo)
         cantidad = decimal_finito(cuotas or 0)
         if cantidad != int(cantidad):
             return False,'El número de cuotas debe ser entero.',None
@@ -3754,6 +3723,12 @@ def render_aceptacion_contrato(token):
                     st.success(mensaje)
                 else:
                     st.error(mensaje)
+        except PermissionError:
+            st.error('Tus permisos o tu sesión cambiaron. Actualiza e inicia sesión otra vez.')
+        except ValueError as exc:
+            st.warning(str(exc))
+        except SQLAlchemyError:
+            st.error('No se pudo confirmar el resultado por un problema de conexión. Actualiza y revisa el historial antes de repetir la operación.')
         finally:
             stop_busy()
 def enviar_recordatorio_credito(prestamo_row):
@@ -3935,6 +3910,8 @@ def registrar_pago_cuotas(prestamo_id, fecha_pago, cantidad_cuotas=None, valor_p
         capital_total = Decimal("0.00")
         plan_versionado = creddt_ledger.tiene_plan(conn,prestamo_id)
         if plan_versionado:
+            if valor_pago != valor_pago.to_integral_value():
+                return {'ok':False,'error':'Registra el dinero recibido en pesos enteros, sin centavos.'}
             creddt_ledger.verificar(conn,prestamo_id,saldo_capital_actual)
             for cuota,valor_aplicado,_ in aplicaciones:
                 interes_aplicado,capital_aplicado=creddt_ledger.aplicar(conn,prestamo_id,cuota[0],valor_aplicado)
@@ -4243,11 +4220,16 @@ def registrar_abono_capital(prestamo_id, fecha_pago, valor_abono, enviar_correo=
         cuotas_restantes = len(cuotas_pendientes)
         plan_versionado=creddt_ledger.tiene_plan(conn,prestamo_id)
         if plan_versionado:
+            if valor_abono != valor_abono.to_integral_value():
+                return {'ok':False,'error':'Registra el abono en pesos enteros, sin centavos.'}
             creddt_ledger.verificar(conn,prestamo_id,saldo_capital_actual)
             hay_parcial=conn.execute(text("SELECT 1 FROM cuotas WHERE prestamo_id=:id AND estado='Parcial' LIMIT 1"),{'id':prestamo_id}).scalar()
             if hay_parcial:
                 return {'ok':False,'error':'Completa la cuota parcialmente pagada antes de recalcular por abono a capital.'}
-            nueva_cuota=creddt_ledger.recalcular_abono(conn,prestamo_id,nuevo_saldo_capital,prestamo_db['tasa_mensual'])
+            try:
+                nueva_cuota=creddt_ledger.recalcular_abono(conn,prestamo_id,nuevo_saldo_capital,prestamo_db['tasa_mensual'])
+            except ValueError as exc:
+                return {'ok':False,'error':str(exc)}
         else:
             nueva_cuota = Decimal(str(calcular_cuota_amortizada(nuevo_saldo_capital, prestamo_db["tasa_mensual"], cuotas_restantes))).quantize(Decimal("0.01"))
         result_pago = conn.execute(text("""
@@ -4770,6 +4752,12 @@ if tab_resumen:
                         resumen_recon = reconstruir_historial_financiero()
                         set_flash("sistema_msg", "success", f"Historial reconstruido. Créditos: {resumen_recon['prestamos']}. Pagos: {resumen_recon['pagos']}. Ajustes negativos: {resumen_recon['ajustes_negativos']}.")
                         st.rerun()
+                except PermissionError:
+                    st.error('Tus permisos o tu sesión cambiaron. Actualiza e inicia sesión otra vez.')
+                except ValueError as exc:
+                    st.warning(str(exc))
+                except SQLAlchemyError:
+                    st.error('No se pudo confirmar el resultado por un problema de conexión. Actualiza y revisa el historial antes de repetir la operación.')
                 finally:
                     stop_busy()
 
@@ -5018,6 +5006,12 @@ if tab_proyeccion:
                         set_app_meta(conn, "proy_pct_gerencia", pct_gerencia)
                         conn.commit()
                     st.success("✅ Parámetros de proyección guardados.")
+            except PermissionError:
+                st.error('Tus permisos o tu sesión cambiaron. Actualiza e inicia sesión otra vez.')
+            except ValueError as exc:
+                st.warning(str(exc))
+            except SQLAlchemyError:
+                st.error('No se pudo confirmar el resultado por un problema de conexión. Actualiza y revisa el historial antes de repetir la operación.')
             finally:
                 stop_busy()
 
@@ -5326,6 +5320,12 @@ if tab_clientes:
                                                     st.rerun()
                                                 else:
                                                     st.error((f"❌ {err_del}").replace("$", "\\$"))
+                                        except PermissionError:
+                                            st.error('Tus permisos o tu sesión cambiaron. Actualiza e inicia sesión otra vez.')
+                                        except ValueError as exc:
+                                            st.warning(str(exc))
+                                        except SQLAlchemyError:
+                                            st.error('No se pudo confirmar el resultado por un problema de conexión. Actualiza y revisa el historial antes de repetir la operación.')
                                         finally:
                                             stop_busy()
 
@@ -5419,6 +5419,12 @@ if tab_creditos:
                                         set_flash('credito_msg','success',f"Crédito {prestamo_creado['id']} creado. Revisa el estado del envío en Contratos pendientes.")
                                         st.rerun()
                                     else:st.error(str(err_c))
+                            except PermissionError:
+                                st.error('Tus permisos o tu sesión cambiaron. Actualiza e inicia sesión otra vez.')
+                            except ValueError as exc:
+                                st.warning(str(exc))
+                            except SQLAlchemyError:
+                                st.error('No se pudo confirmar el resultado por un problema de conexión. Actualiza y revisa el historial antes de repetir la operación.')
                             finally:stop_busy()
 
                 with cred_tab2:
@@ -5455,6 +5461,12 @@ if tab_creditos:
                                         st.rerun()
                                     else:
                                         st.error((f"❌ {err_c}").replace("$", "\\$"))
+                            except PermissionError:
+                                st.error('Tus permisos o tu sesión cambiaron. Actualiza e inicia sesión otra vez.')
+                            except ValueError as exc:
+                                st.warning(str(exc))
+                            except SQLAlchemyError:
+                                st.error('No se pudo confirmar el resultado por un problema de conexión. Actualiza y revisa el historial antes de repetir la operación.')
                             finally:
                                 stop_busy()
 
@@ -5496,6 +5508,12 @@ if tab_creditos:
                                         st.rerun()
                                     else:
                                         st.error((f"❌ {err_c}").replace("$", "\\$"))
+                            except PermissionError:
+                                st.error('Tus permisos o tu sesión cambiaron. Actualiza e inicia sesión otra vez.')
+                            except ValueError as exc:
+                                st.warning(str(exc))
+                            except SQLAlchemyError:
+                                st.error('No se pudo confirmar el resultado por un problema de conexión. Actualiza y revisa el historial antes de repetir la operación.')
                             finally:
                                 stop_busy()
 
@@ -5996,6 +6014,12 @@ if tab_pagos:
                                             st.rerun()
                                         else:
                                             st.error((f"❌ {resultado.get('error')}").replace("$", "\\$"))
+                                except PermissionError:
+                                    st.error('Tus permisos o tu sesión cambiaron. Actualiza e inicia sesión otra vez.')
+                                except ValueError as exc:
+                                    st.warning(str(exc))
+                                except SQLAlchemyError:
+                                    st.error('No se pudo confirmar el resultado por un problema de conexión. Actualiza y revisa el historial antes de repetir la operación.')
                                 finally:
                                     stop_busy()
                         elif not proxima_cuota:
@@ -6022,6 +6046,12 @@ if tab_pagos:
                                             st.rerun()
                                         else:
                                             st.error((f"❌ {resultado.get('error')}").replace("$", "\\$"))
+                                except PermissionError:
+                                    st.error('Tus permisos o tu sesión cambiaron. Actualiza e inicia sesión otra vez.')
+                                except ValueError as exc:
+                                    st.warning(str(exc))
+                                except SQLAlchemyError:
+                                    st.error('No se pudo confirmar el resultado por un problema de conexión. Actualiza y revisa el historial antes de repetir la operación.')
                                 finally:
                                     stop_busy()
                             with get_conn() as conn:
@@ -6075,6 +6105,12 @@ if tab_pagos:
                                             st.rerun()
                                         else:
                                             st.error((f"❌ {resultado.get('error')}").replace("$", "\\$"))
+                                except PermissionError:
+                                    st.error('Tus permisos o tu sesión cambiaron. Actualiza e inicia sesión otra vez.')
+                                except ValueError as exc:
+                                    st.warning(str(exc))
+                                except SQLAlchemyError:
+                                    st.error('No se pudo confirmar el resultado por un problema de conexión. Actualiza y revisa el historial antes de repetir la operación.')
                                 finally:
                                     stop_busy()
 
@@ -6101,6 +6137,12 @@ if tab_pagos:
                                         st.rerun()
                                     else:
                                         st.error((f"❌ {resultado.get('error')}").replace("$", "\\$"))
+                            except PermissionError:
+                                st.error('Tus permisos o tu sesión cambiaron. Actualiza e inicia sesión otra vez.')
+                            except ValueError as exc:
+                                st.warning(str(exc))
+                            except SQLAlchemyError:
+                                st.error('No se pudo confirmar el resultado por un problema de conexión. Actualiza y revisa el historial antes de repetir la operación.')
                             finally:
                                 stop_busy()
             if st.session_state.pago_msg:
@@ -6252,6 +6294,12 @@ if tab_cuenta:
                     else:
                         set_flash("cuenta_msg", "error", f"❌ {msg_clave}")
                     st.rerun()
+            except PermissionError:
+                st.error('Tus permisos o tu sesión cambiaron. Actualiza e inicia sesión otra vez.')
+            except ValueError as exc:
+                st.warning(str(exc))
+            except SQLAlchemyError:
+                st.error('No se pudo confirmar el resultado por un problema de conexión. Actualiza y revisa el historial antes de repetir la operación.')
             finally:
                 stop_busy()
 
@@ -6276,6 +6324,12 @@ if tab_cuenta:
                             st.error((f"❌ {fallidos_r} recordatorio(s) fallaron al enviarse:").replace("$", "\\$"))
                             for linea in detalle_r:
                                 st.write((f"- {linea}").replace("$", "\\$"))
+            except PermissionError:
+                st.error('Tus permisos o tu sesión cambiaron. Actualiza e inicia sesión otra vez.')
+            except ValueError as exc:
+                st.warning(str(exc))
+            except SQLAlchemyError:
+                st.error('No se pudo confirmar el resultado por un problema de conexión. Actualiza y revisa el historial antes de repetir la operación.')
             finally:
                 stop_busy()
 
@@ -6322,6 +6376,12 @@ if tab_usuarios:
                     ok_u, msg_u = crear_usuario(nuevo_usuario_nombre, nuevo_usuario_password, nuevo_usuario_rol)
                     set_flash("usuarios_msg", "success" if ok_u else "error", ("✅ " if ok_u else "❌ ") + msg_u)
                     st.rerun()
+            except PermissionError:
+                st.error('Tus permisos o tu sesión cambiaron. Actualiza e inicia sesión otra vez.')
+            except ValueError as exc:
+                st.warning(str(exc))
+            except SQLAlchemyError:
+                st.error('No se pudo confirmar el resultado por un problema de conexión. Actualiza y revisa el historial antes de repetir la operación.')
             finally:
                 stop_busy()
 
@@ -6347,6 +6407,12 @@ if tab_usuarios:
                             ok_r, msg_r = actualizar_rol_usuario(usuario_seleccionado, nuevo_rol_sel, st.session_state.get("usuario", ""))
                             set_flash("usuarios_msg", "success" if ok_r else "error", ("✅ " if ok_r else "❌ ") + msg_r)
                             st.rerun()
+                    except PermissionError:
+                        st.error('Tus permisos o tu sesión cambiaron. Actualiza e inicia sesión otra vez.')
+                    except ValueError as exc:
+                        st.warning(str(exc))
+                    except SQLAlchemyError:
+                        st.error('No se pudo confirmar el resultado por un problema de conexión. Actualiza y revisa el historial antes de repetir la operación.')
                     finally:
                         stop_busy()
 
@@ -6359,6 +6425,12 @@ if tab_usuarios:
                             ok_p, msg_p = resetear_password_usuario(usuario_seleccionado, password_reset)
                             set_flash("usuarios_msg", "success" if ok_p else "error", ("✅ " if ok_p else "❌ ") + msg_p)
                             st.rerun()
+                    except PermissionError:
+                        st.error('Tus permisos o tu sesión cambiaron. Actualiza e inicia sesión otra vez.')
+                    except ValueError as exc:
+                        st.warning(str(exc))
+                    except SQLAlchemyError:
+                        st.error('No se pudo confirmar el resultado por un problema de conexión. Actualiza y revisa el historial antes de repetir la operación.')
                     finally:
                         stop_busy()
 
@@ -6377,6 +6449,12 @@ if tab_usuarios:
                             ok_e, msg_e = eliminar_usuario(usuario_seleccionado, st.session_state.get("usuario", ""))
                             set_flash("usuarios_msg", "success" if ok_e else "error", ("✅ " if ok_e else "❌ ") + msg_e)
                             st.rerun()
+                    except PermissionError:
+                        st.error('Tus permisos o tu sesión cambiaron. Actualiza e inicia sesión otra vez.')
+                    except ValueError as exc:
+                        st.warning(str(exc))
+                    except SQLAlchemyError:
+                        st.error('No se pudo confirmar el resultado por un problema de conexión. Actualiza y revisa el historial antes de repetir la operación.')
                     finally:
                         stop_busy()
         else:

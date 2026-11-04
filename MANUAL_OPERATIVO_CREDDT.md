@@ -33,7 +33,7 @@ Los créditos nuevos guardan la tasa y una distribución por cuota. Cambiar la t
 5. Registra exactamente el dinero recibido y revisa la confirmación. Un pago parcial no significa que la cuota esté totalmente pagada.
 6. Consulta el movimiento en Detalle por crédito. Si falla la comunicación, revisa primero el historial antes de intentar otro pago. El sistema rechaza reintentos de la misma operación y datos que cambiaron por otro operador.
 
-El dinero recibido se divide entre capital e intereses. Para créditos nuevos versionados, fraccionar una cuota no vuelve a causar su interés. Un importe superior a todas las cuotas pendientes se rechaza: no se registra un excedente sin explicación.
+El dinero recibido se divide entre capital e intereses. Para créditos nuevos versionados, fraccionar una cuota no vuelve a causar su interés. Los nuevos capitales y cobros de Normal y Express se registran en pesos enteros, sin centavos ocultos en una cuota recalculada. Un importe superior a todas las cuotas pendientes se rechaza: no se registra un excedente sin explicación.
 
 El administrador puede omitir el comprobante por correo; la decisión queda registrada. Una solicitud de envío en segundo plano no garantiza recepción en la bandeja del cliente.
 
@@ -54,3 +54,8 @@ Actualizar datos conserva la pantalla y el estado de la conexión actual. Un for
 ## Ante un error
 
 Si el saldo cambió, actualiza el crédito y comprueba sus movimientos. Si un pago quedó registrado pero el correo falló, no vuelvas a cobrarlo: revisa el comprobante. Si el calendario no cubre el principal, revisa sus condiciones. Si el acceso expiró, inicia sesión otra vez; si sigue fallando, solicita ayuda al administrador sin compartir la contraseña.
+
+
+## Navegación compacta
+
+Cinco áreas principales con iconos simples: Inicio, Clientes, Créditos, Cobros y Análisis. Créditos reúne Nuevo crédito, Detalle y Cartera; Análisis reúne Proyección y Simulador. El menú de perfil contiene Mi cuenta, administración de usuarios (solo ADMIN) y Cerrar sesión. Se conservan los permisos del servidor y la vista al actualizar. Las opciones secundarias aparecen únicamente dentro del área seleccionada.

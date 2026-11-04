@@ -64,3 +64,16 @@ html body [data-testid="stSidebar"]{max-width:calc(100vw - 38px)!important}
 .workspace-kicker{font-size:10px;letter-spacing:.08em}.workspace-head{padding-bottom:18px;margin-bottom:18px}
 }
 @media(max-width:359px){html body [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:has([data-testid="stMetric"]){min-width:100%!important;flex-basis:100%!important}}
+
+/* Navegación agrupada y perfil compacto */
+.compact-brand{font-size:23px;font-weight:800;letter-spacing:.04em;margin:4px 0 18px;color:#fff}.compact-brand span{display:block;font-size:10px;font-weight:500;letter-spacing:.07em;color:#adc0dd;margin-top:4px}
+html body .st-key-compact_navigation [data-testid="stButton"] button{justify-content:flex-start!important;box-shadow:none!important;transform:none!important;border-radius:9px!important;margin:1px 0!important;min-height:43px!important;font-weight:600!important}
+html body .st-key-compact_navigation button[kind="tertiary"]{background:transparent!important;border:1px solid transparent!important;color:#c9d6eb!important}
+html body .st-key-compact_navigation button[kind="tertiary"]:hover{background:#1d3456!important;color:white!important}
+html body .st-key-compact_navigation [data-testid="stRadio"]{padding:2px 0 10px 16px!important;border-left:1px solid #385173;margin:0 0 4px 19px}
+html body [data-testid="stSidebar"] [data-testid="stPopover"]>button{background:#203650!important;border:1px solid #3b5270!important;color:#fff!important;box-shadow:none!important;border-radius:12px!important;justify-content:flex-start!important}
+html body [data-testid="stSidebar"] [data-testid="stSidebarUserContent"]{padding-top:18px!important}
+
+html body [data-testid="stSidebarHeader"]{height:38px!important;min-height:38px!important}
+html body .st-key-compact_navigation button>div{justify-content:flex-start!important;width:100%}
+html body [data-testid="stPopoverBody"] hr{margin:8px 0!important}

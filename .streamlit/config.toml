@@ -1,3 +1,14 @@
 [server]
 address = "0.0.0.0"
 port = 8501
+
+[theme]
+base = "light"
+primaryColor = "#2458C6"
+backgroundColor = "#F3F6FA"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#16263C"
+font = "sans serif"
+
+[client]
+toolbarMode = "minimal"
